@@ -91,8 +91,9 @@ class WhispaApp:
             on_final=self.training.update_text if self.training else None)
         self.card = CopyCard()
 
-        hint = f"Click or hold {hotkey.label()} to dictate"
-        self.overlay = Overlay(lambda: self.recorder.level, hint, cfg.show_idle_pill)
+        self.overlay = Overlay(lambda: self.recorder.level, self._hint(hotkey), cfg.show_idle_pill,
+                               anchor=cfg.pill_anchor)
+        self.overlay.anchor_changed.connect(lambda a: self.update_setting("pill_anchor", a))
         self.overlay.idle_clicked.connect(self.sm.toggle_hands_free)
         self.overlay.stop_clicked.connect(self.sm.finish)
         self.overlay.cancel_clicked.connect(self.sm.cancel)
@@ -106,7 +107,7 @@ class WhispaApp:
         b.failed.connect(self._on_failed)
         b.model_ready.connect(self._on_model_ready)
         b.model_failed.connect(self._on_model_failed)
-        b.show_card.connect(self.card.show_text)
+        b.show_card.connect(lambda text: self.card.show_text(text, self.overlay.anchor))
         b.captured.connect(self._on_captured)
         b.history_changed.connect(lambda: self.window and self.window.history_changed())
         b.learned.connect(lambda words: self.overlay.flash(f"Learned: {words}", seconds=2.5))
@@ -118,6 +119,10 @@ class WhispaApp:
         self._build_tray()
         self.hotkeys.start()
         threading.Thread(target=self._load_model, name="model-load", daemon=True).start()
+
+    @staticmethod
+    def _hint(hotkey: Hotkey) -> str:
+        return f"Click or hold {hotkey.label()} to dictate · drag to move"
 
     # -- model -----------------------------------------------------------
     def _load_model(self) -> None:
@@ -368,7 +373,7 @@ class WhispaApp:
                 return str(exc)
             self.hotkey = hk
             self.hotkeys.set_hotkey(hk, cfg.hands_free_key or None)
-            self.overlay.hint = f"Click or hold {hk.label()} to dictate"
+            self.overlay.hint = self._hint(hk)
         elif key == "hands_free_key":
             if value and value in self.hotkey.keys:
                 return "The hands-free key can't be part of the push-to-talk shortcut."
@@ -389,6 +394,11 @@ class WhispaApp:
             config_mod.save(cfg)
             log.info("AI clean-up: %s", value)
             return None
+        elif key == "pill_anchor":
+            if value != self.overlay.anchor:
+                self.overlay.set_anchor(value)  # picked in Settings (a drag already moved it)
+            if self.window is not None:
+                self.window.settings.sync_pill_anchor(value)
         elif key == "sounds":
             self.sounds.enabled = bool(value)
         elif key == "show_idle_pill":

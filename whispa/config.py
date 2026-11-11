@@ -87,6 +87,7 @@ class Config:
     sounds: bool = True
     sound_volume: float = 0.12
     show_idle_pill: bool = True
+    pill_anchor: str = "bottom-center"  # where the pill snaps; drag it or pick in Settings
     save_history: bool = True
     config_version: int = CONFIG_VERSION
 

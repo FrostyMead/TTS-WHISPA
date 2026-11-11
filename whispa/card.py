@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout,
                                QWidget)
@@ -76,7 +76,7 @@ class CopyCard(QWidget):
         self._timer.setInterval(500)
         self._timer.timeout.connect(self._maybe_hide)
 
-    def show_text(self, text: str) -> None:
+    def show_text(self, text: str, anchor: str = "bottom-center") -> None:
         self.text.setPlainText(text)
         self.copy_btn.setText("Copy")
         fm = self.text.fontMetrics()
@@ -86,13 +86,33 @@ class CopyCard(QWidget):
         self.text.setFixedHeight(text_h)
         self.setFixedSize(self.WIDTH, text_h + 2 * self.MARGIN + 26 + 34)
         screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
-        area = screen.availableGeometry()
-        self.move(area.x() + (area.width() - self.WIDTH) // 2,
-                  area.y() + area.height() - self.height() - self.bottom_offset)
+        self.move(self._position(screen.availableGeometry(), anchor))
         self._hide_at = time.monotonic() + self.AUTO_HIDE_S
         self.show()
         self.raise_()
         self._timer.start()
+
+    def _position(self, area, anchor: str) -> QPoint:
+        """Next to the pill: above it at the bottom, below it at the top, beside it on a side."""
+        v, h = anchor.split("-") if "-" in anchor else ("bottom", "center")
+        edge, pill_h, pill_w, gap = 16, 34, 34, 10  # on a side the pill is upright: 34 px wide
+        w, hgt = self.width(), self.height()
+        if h == "left":
+            x = area.left() + edge
+        elif h == "right":
+            x = area.left() + area.width() - edge - w
+        else:
+            x = area.left() + (area.width() - w) // 2
+        if v == "top":
+            y = area.top() + edge + pill_h + gap
+        elif v == "bottom":
+            y = area.top() + area.height() - edge - pill_h - gap - hgt
+        else:  # left/right edge, vertically centred: sit beside the pill
+            y = area.top() + (area.height() - hgt) // 2
+            x += (pill_w + gap) if h == "left" else -(pill_w + gap)
+        x = max(area.left() + 8, min(x, area.left() + area.width() - w - 8))
+        y = max(area.top() + 8, min(y, area.top() + area.height() - hgt - 8))
+        return QPoint(x, y)
 
     def _copy(self) -> None:
         text = self.text.toPlainText()

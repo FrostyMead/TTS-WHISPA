@@ -78,6 +78,7 @@ Launch at login starts Whispa quietly in the tray (`--background`).
 | Hands-free | while holding, tap **Space**, or **double-tap** the hotkey. Press the hotkey again to finish | same |
 | Cancel | **Esc** | **Esc** |
 | Mouse | click the idle pill to start hands-free. In hands-free, ✕ cancels and ■ finishes | same |
+| Move the pill | drag it anywhere; it snaps to the nearest corner or edge centre and remembers the spot (also in Settings → Pill position). On the left/right edge it stands upright | same |
 
 Pressing another key within 0.4 s of the hotkey (e.g. Ctrl+Win+D) counts as an OS shortcut
 and silently cancels, so your normal shortcuts keep working.

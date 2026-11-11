@@ -594,6 +594,16 @@ class SettingsPage(QScrollArea):
         sec.addWidget(self._switch_row("show_idle_pill", "Show the pill when idle",
                                        "A small bar at the bottom of the screen. Click it to "
                                        "dictate hands-free."))
+        from .overlay import ANCHOR_LABELS
+
+        self.pill_pos = QComboBox()
+        for anchor, label in ANCHOR_LABELS.items():
+            self.pill_pos.addItem(label, anchor)
+        self.pill_pos.setCurrentIndex(max(0, self.pill_pos.findData(cfg.pill_anchor)))
+        self.pill_pos.currentIndexChanged.connect(
+            lambda: self._set("pill_anchor", self.pill_pos.currentData()))
+        sec.addWidget(setting_row("Pill position", "Or just drag the pill. It snaps to the nearest "
+                                  "corner or edge.", self.pill_pos))
         self.device = QComboBox()
         for label, value in (("Automatic", "auto"), ("NVIDIA GPU (CUDA)", "cuda"),
                              ("GPU (DirectML)", "directml"), ("CPU", "cpu")):
@@ -653,6 +663,14 @@ class SettingsPage(QScrollArea):
         self.ctl.cancel_capture()
         self.hotkey.set_recording(False)
         self.hands.set_recording(False)
+
+    def sync_pill_anchor(self, anchor: str) -> None:
+        """The pill was dragged: show its new spot without re-triggering a move."""
+        i = self.pill_pos.findData(anchor)
+        if i >= 0 and i != self.pill_pos.currentIndex():
+            self.pill_pos.blockSignals(True)
+            self.pill_pos.setCurrentIndex(i)
+            self.pill_pos.blockSignals(False)
 
     def capture_finished(self, kind: str, spec: str | None, error: str | None) -> None:
         field = self.hotkey if kind == "hotkey" else self.hands
