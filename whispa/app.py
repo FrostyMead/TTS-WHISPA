@@ -579,30 +579,45 @@ class WhispaApp:
     def read_aloud(self) -> None:
         """Read the selected text aloud; while reading, stop."""
         if self._speaker is not None and self._speaker.speaking:
+            log.info("Read aloud: stopped")
             self._speaker.stop()
             return
+        log.info("Read aloud: shortcut pressed")
         threading.Thread(target=self._read_selection, name="read-selection", daemon=True).start()
 
     def _read_selection(self) -> None:
         self.hotkeys.wait_for_modifiers_released()
-        f = focus.inspect()
-        text = f.read_selection()
-        if text is None and not f.is_terminal:  # Ctrl+C in a terminal would interrupt
-            text = self.injector.copy_selection()
-        if not text or not text.strip():
-            self.bridge.notice.emit("Select some text to read aloud", False)
-            return
-        log.info("Reading %d characters aloud", len(text))
-        self.speaker().speak(text)
+        try:
+            f = focus.inspect()
+            text, how = f.read_selection(), "accessibility"
+            if text is None and not f.is_terminal:  # Ctrl+C in a terminal would interrupt
+                text, how = self.injector.copy_selection(), "copy"
+            if not text or not text.strip():
+                log.info("Read aloud: no selected text found in %s", f.app or "?")
+                self.bridge.notice.emit("Select some text to read aloud", False)
+                return
+            log.info("Read aloud: %d characters from %s (via %s)", len(text), f.app or "?", how)
+            self.speaker().speak(text)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Read aloud failed")
+            self.bridge.notice.emit(f"Read aloud failed: {exc}"[:60], True)
 
     def speak_sample(self) -> None:
         self.speaker().speak("Hi! This is how Whispa reads your text aloud.")
 
     def _on_speak_state(self, state: str) -> None:
-        speaking = state in ("loading", "speaking")
+        speaking = self._speaker is not None and self._speaker.speaking
         self.read_action.setText("Stop reading" if speaking else "Read selection aloud")
+        if state == "idle" and getattr(self, "_speak_state", "") == "loading":
+            self.overlay.flash("Stopped", seconds=0.8)  # replace the long "Loading…" message
+        self._speak_state = state
         if state == "loading":
-            self.overlay.flash("Loading the reading voice…", seconds=3)
+            self.overlay.flash("Loading the reading voice…", seconds=30)  # until speech starts
+        elif state == "downloading":
+            self.overlay.flash("Reading with the system voice · the natural voice is downloading",
+                               seconds=4)
+        elif state == "ready":
+            self.overlay.flash("Natural reading voice ready", seconds=2.5)
         elif state == "speaking":
             hint = ""
             if self.cfg.read_hotkey:

@@ -113,6 +113,23 @@ def split_sentences(text: str) -> list[str]:
     return out
 
 
+def model_file(device: str = "auto") -> str:
+    from .asr import select_providers
+
+    return MODEL_GPU if select_providers(device)[1] == "CUDA" else MODEL_CPU
+
+
+def voice_downloaded(voice: str, device: str = "auto") -> bool:
+    """Are the model and this voice already on disk (so loading takes seconds, not a download)?"""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        return all(isinstance(try_to_load_from_cache(REPO, f), str)
+                   for f in (model_file(device), "tokenizer.json", f"voices/{voice}.bin"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class Kokoro:
     def __init__(self, device: str = "auto", threads: int | None = None):
         import onnxruntime as ort
@@ -183,6 +200,7 @@ class Speaker:
         self.on_state = on_state or (lambda s: None)  # "loading" | "speaking" | "idle" | "error:..."
         self._kokoro: Kokoro | None = None
         self._kokoro_failed = False
+        self._preparing = False
         self._lock = threading.Lock()
         self._gen = 0  # bumps on every speak/stop: older playback threads quit
         self._system_proc = None
@@ -218,8 +236,42 @@ class Speaker:
     def _current(self, gen: int) -> bool:
         return gen == self._gen
 
+    def prepare(self) -> None:
+        """Download and load the natural voice in the background (first use)."""
+        with self._lock:
+            if self._preparing or self._kokoro is not None or self._kokoro_failed:
+                return
+            self._preparing = True
+
+        def work():
+            try:
+                log.info("Read aloud: downloading/loading the natural voice in the background")
+                k = Kokoro(self.device)
+                k.voice(self.voice)
+                with self._lock:
+                    self._kokoro = k
+                self._last_used = time.monotonic()
+                self.on_state("ready")
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Read aloud: natural voice unavailable; the system voice is used")
+                self._kokoro_failed = True
+                self.on_state(f"error:Natural voice unavailable ({exc}); using the system voice")
+            finally:
+                self._preparing = False
+
+        threading.Thread(target=work, name="tts-prepare", daemon=True).start()
+
     def _run(self, text: str, gen: int) -> None:
         try:
+            if (self.voice != "system" and not self._kokoro_failed and self._kokoro is None
+                    and (self._preparing or not voice_downloaded(self.voice, self.device))):
+                # First use: speak right away with the system voice while the natural one
+                # downloads, instead of making you wait in silence.
+                self.prepare()
+                self.on_state("downloading")
+                log.info("Read aloud: system voice for now")
+                self._run_system(text, gen, announce=False)
+                return
             if self.voice != "system" and not self._kokoro_failed:
                 try:
                     self._run_kokoro(text, gen)
@@ -270,6 +322,7 @@ class Speaker:
 
         threading.Thread(target=produce, name="tts-gen", daemon=True).start()
         self.on_state("speaking")
+        log.info("Read aloud: playing %d piece(s) with %s", len(pieces), self.voice)
         with sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32") as out:
             while True:
                 item = audio_q.get()
@@ -285,8 +338,9 @@ class Speaker:
                 self._last_used = time.monotonic()
         self._last_used = time.monotonic()
 
-    def _run_system(self, text: str, gen: int) -> None:
-        self.on_state("speaking")
+    def _run_system(self, text: str, gen: int, announce: bool = True) -> None:
+        if announce:
+            self.on_state("speaking")
         rate = self.speed
         if sys.platform == "darwin":
             cmd = ["say", "-r", str(int(185 * rate)), text]
