@@ -752,9 +752,22 @@ def setup_logging() -> None:
     logging.getLogger("comtypes").setLevel(logging.WARNING)
 
 
+def raise_priority() -> None:
+    """Dictation should stay instant even when the CPU is busy with other work."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            k32 = ctypes.windll.kernel32
+            k32.SetPriorityClass(k32.GetCurrentProcess(), 0x00008000)  # ABOVE_NORMAL_PRIORITY_CLASS
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def run(background: bool = False) -> int:
     ensure_std_streams()
     setup_logging()
+    raise_priority()
     if sys.platform == "win32":
         try:  # own taskbar identity/icon instead of python.exe's
             import ctypes

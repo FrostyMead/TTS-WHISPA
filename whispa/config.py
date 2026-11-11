@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Whispa"
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 log = logging.getLogger(__name__)
 
 
@@ -52,7 +52,7 @@ class LLMCleanup:
     base_url: str = "http://127.0.0.1:11434"
     model: str = "gemma3:4b"
     api_key: str = ""
-    keep_alive: str = "30m"  # how long Ollama keeps the model in memory between uses
+    keep_alive: str = "10m"  # how long Ollama keeps the model in GPU memory between uses
     timeout_s: float = 6.0
     prompt: str = ""  # empty = built-in prompt
 
@@ -122,7 +122,9 @@ def load(path: Path | None = None) -> Config:
             return Config()
     if data.get("config_version", 1) < 2:
         data.pop("llm_cleanup", None)  # v1 defaults pointed at a different API; reset
-        data["config_version"] = CONFIG_VERSION
+    if data.get("config_version", 1) < 3 and data.get("llm_cleanup", {}).get("keep_alive") == "30m":
+        data["llm_cleanup"]["keep_alive"] = "10m"  # free GPU memory sooner for the speech model
+    data["config_version"] = CONFIG_VERSION
     cfg = _from_dict(Config, data)
     # Write back so every option is visible and editable in the file.
     full = asdict(cfg)
