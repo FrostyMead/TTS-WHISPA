@@ -115,3 +115,45 @@ def test_command_output_cleanup():
     assert c('"I will be ten minutes late."', None) == "I will be ten minutes late."
     assert c('"hi" and "bye"', None) == '"hi" and "bye"'
     assert c("```\nline1\nline2\n```", "x") == "line1\nline2"
+
+
+def test_reading_clip_keeps_a_high_quality_copy(tmp_path):
+    import json
+    import wave
+
+    import numpy as np
+
+    from whispa.audio import resample
+    from whispa.learn import HQ_SUFFIX, TrainingStore
+
+    sr = 48000
+    t = np.arange(sr * 2) / sr
+    audio = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    store = TrainingStore(tmp_path)
+    sid = store.add_read(audio, sr, "Hello there.", "hello there")
+    main, hq = tmp_path / f"{sid}.wav", tmp_path / f"{sid}{HQ_SUFFIX}"
+    with wave.open(str(main)) as w:
+        assert w.getframerate() == 16000 and abs(w.getnframes() - 32000) <= 1
+    with wave.open(str(hq)) as w:
+        assert w.getframerate() == 24000 and abs(w.getnframes() - 48000) <= 1
+    row = json.loads(store.manifest.read_text(encoding="utf-8").splitlines()[-1])
+    assert row["hq"] == hq.name and row["source_sr"] == sr
+    assert row["peak"] > 0.29 and row["clipped"] == 0 and row["noise_db"] < 0
+    st = store.stats()
+    assert st["clips"] == 1 and round(st["seconds"]) == 2  # the copy isn't counted twice
+    store.remove(sid)
+    assert not main.exists() and not hq.exists()
+    # resampling keeps the tone (energy at 440 Hz), not just the length
+    y = resample(audio, sr, 16000)
+    spec = np.abs(np.fft.rfft(y))
+    assert abs(np.argmax(spec) * 16000 / len(y) - 440) < 2
+
+
+def test_dictation_clips_are_16k_only(tmp_path):
+    import numpy as np
+
+    from whispa.learn import HQ_SUFFIX, TrainingStore
+
+    store = TrainingStore(tmp_path)
+    store.add(np.zeros(48000, np.float32), 48000, "hi")
+    assert not list(tmp_path.glob(f"*{HQ_SUFFIX}"))

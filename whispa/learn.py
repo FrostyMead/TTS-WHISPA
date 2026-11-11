@@ -263,6 +263,9 @@ class Dictionary:
                 self.save()
 
 
+HQ_SUFFIX = ".24k.wav"
+
+
 class TrainingStore:
     """Audio + transcript pairs for fine-tuning the speech model on your voice.
 
@@ -315,8 +318,14 @@ class TrainingStore:
                 self._corrected.discard(sid)
                 self._read.pop(sid, None)
 
+    def _clips(self) -> list[Path]:
+        """The 16 kHz clips (one per recording; high-quality copies not counted)."""
+        if not self.root.exists():
+            return []
+        return [p for p in self.root.glob("*.wav") if not p.name.endswith(HQ_SUFFIX)]
+
     def stats(self) -> dict:
-        wavs = list(self.root.glob("*.wav")) if self.root.exists() else []
+        wavs = self._clips()
         size = sum(p.stat().st_size for p in wavs)
         return {"clips": len(wavs), "bytes": size, "seconds": size / 32000,
                 "corrected": len(self._corrected), "read": len(self._read),
@@ -345,18 +354,30 @@ class TrainingStore:
             sample_id = sample_id[:-3] + f"{(int(sample_id[-3:]) + 1) % 1000:03d}"
         return sample_id
 
-    def _write(self, audio: np.ndarray, sr: int, row: dict) -> str:
-        self.root.mkdir(parents=True, exist_ok=True)
-        self._enforce_cap()
-        sample_id = self._new_id()
+    @staticmethod
+    def _save_wav(path: Path, audio: np.ndarray, sr: int) -> None:
         pcm = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
-        with wave.open(str(self.root / f"{sample_id}.wav"), "wb") as w:
+        with wave.open(str(path), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(sr)
             w.writeframes(pcm.tobytes())
+
+    def _write(self, audio: np.ndarray, sr: int, row: dict, keep_hq: bool = False) -> str:
+        """Save a clip. The main file is 16 kHz (what the speech model trains on); with
+        ``keep_hq`` and a better source, a 24 kHz copy is kept too (for a voice like yours)."""
+        from .audio import TARGET_SR, VOICE_SR, quality, resample
+
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._enforce_cap()
+        sample_id = self._new_id()
+        self._save_wav(self.root / f"{sample_id}.wav", resample(audio, sr, TARGET_SR), TARGET_SR)
+        extra = {}
+        if keep_hq and sr >= VOICE_SR:
+            self._save_wav(self.root / f"{sample_id}{HQ_SUFFIX}", resample(audio, sr, VOICE_SR), VOICE_SR)
+            extra = {"hq": f"{sample_id}{HQ_SUFFIX}", "source_sr": sr, **quality(audio, sr)}
         self._append({"id": sample_id, "audio": f"{sample_id}.wav",
-                      "duration": round(len(audio) / sr, 2), **row})
+                      "duration": round(len(audio) / sr, 2), **row, **extra})
         return sample_id
 
     def add(self, audio: np.ndarray, sr: int, asr_text: str) -> str | None:
@@ -371,7 +392,8 @@ class TrainingStore:
     def add_read(self, audio: np.ndarray, sr: int, prompt: str, asr_text: str) -> str | None:
         """A reading-session clip: the label is the sentence that was read, word for word."""
         try:
-            sample_id = self._write(audio, sr, {"asr": asr_text, "text": prompt, "status": "read"})
+            sample_id = self._write(audio, sr, {"asr": asr_text, "text": prompt, "status": "read"},
+                                    keep_hq=True)
         except OSError as exc:
             log.warning("Could not save reading sample: %s", exc)
             return None
@@ -381,6 +403,7 @@ class TrainingStore:
     def remove(self, sample_id: str) -> None:
         """Drop one clip (e.g. you re-recorded that sentence)."""
         (self.root / f"{sample_id}.wav").unlink(missing_ok=True)
+        (self.root / f"{sample_id}{HQ_SUFFIX}").unlink(missing_ok=True)
         self._read.pop(sample_id, None)
         self._corrected.discard(sample_id)
         self._raw.pop(sample_id, None)
@@ -400,8 +423,8 @@ class TrainingStore:
 
     def _enforce_cap(self) -> None:
         """Over the limit: delete the oldest clips, read and corrected ones last."""
-        wavs = sorted(self.root.glob("*.wav"))  # ids are timestamps: oldest first
-        total = sum(p.stat().st_size for p in wavs)
+        wavs = sorted(self._clips())  # ids are timestamps: oldest first
+        total = sum(p.stat().st_size for p in self.root.glob("*.wav"))
         if total <= self.max_bytes:
             return
         target = self.max_bytes * 0.9
@@ -412,6 +435,10 @@ class TrainingStore:
                 break
             total -= p.stat().st_size
             p.unlink(missing_ok=True)
+            hq = p.with_name(p.stem + HQ_SUFFIX)
+            if hq.exists():
+                total -= hq.stat().st_size
+                hq.unlink(missing_ok=True)
 
     def _append(self, row: dict) -> None:
         with self._lock, self.manifest.open("a", encoding="utf-8") as f:

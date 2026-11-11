@@ -404,7 +404,7 @@ class VoiceTrainingPage(QScrollArea):
     def _default_recorder(self):
         from .audio import Recorder
 
-        return Recorder(self.ctl.cfg.input_device)
+        return Recorder(self.ctl.cfg.input_device, high_quality=True)  # 48 kHz: a voice needs it
 
     # -- keyboard: hold Space to record ------------------------------------
     def showEvent(self, e) -> None:

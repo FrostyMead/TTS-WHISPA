@@ -32,7 +32,7 @@ def storage() -> dict:
     """What's kept about your voice on this computer."""
     dirs = voice_dirs()
     rec = dirs["recordings"]
-    clips = list(rec.glob("*.wav")) if rec.exists() else []
+    clips = [p for p in rec.glob("*.wav") if not p.name.endswith(".24k.wav")] if rec.exists() else []
     models = [p for p in dirs["models"].iterdir() if p.is_dir()] if dirs["models"].exists() else []
     voices = [p for p in dirs["voices"].iterdir() if p.is_dir()] if dirs["voices"].exists() else []
     return {
