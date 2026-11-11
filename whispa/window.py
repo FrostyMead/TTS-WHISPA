@@ -850,7 +850,7 @@ class SettingsPage(QScrollArea):
             bl = QHBoxLayout(box)
             bl.setContentsMargins(0, 0, 0, 0)
             state = QLabel()
-            btn = QPushButton("Allow…")
+            btn = QPushButton("Change…" if kind == "fn_key" else "Allow…")
             btn.setObjectName("primary")
             btn.clicked.connect(lambda _=False, k=kind: self.ctl.allow_permission(k))
             bl.addWidget(state)
@@ -873,8 +873,13 @@ class SettingsPage(QScrollArea):
         if not self.perm_rows or not self.isVisible():
             return
         for kind, ok in self.ctl.permissions().items():
+            if kind not in self.perm_rows:
+                continue
             state, btn = self.perm_rows[kind]
-            state.setText("Allowed" if ok else "Not allowed" if ok is False else "Unknown")
+            if kind == "fn_key":
+                state.setText("Do Nothing" if ok else "Not set" if ok is False else "Unknown")
+            else:
+                state.setText("Allowed" if ok else "Not allowed" if ok is False else "Unknown")
             state.setObjectName("ok" if ok else "error")
             state.style().unpolish(state)
             state.style().polish(state)

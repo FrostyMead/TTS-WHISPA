@@ -82,7 +82,8 @@ class KeyTap:
         self._stopped = False
         self._loop = None
         self._fn_down = False
-        self._held: set[int] = set()
+        self._seen_fn = False
+        self._seen_key = False
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="key-tap", daemon=True).start()
@@ -114,28 +115,49 @@ class KeyTap:
 
         warned = False
         while not self._stopped:
+            allowed = _listen_allowed()
             tap = Quartz.CGEventTapCreate(Quartz.kCGSessionEventTap, Quartz.kCGHeadInsertEventTap,
                                           Quartz.kCGEventTapOptionListenOnly, mask, callback, None)
-            if tap is not None:
-                break
-            if not warned:
-                log.error("Can't see the keyboard yet: allow Whispa in System Settings > "
-                          "Privacy & Security > Input Monitoring. Waiting for it...")
-                warned = True
+            if tap is None:
+                if not warned:
+                    log.error("Can't see the keyboard yet: allow Whispa in System Settings > "
+                              "Privacy & Security > Input Monitoring. Waiting for it...")
+                    warned = True
+                time.sleep(2)
+                continue
+            state["tap"] = tap
+            self.active = True
+            log.info("Keyboard watching active (Input Monitoring allowed: %s)", allowed)
+            source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+            self._loop = Quartz.CFRunLoopGetCurrent()
+            Quartz.CFRunLoopAddSource(self._loop, source, Quartz.kCFRunLoopCommonModes)
+            Quartz.CGEventTapEnable(tap, True)
+            if allowed is False:
+                # macOS can hand out a tap that gets no key events until Input Monitoring is
+                # allowed, and a tap made before then stays deaf: make a new one once it is.
+                threading.Thread(target=self._restart_when_allowed, name="key-tap-watch",
+                                 daemon=True).start()
+            Quartz.CFRunLoopRun()
+            self.active = False
+            Quartz.CGEventTapEnable(tap, False)
+            Quartz.CFRunLoopRemoveSource(self._loop, source, Quartz.kCFRunLoopCommonModes)
+            self._loop = None
+            if not self._stopped:
+                log.info("Input Monitoring is now allowed: watching the keyboard again")
+
+    def _restart_when_allowed(self) -> None:
+        import Quartz
+
+        while not self._stopped and _listen_allowed() is False:
             time.sleep(2)
-        else:
-            return
-        state["tap"] = tap
-        self.active = True
-        log.info("Keyboard watching active")
-        source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
-        self._loop = Quartz.CFRunLoopGetCurrent()
-        Quartz.CFRunLoopAddSource(self._loop, source, Quartz.kCFRunLoopCommonModes)
-        Quartz.CGEventTapEnable(tap, True)
-        Quartz.CFRunLoopRun()
-        self.active = False
+        loop = self._loop
+        if not self._stopped and loop is not None:
+            Quartz.CFRunLoopStop(loop)
 
     def _handle(self, etype: int, code: int, flags: int) -> None:
+        if not self._seen_key:
+            self._seen_key = True
+            log.info("Keyboard events are arriving")
         if etype == FLAGS_CHANGED:
             change = modifier_change(code, flags, self._fn_down)
             if change is None:
@@ -143,6 +165,9 @@ class KeyTap:
             kind, names, primary = change
             if primary == "fn":
                 self._fn_down = kind == "press"
+                if not self._seen_fn:
+                    self._seen_fn = True
+                    log.info("fn/globe key seen (key code %d)", code)
             (self.on_press if kind == "press" else self.on_release)(names, primary)
         elif etype == KEY_DOWN:
             names, primary = key_names(code)
@@ -150,6 +175,15 @@ class KeyTap:
         elif etype == KEY_UP:
             names, primary = key_names(code)
             self.on_release(names, primary)
+
+
+def _listen_allowed() -> bool | None:
+    try:
+        import Quartz
+
+        return bool(Quartz.CGPreflightListenEventAccess())
+    except Exception:  # noqa: BLE001 - older pyobjc/macOS
+        return None
 
 
 # --------------------------------------------------------------------------- output

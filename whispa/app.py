@@ -185,8 +185,16 @@ class WhispaApp:
     def _check_mac_permissions(self) -> None:
         from . import macperms
 
+        action = macperms.fn_key_action()
+        log.info("macOS permissions: %s; 🌐 key: %s", macperms.status(), action or "?")
         missing = macperms.missing()
         if not missing:
+            if "fn" in self.hotkey.keys and action and action != "Do Nothing":
+                self.tray.showMessage(
+                    "Set the 🌐 key to Do Nothing",
+                    f"Holding fn currently does “{action}”. System Settings > Keyboard > "
+                    "Press 🌐 key to > Do Nothing.", tray_icon(), 10000)
+                self.show_window(page=2)
             return
         log.info("macOS permissions missing: %s", ", ".join(missing))
         macperms.request(missing)  # macOS's prompts; they add Whispa to each list
