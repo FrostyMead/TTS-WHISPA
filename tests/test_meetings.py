@@ -188,3 +188,30 @@ def test_action_items_get_exactly_one_checkbox():
     items = [line for line in body.splitlines() if line.startswith("- [")]
     assert items == ["- [ ] Person 1: Book the review.", "- [ ] You: send notes",
                      "- [ ] Sarah: call the vendor"]
+
+
+def test_starting_never_loads_voiceprints_on_the_calling_thread(tmp_path):
+    """Captions / notes start from the window: setting up speakers (a model download, your
+    recordings) happens on the meeting thread, so the window never freezes."""
+    import threading
+    import time
+
+    from whispa.meetings import Capture, MeetingSession
+
+    calls = []
+
+    def slow_embedder(audio, sr):
+        calls.append(threading.current_thread())
+        time.sleep(0.5)
+        return None
+
+    class Mic(Capture):
+        who = "You"
+
+    (tmp_path / "clip.wav").write_bytes(b"")
+    s = MeetingSession([Mic()], lambda a, sr: "", embedder=slow_embedder, profile_dir=tmp_path)
+    t0 = time.perf_counter()
+    s.start()
+    assert time.perf_counter() - t0 < 0.3
+    s.stop()
+    assert all(t is not threading.main_thread() for t in calls)

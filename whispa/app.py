@@ -1678,8 +1678,13 @@ class MurmrApp:
         self.qapp.quit()
 
     def shutdown(self) -> None:
+        """Stop everything that runs in the background. Safe to call more than once: it runs
+        for every way of quitting (the menu, Cmd+Q, logging out, restarting)."""
         import faulthandler
 
+        if getattr(self, "_shut_down", False):
+            return
+        self._shut_down = True
         for job in self._tuning.values():  # training in WSL would otherwise keep running
             if job.running:
                 job.cancel()
@@ -1919,6 +1924,29 @@ def run(background: bool = False) -> int:
     if not background:
         app.show_window()
     log.info("Murmr started; hotkey %s, config %s", app.hotkey.label(), config_mod.config_path())
+    # Quitting some other way (Cmd+Q in a Murmr window, logging out) skips app.quit(): stop
+    # the microphone, meeting audio and the rest first all the same.
+    qapp.aboutToQuit.connect(app.shutdown)
     code = qapp.exec()
+    app.shutdown()
     app.worker.shutdown(wait=False, cancel_futures=True)
+    finish_exit(code, instance)
     return code
+
+
+def finish_exit(code: int, instance=None) -> None:
+    """End the process now that everything is stopped.
+
+    Python's own exit would run PortAudio's clean-up (Pa_Terminate), which can wait forever
+    for a macOS audio thread: Murmr then hung on quitting until the freeze detector restarted
+    it. Everything that matters is already closed and saved, so skip it.
+    """
+    try:
+        if instance is not None:
+            instance.release()
+    except Exception:  # noqa: BLE001
+        pass
+    logging.shutdown()
+    sys.stdout.flush() if sys.stdout else None
+    sys.stderr.flush() if sys.stderr else None
+    os._exit(code)

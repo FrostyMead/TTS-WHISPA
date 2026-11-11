@@ -417,7 +417,7 @@ class MeetingSession:
             raise RuntimeError(str(self.problems[0][1]) if self.problems
                                else "No audio source could be started")
         self.channels = [Channel(c) for c in started]
-        self._setup_speakers()
+        self._trackers = {}  # set up by the meeting thread: loading voiceprints takes seconds
         self.started = time.time()
         self.running = True
         self._thread = threading.Thread(target=self._run, name="meeting", daemon=True)
@@ -483,6 +483,10 @@ class MeetingSession:
 
     # -- work ------------------------------------------------------------
     def _run(self) -> None:
+        try:
+            self._setup_speakers()
+        except Exception:  # noqa: BLE001 - transcribe anyway, without telling voices apart
+            log.exception("Couldn't set up telling speakers apart")
         while not self._stop.is_set():
             t0 = time.monotonic()
             for ch in self.channels:
