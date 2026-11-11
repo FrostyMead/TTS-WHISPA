@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -43,6 +44,76 @@ VOICES = [
     ("bf_isabella", "Isabella · British"), ("bm_george", "George · British"),
     ("bm_fable", "Fable · British"), ("system", "System voice · no download"),
 ]
+MY_VOICE = "my:"  # voice ids for voices built from your recordings: "my:<folder name>"
+
+
+def my_voices() -> list[tuple[str, str]]:
+    """Voices built from your own Voice training recordings (<config>/voices/<name>/voice.onnx)."""
+    from . import config as config_mod
+
+    root = config_mod.config_dir() / "voices"
+    out = []
+    for d in sorted(root.iterdir()) if root.exists() else []:
+        if (d / "voice.onnx").is_file() and (d / "voice.onnx.json").is_file():
+            label = "My voice"
+            try:
+                info = json.loads((d / "info.json").read_text(encoding="utf-8"))
+                if info.get("label"):
+                    label = info["label"]
+            except (OSError, ValueError):
+                pass
+            out.append((MY_VOICE + d.name, f"{label} · from your recordings"))
+    return out
+
+
+def all_voices() -> list[tuple[str, str]]:
+    return my_voices() + VOICES
+
+
+class PiperVoice:
+    """A Piper (VITS) voice: the kind trained on your recordings. Small and fast on any CPU."""
+
+    PAD, BOS, EOS = "_", "^", "$"
+
+    def __init__(self, folder: Path, threads: int | None = None):
+        import onnxruntime as ort
+
+        self.folder = Path(folder)
+        self.config = json.loads((self.folder / "voice.onnx.json").read_text(encoding="utf-8"))
+        self.sample_rate = int(self.config["audio"]["sample_rate"])
+        self.id_map: dict[str, list[int]] = self.config["phoneme_id_map"]
+        inf = self.config.get("inference", {})
+        self.noise_scale = float(inf.get("noise_scale", 0.667))
+        self.length_scale = float(inf.get("length_scale", 1.0))
+        self.noise_w = float(inf.get("noise_w", 0.8))
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = threads or max(1, min(4, (os.cpu_count() or 4) // 2))
+        so.inter_op_num_threads = 1
+        so.enable_cpu_mem_arena = False
+        self.session = ort.InferenceSession(str(self.folder / "voice.onnx"), so,
+                                            providers=["CPUExecutionProvider"])
+        self.espeak = Espeak(self.config.get("espeak", {}).get("voice", "en-us"))
+
+    def ids(self, text: str) -> list[int]:
+        import unicodedata
+
+        phonemes = unicodedata.normalize("NFD", self.espeak.phonemize(text, kokoro=False))
+        m = self.id_map
+        out = [*m[self.BOS], *m[self.PAD]]
+        for ph in phonemes:
+            if ph in m:
+                out += [*m[ph], *m[self.PAD]]
+        return out + [*m[self.EOS]]
+
+    def synth(self, text: str, speed: float = 1.0) -> np.ndarray:
+        ids = self.ids(text)
+        feeds = {"input": np.array([ids], np.int64),
+                 "input_lengths": np.array([len(ids)], np.int64),
+                 "scales": np.array([self.noise_scale, self.length_scale / max(0.5, speed),
+                                     self.noise_w], np.float32)}
+        if "sid" in {i.name for i in self.session.get_inputs()}:
+            feeds["sid"] = np.array([0], np.int64)
+        return self.session.run(None, feeds)[0].reshape(-1).astype(np.float32)
 
 
 # --------------------------------------------------------------------------- espeak-ng
@@ -83,8 +154,9 @@ class Espeak:
                 out.append(res.decode("utf-8", "replace"))
         return " ".join(out)
 
-    def phonemize(self, text: str) -> str:
-        """IPA with stress marks; punctuation is kept (espeak drops it, Kokoro uses it)."""
+    def phonemize(self, text: str, kokoro: bool = True) -> str:
+        """IPA with stress marks; punctuation is kept (espeak drops it, the voices use it).
+        ``kokoro=False``: espeak's IPA as is (Piper voices are trained on exactly that)."""
         parts = []
         for piece in self._PUNCT.split(text):
             if not piece.strip():
@@ -95,6 +167,8 @@ class Espeak:
             else:
                 parts.append(self._clause_phonemes(piece.strip()))
         ps = "".join(parts).strip()
+        if not kokoro:
+            return re.sub(r"\s+", " ", ps)
         # Kokoro's own clean-ups for English espeak output.
         ps = ps.replace("ʲ", "j").replace("r", "ɹ").replace("x", "k").replace("ɬ", "l")
         ps = re.sub(r"(?<=[a-zɹː])(?=hˈʌndɹɪd)", " ", ps)
@@ -199,6 +273,7 @@ class Speaker:
         self.voice, self.speed, self.device = voice, speed, device
         self.on_state = on_state or (lambda s: None)  # "loading" | "speaking" | "idle" | "error:..."
         self._kokoro: Kokoro | None = None
+        self._piper: PiperVoice | None = None
         self._kokoro_failed = False
         self._preparing = False
         self._lock = threading.Lock()
@@ -256,6 +331,7 @@ class Speaker:
     def unload(self) -> None:
         with self._lock:
             self._kokoro = None
+            self._piper = None
 
     # -- internals -------------------------------------------------------
     def _current(self, gen: int) -> bool:
@@ -288,6 +364,17 @@ class Speaker:
 
     def _run(self, text: str, gen: int) -> None:
         try:
+            if self.voice.startswith(MY_VOICE):
+                try:
+                    self._run_piper(text, gen)
+                    return
+                except Exception as exc:  # noqa: BLE001 - deleted or broken voice
+                    log.exception("Your voice failed; using the system voice")
+                    if not self._current(gen):
+                        return
+                    self.on_state(f"error:Your voice couldn't play ({exc}); using the system voice")
+                    self._run_system(text, gen)
+                    return
             if (self.voice != "system" and not self._kokoro_failed and self._kokoro is None
                     and (self._preparing or not voice_downloaded(self.voice, self.device))):
                 # First use: speak right away with the system voice while the natural one
@@ -331,8 +418,6 @@ class Speaker:
         return k
 
     def _run_kokoro(self, text: str, gen: int) -> None:
-        import sounddevice as sd
-
         k = self._engine()
         pieces = k.pieces(text)
         audio_q: queue.Queue = queue.Queue(maxsize=2)  # generate one piece ahead, no more
@@ -351,7 +436,43 @@ class Speaker:
         self.engine = "natural"
         self.on_state("speaking")
         log.info("Read aloud: playing %d piece(s) with %s", len(pieces), self.voice)
-        with sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32") as out:
+        self._play(audio_q, SAMPLE_RATE, gen)
+
+    def _run_piper(self, text: str, gen: int) -> None:
+        from . import config as config_mod
+
+        name = self.voice[len(MY_VOICE):]
+        with self._lock:
+            v = self._piper if self._piper and self._piper.folder.name == name else None
+        if v is None:
+            self.on_state("loading")
+            v = PiperVoice(config_mod.config_dir() / "voices" / name)
+            with self._lock:
+                self._piper = v
+        pieces = split_sentences(text)
+        audio_q: queue.Queue = queue.Queue(maxsize=2)
+
+        def produce():
+            try:
+                for sentence in pieces:
+                    if not self._current(gen):
+                        break
+                    audio_q.put(v.synth(sentence, self.speed))
+            except Exception as exc:  # noqa: BLE001
+                audio_q.put(exc)
+            audio_q.put(None)
+
+        threading.Thread(target=produce, name="tts-gen", daemon=True).start()
+        self.engine = "natural"
+        self.on_state("speaking")
+        log.info("Read aloud: playing %d sentence(s) with your voice %s", len(pieces), name)
+        self._play(audio_q, v.sample_rate, gen)
+
+    def _play(self, audio_q: queue.Queue, sample_rate: int, gen: int) -> None:
+        """Play generated pieces as they arrive; pause, skip and stop react within 50 ms."""
+        import sounddevice as sd
+
+        with sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32") as out:
             while True:
                 item = audio_q.get()
                 if item is None or not self._current(gen):
@@ -359,7 +480,7 @@ class Speaker:
                 if isinstance(item, Exception):
                     raise item
                 self._skip = False
-                block = SAMPLE_RATE // 20  # 50 ms: stop, pause and skip react quickly
+                block = sample_rate // 20  # 50 ms: stop, pause and skip react quickly
                 for i in range(0, len(item), block):
                     while self.paused and self._current(gen):
                         self.level = 0.0
@@ -424,7 +545,7 @@ class Speaker:
     def _unload_when_idle(self) -> None:
         while True:
             time.sleep(30)
-            if (self._kokoro is not None and not self.speaking
+            if ((self._kokoro is not None or self._piper is not None) and not self.speaking
                     and time.monotonic() - self._last_used > IDLE_UNLOAD_S):
                 log.info("Unloading the reading voice (idle)")
                 self.unload()

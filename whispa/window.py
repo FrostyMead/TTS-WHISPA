@@ -779,11 +779,11 @@ class SettingsPage(QScrollArea):
         _section(lay, "Speech model").addWidget(self.speech_model)
 
         # Read aloud
-        from .speak import VOICES
+        from .speak import all_voices
 
         sec = _section(lay, "Read aloud")
         self.voice = QComboBox()
-        for vid, label in VOICES:
+        for vid, label in all_voices():
             self.voice.addItem(label, vid)
         self.voice.setCurrentIndex(max(0, self.voice.findData(cfg.read_voice)))
         self.voice.currentIndexChanged.connect(
@@ -891,6 +891,20 @@ class SettingsPage(QScrollArea):
         lay.addLayout(about)
         lay.addStretch(1)
         self._add_jump_links(lay)
+
+    def _refresh_voices(self) -> None:
+        """A voice trained on your recordings may have been installed since the window opened."""
+        from .speak import all_voices
+
+        voices = all_voices()
+        if [self.voice.itemData(i) for i in range(self.voice.count())] == [v for v, _ in voices]:
+            return
+        self.voice.blockSignals(True)
+        self.voice.clear()
+        for vid, label in voices:
+            self.voice.addItem(label, vid)
+        self.voice.setCurrentIndex(max(0, self.voice.findData(self.ctl.cfg.read_voice)))
+        self.voice.blockSignals(False)
 
     # -- jump links ------------------------------------------------------
     def _add_jump_links(self, lay: QVBoxLayout) -> None:
@@ -1059,6 +1073,7 @@ class SettingsPage(QScrollArea):
                 "computer instead." if reason else "")
             self.managed_note.setVisible(bool(reason))
         self.speech_model.refresh()
+        self._refresh_voices()
         ok, text = self.ctl.llm_status()
         self.llm_row_desc.setText(text)
         self.llm_row_desc.setObjectName("ok" if ok else "faint")
