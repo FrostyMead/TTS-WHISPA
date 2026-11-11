@@ -76,15 +76,18 @@ jobs:
           set -e
           xcodebuild -version
           xcrun --show-sdk-version
-          swiftc -O -target arm64-apple-macos13.0 -Xlinker -weak_framework -Xlinker FoundationModels             -o murmr-applellm mac/applellm.swift
+          swiftc -O -target arm64-apple-macos13.0 -Xlinker -weak_framework -Xlinker FoundationModels \
+            -o murmr-applellm mac/applellm.swift
           codesign --force --sign - murmr-applellm
           lipo -info murmr-applellm
       - name: Smoke test
         run: |
           set -e
-          out=$(printf '{"id":1,"op":"availability"}
-{"id":2,"op":"generate","instructions":"Reply with one word.","prompt":"Say hello"}
-' | ./murmr-applellm)
+          cat > req.jsonl <<'EOF'
+          {"id":1,"op":"availability"}
+          {"id":2,"op":"generate","instructions":"Reply with one word.","prompt":"Say hello"}
+          EOF
+          out=$(sed 's/^ *//' req.jsonl | ./murmr-applellm)
           echo "$out"
           echo "$out" | grep -q '"id":1'
           if echo "$out" | grep -q notBuilt; then echo "built without FoundationModels"; exit 1; fi
