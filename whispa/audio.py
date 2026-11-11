@@ -12,6 +12,41 @@ import sounddevice as sd
 log = logging.getLogger(__name__)
 
 TARGET_SR = 16000
+
+# PortAudio isn't thread-safe: opening, starting, stopping and closing streams (and listing
+# devices) from two threads at once can deadlock, notably on macOS. The mic, the chimes,
+# read-aloud and Voice training each use their own thread, so they all take turns here.
+# (Reading/writing audio on an open stream doesn't need it.)
+PA_LOCK = threading.RLock()
+
+
+class output_stream:
+    """``with output_stream(samplerate=...) as out:`` with PortAudio calls serialized."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.stream = None
+
+    def __enter__(self):
+        with PA_LOCK:
+            self.stream = sd.OutputStream(**self.kwargs)
+            self.stream.start()
+        return self
+
+    def write(self, data) -> None:
+        self.stream.write(data)
+
+    def abort(self) -> None:
+        with PA_LOCK:
+            self.stream.abort()
+
+    def __exit__(self, *exc) -> None:
+        with PA_LOCK:
+            try:
+                if self.stream.active:
+                    self.stream.stop()
+            finally:
+                self.stream.close()
 VOICE_SR = 24000  # high-quality copy of Voice training reads, for building a voice like yours
 
 
@@ -89,11 +124,12 @@ class Recorder:
         last_exc: Exception | None = None
         for sr in ((None, TARGET_SR) if self.high_quality else (TARGET_SR, None)):
             try:
-                if sr is None:  # device refuses 16 kHz: use its native rate, resample later
-                    sr = int(sd.query_devices(device, "input")["default_samplerate"])
-                stream = sd.InputStream(samplerate=sr, channels=1, dtype="float32",
-                                        device=device, latency="low", callback=self._callback)
-                stream.start()
+                with PA_LOCK:
+                    if sr is None:  # device refuses 16 kHz: use its native rate, resample later
+                        sr = int(sd.query_devices(device, "input")["default_samplerate"])
+                    stream = sd.InputStream(samplerate=sr, channels=1, dtype="float32",
+                                            device=device, latency="low", callback=self._callback)
+                    stream.start()
                 self._stream, self.samplerate = stream, sr
                 return
             except Exception as exc:  # noqa: BLE001
@@ -104,8 +140,11 @@ class Recorder:
     def _close(self) -> None:
         if self._stream is not None:
             try:
-                self._stream.stop()
-                self._stream.close()
+                with PA_LOCK:
+                    try:
+                        self._stream.stop()
+                    finally:
+                        self._stream.close()
             finally:
                 self._stream = None
                 self.level = 0.0
@@ -179,7 +218,9 @@ _NOT_A_MIC = ("stereo mix", "what u hear", "loopback", "monitor of", "line in", 
 def fallback_input_devices() -> list[int]:
     """Input devices ordered by how likely they are to be a working microphone."""
     devices = []
-    for i, dev in enumerate(sd.query_devices()):
+    with PA_LOCK:
+        all_devices = list(enumerate(sd.query_devices()))
+    for i, dev in all_devices:
         name = dev["name"].lower()
         if dev["max_input_channels"] < 1 or any(s in name for s in _NOT_A_MIC):
             continue
@@ -193,7 +234,8 @@ def resolve_device(spec) -> int | None:
     """Config value (index, name, or None) -> device index; None = system default."""
     if spec in (None, ""):
         return None
-    devices = sd.query_devices()
+    with PA_LOCK:
+        devices = sd.query_devices()
     if isinstance(spec, int):
         return spec if 0 <= spec < len(devices) and devices[spec]["max_input_channels"] > 0 else None
     spec_l = str(spec).lower()

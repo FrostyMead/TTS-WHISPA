@@ -47,9 +47,9 @@ class Sounds:
     @staticmethod
     def _play(clip: np.ndarray) -> None:
         try:
-            import sounddevice as sd
+            from .audio import output_stream
 
-            with sd.OutputStream(samplerate=SR, channels=1, dtype="float32") as out:
+            with output_stream(samplerate=SR, channels=1, dtype="float32") as out:
                 out.write(clip.reshape(-1, 1))
         except Exception as exc:  # noqa: BLE001
             log.debug("sound failed: %s", exc)

@@ -180,3 +180,52 @@ def test_mac_classify_pastes_when_unsure():
     assert mac_classify("AXButton", "", False, False, False, "Safari") is False  # copy card
     assert mac_classify("AXList", "", False, False, False, "Finder") is False
     assert mac_classify("AXScrollArea", "", False, False, False, "Finder") is False  # desktop
+
+
+def test_portaudio_calls_take_turns(monkeypatch):
+    """Opening/closing streams from two threads at once can deadlock PortAudio (macOS)."""
+    import threading
+    import time
+
+    from whispa import audio
+
+    active, overlap = [0], []
+
+    class FakeStream:
+        def __init__(self, **kw):
+            active[0] += 1
+            if active[0] > 1:
+                overlap.append(1)
+            time.sleep(0.01)
+            active[0] -= 1
+            self.active = True
+
+        def start(self):
+            pass
+
+        def stop(self):
+            active[0] += 1
+            if active[0] > 1:
+                overlap.append(1)
+            time.sleep(0.01)
+            active[0] -= 1
+
+        def close(self):
+            pass
+
+        def write(self, data):
+            pass
+
+    monkeypatch.setattr(audio.sd, "OutputStream", FakeStream)
+
+    def play():
+        for _ in range(5):
+            with audio.output_stream(samplerate=16000) as out:
+                out.write(b"")
+
+    threads = [threading.Thread(target=play) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not overlap

@@ -470,9 +470,9 @@ class Speaker:
 
     def _play(self, audio_q: queue.Queue, sample_rate: int, gen: int) -> None:
         """Play generated pieces as they arrive; pause, skip and stop react within 50 ms."""
-        import sounddevice as sd
+        from .audio import output_stream
 
-        with sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32") as out:
+        with output_stream(samplerate=sample_rate, channels=1, dtype="float32") as out:
             while True:
                 item = audio_q.get()
                 if item is None or not self._current(gen):

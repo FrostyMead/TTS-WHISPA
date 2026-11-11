@@ -171,6 +171,7 @@ class MurmrApp:
         self.live_timer.timeout.connect(self._poll_live)
         self._apply_action_hotkeys()
 
+        self._start_watchdog()
         self._build_tray()
         self.hotkeys.start()
         threading.Thread(target=self._load_model, name="model-load", daemon=True).start()
@@ -195,6 +196,50 @@ class MurmrApp:
     @staticmethod
     def _hint(hotkey: Hotkey) -> str:
         return f"Click or hold {hotkey.label()} to dictate · drag to move"
+
+    # -- freeze watchdog (watchdog.py) --------------------------------------
+    def _start_watchdog(self) -> None:
+        """If the main thread (tray, window, pill) freezes: record why, then restart."""
+        import faulthandler
+
+        from .watchdog import Watchdog
+
+        try:
+            self._crash_file = open(config_mod.config_dir() / "crash.log", "a",  # noqa: SIM115
+                                    encoding="utf-8")
+        except OSError:
+            self._crash_file = None
+
+        def freeze(lag: float) -> None:
+            log.error("Murmr has been frozen for %.0f s; thread stacks written to crash.log", lag)
+            if self._crash_file:
+                self._crash_file.write(f"\n=== frozen for {lag:.0f} s at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                self._crash_file.flush()
+                faulthandler.dump_traceback(self._crash_file, all_threads=True)
+
+        def restart(lag: float) -> None:
+            log.error("Still frozen after %.0f s: restarting Murmr", lag)
+            for h in logging.getLogger().handlers:
+                h.flush()
+            relaunch_detached()
+            os._exit(3)
+
+        self.watchdog = Watchdog(freeze, restart, dump_after=20, restart_after=85)
+        self._heartbeat = QTimer()
+        self._heartbeat.setInterval(1000)
+
+        def beat() -> None:
+            self.watchdog.beat()
+            if self._crash_file and sys.platform != "darwin":
+                # Last resort below Python's lock: if even the watchdog thread can't run,
+                # the fault handler records every stack and ends the process. (Not on macOS:
+                # its timer keeps counting while the Mac sleeps, so waking up would trip it.)
+                faulthandler.dump_traceback_later(100, exit=True, file=self._crash_file)
+
+        self._heartbeat.timeout.connect(beat)
+        self._heartbeat.start()
+        beat()
+        self.watchdog.start()
 
     # -- macOS permissions ------------------------------------------------
     def _check_mac_permissions(self) -> None:
@@ -1009,6 +1054,11 @@ class MurmrApp:
         self.qapp.quit()
 
     def shutdown(self) -> None:
+        import faulthandler
+
+        faulthandler.cancel_dump_traceback_later()
+        if getattr(self, "watchdog", None):
+            self.watchdog.stop()
         if self._speaker is not None:
             self._speaker.stop()
         self.hotkeys.stop()
@@ -1018,6 +1068,30 @@ class MurmrApp:
     def quit(self) -> None:
         self.shutdown()
         self.qapp.quit()
+
+
+def relaunch_detached() -> None:
+    """Start a new Murmr a moment after this process ends (used when it's frozen)."""
+    import shlex
+    import subprocess
+
+    from .shortcuts import MAC_APP, launcher, mac_app_usable
+
+    try:
+        if mac_app_usable():
+            subprocess.Popen(["/bin/sh", "-c", f'sleep 2; /usr/bin/open -n -a {shlex.quote(str(MAC_APP))} '
+                              "--args --background"], start_new_session=True)
+            return
+        exe, args = launcher()
+        if sys.platform == "win32":
+            line = subprocess.list2cmdline([exe, *args, "--background"])
+            subprocess.Popen(["cmd", "/c", f'timeout /t 2 /nobreak >nul & start "" {line}'],
+                             creationflags=0x08000000 | 0x00000008)  # no window, detached
+        else:
+            subprocess.Popen(["/bin/sh", "-c", f"sleep 2; exec {shlex.join([exe, *args, '--background'])}"],
+                             start_new_session=True)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Couldn't restart Murmr: %s", exc)
 
 
 class SingleInstance:

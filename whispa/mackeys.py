@@ -82,6 +82,7 @@ class KeyTap:
         self._stopped = False
         self._loop = None
         self._fn_down = False
+        self._mods_down: dict[str, tuple[set[str], int]] = {}  # sided name -> (names, generic flag)
         self._seen_fn = False
         self._seen_key = False
 
@@ -160,15 +161,35 @@ class KeyTap:
         """Key events have arrived: Input Monitoring is definitely allowed."""
         return self._seen_key
 
+    def _heal(self, flags: int) -> None:
+        """A modifier we think is held but macOS says isn't (a missed release, e.g. while the
+        tap was briefly disabled): release it, so shortcuts don't misbehave."""
+        for sided, (names, generic) in list(self._mods_down.items()):
+            if not flags & generic:
+                del self._mods_down[sided]
+                log.info("Released stuck key %s", sided)
+                self.on_release(names, sided)
+        if self._fn_down and not flags & FN_FLAG:
+            self._fn_down = False
+            self.on_release({"fn"}, "fn")
+
     def _handle(self, etype: int, code: int, flags: int) -> None:
         if not self._seen_key:
             self._seen_key = True
             log.info("Keyboard events are arriving")
+        if etype in (KEY_DOWN, FLAGS_CHANGED) and code not in _MODIFIERS and code not in (63, 179):
+            self._heal(flags)
         if etype == FLAGS_CHANGED:
             change = modifier_change(code, flags, self._fn_down)
             if change is None:
                 return
             kind, names, primary = change
+            if code in _MODIFIERS:
+                if kind == "press":
+                    self._mods_down[primary] = (names, _MODIFIERS[code][3])
+                else:
+                    self._mods_down.pop(primary, None)
+                self._heal(flags)  # also catches the other side's missed release
             if primary == "fn":
                 self._fn_down = kind == "press"
                 if not self._seen_fn:
