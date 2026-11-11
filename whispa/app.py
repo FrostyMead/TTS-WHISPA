@@ -96,6 +96,10 @@ class MurmrApp:
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asr")
         self.polisher = Polisher(cfg.llm_cleanup)
         cdir = config_mod.config_dir()
+        from .privacy import finish_pending_delete
+
+        finish_pending_delete()
+        threading.Thread(target=self.managed_reason, name="managed-check", daemon=True).start()
         self.dictionary = Dictionary(cdir / "dictionary.json")
         self.training = (TrainingStore(cdir / "training", cfg.training_max_mb)
                          if cfg.save_training_audio else None)
@@ -366,7 +370,7 @@ class MurmrApp:
             if text:
                 self._deliver(text)
                 # The label is what was heard (the audio doesn't contain AI edits or snippets).
-                sample = self.training.add(audio, sr, raw) if self.training else None
+                sample = self.training.add(audio, sr, raw) if self._keep_sample() else None
                 self._remember(raw, text, len(audio) / sr)
                 self._watch_edits(text, sample)
             self.bridge.done.emit(text)
@@ -738,6 +742,9 @@ class MurmrApp:
                 self.recorder.shutdown()
                 if value:
                     self._safe_open_mic()
+        elif key == "training_excluded_apps":
+            if isinstance(value, str):
+                value = [a.strip() for a in value.split(",") if a.strip()]
         elif key == "save_training_audio":
             self.training = (TrainingStore(config_mod.config_dir() / "training", cfg.training_max_mb)
                              if value else None)
@@ -784,6 +791,46 @@ class MurmrApp:
         store = self.training or TrainingStore(config_mod.config_dir() / "training")
         store.delete_all()
         log.info("Deleted all voice samples")
+
+    # Your voice (privacy.py) ---------------------------------------------------
+    def _keep_sample(self) -> bool:
+        """Keep this dictation's audio for training? Never from password fields or excluded apps."""
+        from .privacy import excluded
+
+        f = self._focus
+        if self.training is None or f.is_password:
+            return False
+        if excluded(f.app, self.cfg.training_excluded_apps):
+            log.info("Not keeping the recording: %s is on the excluded list", f.app)
+            return False
+        return True
+
+    def voice_storage(self) -> dict:
+        from .privacy import storage
+
+        return storage()
+
+    def managed_reason(self) -> str:
+        if not hasattr(self, "_managed"):
+            from .privacy import managed_device
+
+            self._managed = managed_device()
+        return self._managed
+
+    def delete_all_voice(self) -> bool:
+        """Delete every recording, tuned model and voice. True if Murmr should restart."""
+        from .privacy import delete_everything
+
+        if self._reading_store_ref() is not None:
+            self._reading_store_ref().delete_all()
+        restart = delete_everything(self.cfg)
+        if self.cfg.save_training_audio:
+            self.training = TrainingStore(config_mod.config_dir() / "training", self.cfg.training_max_mb)
+        self._reading_store = None
+        return restart
+
+    def _reading_store_ref(self):
+        return self.training or getattr(self, "_reading_store", None)
 
     # Voice training page (voice_training.py) ----------------------------------
     def training_store(self) -> TrainingStore:

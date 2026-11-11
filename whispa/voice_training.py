@@ -467,7 +467,19 @@ class VoiceTrainingPage(QScrollArea):
             note += " You've read every sentence once; this is a second round."
         self.progress_note.setText(f"{note}  {left} sentences in the queue.")
 
+    def _consented(self) -> bool:
+        cfg = self.ctl.cfg
+        return bool(cfg.save_training_audio or getattr(cfg, "voice_clone", False))
+
     def _show_prompt(self) -> None:
+        if not self._consented():
+            self.sentence.setText("First choose what your recordings are for: Settings → Your "
+                                  "voice → “Improve recognition with my voice” and/or “Create a "
+                                  "voice that sounds like me”. They stay on this computer.")
+            self.tag.setVisible(False)
+            self.record.setEnabled(False)
+            self.skip.setEnabled(False)
+            return
         p = self._queue.current if self._queue else None
         if p is None:
             self.sentence.setText("No sentences left. Add words to your Dictionary for more.")
@@ -483,7 +495,8 @@ class VoiceTrainingPage(QScrollArea):
 
     # -- recording --------------------------------------------------------
     def start_take(self) -> None:
-        if self._state in ("recording", "checking") or not self._queue or not self._queue.current:
+        if (self._state in ("recording", "checking") or not self._queue or not self._queue.current
+                or not self._consented()):
             return
         try:
             if self._recorder is None:

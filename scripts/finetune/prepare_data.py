@@ -16,6 +16,7 @@ your Murmr folder. Which clips are used:
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 import wave
@@ -63,6 +64,14 @@ def main() -> None:
     if args.synthetic:
         items = from_synthetic(args.synthetic)
     else:
+        cfg_path = whispa_dir() / "config.json"
+        try:
+            consent = json.loads(cfg_path.read_text(encoding="utf-8")).get("save_training_audio", False)
+        except (OSError, ValueError):
+            consent = False
+        if not consent:
+            raise SystemExit("Turn on Settings > Your voice > \"Improve recognition with my voice\" "
+                             "in Murmr first: recordings are only used for training with your OK.")
         statuses = {"read", "corrected"} | ({"unedited"} if args.include_unedited else set())
         items = from_whispa(args.source or whispa_dir() / "training", statuses)
 

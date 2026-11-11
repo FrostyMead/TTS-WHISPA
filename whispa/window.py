@@ -727,21 +727,50 @@ class SettingsPage(QScrollArea):
                                        "window you're typing into (an email thread, a chat), so "
                                        "they come out spelled the same way. Read on this computer "
                                        "only, never saved."))
+
+        # Your voice: opt-ins, exclusions, what's stored, delete everything (privacy.py)
+        sec = _section(lay, "Your voice")
+        promise = Label("🔒  Your voice stays on this computer. Murmr never uploads your "
+                        "recordings, transcripts or voice models, and training runs on your own "
+                        "computer. Nothing is sent to the developer.")
+        promise.setObjectName("muted")
+        promise.setWordWrap(True)
+        promise.setContentsMargins(0, 12, 0, 6)
+        sec.addWidget(promise)
+        self.managed_note = Label()
+        self.managed_note.setObjectName("error")
+        self.managed_note.setWordWrap(True)
+        self.managed_note.setVisible(False)
+        sec.addWidget(self.managed_note)
+        sec.addWidget(self._switch_row("save_training_audio", "Improve recognition with my voice",
+                                       "Keep your dictations' audio (and your Voice training "
+                                       "reading) to tune the speech model to your voice and "
+                                       "accent."))
+        sec.addWidget(self._switch_row("voice_clone", "Create a voice that sounds like me",
+                                       "Use your Voice training reading to build a read-aloud "
+                                       "voice like yours. Only from sentences you read live, "
+                                       "never from other recordings."))
+        self.excluded_apps = QLineEdit(", ".join(cfg.training_excluded_apps))
+        self.excluded_apps.setMinimumWidth(280)
+        self.excluded_apps.setCursorPosition(0)  # show the start of the list
+        self.excluded_apps.editingFinished.connect(
+            lambda: self._set("training_excluded_apps", self.excluded_apps.text()))
+        sec.addWidget(setting_row("Never keep recordings from",
+                                  "Apps where nothing you say is kept, comma separated. Password "
+                                  "fields are always skipped.", self.excluded_apps))
         self.samples_info = Label()
         self.samples_info.setObjectName("faint")
         self.samples_info.setWordWrap(True)
-        self.samples_delete = QPushButton("Delete samples")
+        self.samples_delete = QPushButton("Delete everything about my voice")
         self.samples_delete.clicked.connect(self._delete_samples)
-        sec.addWidget(self._switch_row("save_training_audio", "Keep voice samples",
-                                       "Save recordings with their corrected text, to tune the "
-                                       "speech model to your voice later. Stored only on this "
-                                       "computer."))
-
+        folder_btn = QPushButton("Open folder")
+        folder_btn.clicked.connect(ctl.open_folder)
         samples = QHBoxLayout()
+        samples.setContentsMargins(0, 10, 0, 12)
         samples.addWidget(self.samples_info, 1)
-        samples.addWidget(self.samples_delete)
+        samples.addWidget(folder_btn, 0, Qt.AlignmentFlag.AlignTop)
+        samples.addWidget(self.samples_delete, 0, Qt.AlignmentFlag.AlignTop)
         sec.addLayout(samples)
-        sec.addSpacing(10)
 
         # Speech model: base or tuned to your voice (speech_model.py)
         from .speech_model import SpeechModelSection
@@ -1002,22 +1031,33 @@ class SettingsPage(QScrollArea):
     def _delete_samples(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
-        if QMessageBox.question(self, "Delete voice samples",
-                                "Delete all saved voice samples? This can't be undone.") \
-                == QMessageBox.StandardButton.Yes:
-            self.ctl.delete_training()
-            self.refresh()
+        if QMessageBox.question(
+                self, "Delete everything about my voice",
+                "Delete all your recordings, tuned speech models and voices from this computer? "
+                "This can't be undone.") != QMessageBox.StandardButton.Yes:
+            return
+        if self.ctl.delete_all_voice():
+            QMessageBox.information(self, "Murmr", "Deleted. Murmr restarts to use the standard "
+                                    "speech model again.")
+            self.ctl.restart()
+            return
+        self.refresh()
 
     def refresh(self) -> None:
-        st = self.ctl.training_stats()
-        if st:
-            minutes = st["seconds"] / 60
-            self.samples_info.setText(
-                f"{st['clips']} clips · {minutes:.0f} min of speech · {st['bytes'] / 1e6:.0f} MB · "
-                f"{st['corrected']} corrected by you. When the limit "
-                f"({self.ctl.cfg.training_max_mb / 1000:g} GB) is reached, the oldest uncorrected "
-                "clips are removed first.")
-            self.samples_delete.setEnabled(st["clips"] > 0)
+        if hasattr(self.ctl, "voice_storage"):
+            v = self.ctl.voice_storage()
+            parts = [f"{v['clips']} recordings ({v['seconds'] / 60:.0f} min)"]
+            parts.append(f"{v['models']} tuned speech model{'s' if v['models'] != 1 else ''}")
+            parts.append(f"{v['voices']} voice{'s' if v['voices'] != 1 else ''}")
+            self.samples_info.setText("On this computer: " + " · ".join(parts)
+                                      + f" · {v['bytes'] / 1e6:.0f} MB in total.")
+            self.samples_delete.setEnabled(bool(v["clips"] or v["models"] or v["voices"]))
+            reason = self.ctl.managed_reason()
+            self.managed_note.setText(
+                f"This looks like a work computer ({reason}). Recordings could contain "
+                "confidential work information; consider keeping your voice data on a personal "
+                "computer instead." if reason else "")
+            self.managed_note.setVisible(bool(reason))
         self.speech_model.refresh()
         ok, text = self.ctl.llm_status()
         self.llm_row_desc.setText(text)

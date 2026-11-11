@@ -154,6 +154,7 @@ class FakeRecorder:
 class FakeController:
     def __init__(self, tmp_path):
         self.cfg = Config()
+        self.cfg.save_training_audio = True  # opted in (the page needs it)
         self.dictionary = Dictionary(tmp_path / "dictionary.json")
         self.dictionary.add_term("Siobhan")
         self.store = TrainingStore(tmp_path / "training")
@@ -232,3 +233,20 @@ def test_skip(page):
     first = page._queue.current.text
     page.skip_prompt()
     assert page._queue.current.text != first and page._queue.items[-1].text == first
+
+
+def test_page_records_nothing_without_consent(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    ctl = FakeController(tmp_path)
+    ctl.cfg.save_training_audio = False
+    ctl.cfg.voice_clone = False
+    rec = FakeRecorder()
+    p = VoiceTrainingPage(ctl, recorder_factory=lambda: rec)
+    ctl.page = p
+    p.refresh()
+    assert not p.record.isEnabled() and "Your voice" in p.sentence.text()
+    p.start_take()  # e.g. holding Space
+    assert p._state == "idle" and not ctl.store.manifest.exists()  # nothing saved
+    ctl.cfg.voice_clone = True  # either opt-in is enough
+    p.refresh()
+    assert p.record.isEnabled()
