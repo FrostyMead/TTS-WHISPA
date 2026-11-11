@@ -1,0 +1,36 @@
+# Builds Whispa.app's small native launcher (mac/launcher.c) as a universal binary.
+# The result is committed as whispa/resources/WhispaLauncher, so installs don't need
+# Xcode. Run it (Actions tab or `gh workflow run mac-launcher.yml`) after changing the source.
+name: macOS launcher
+
+on:
+  push:
+    branches: [main]
+    paths: ["mac/**", "whispa/resources/WhispaLauncher", ".github/workflows/mac-launcher.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          clang -O2 -Wall -Werror -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
+            -o WhispaLauncher mac/launcher.c
+          lipo -info WhispaLauncher
+      - name: Smoke test
+        run: |
+          set -e
+          app=/tmp/T.app
+          mkdir -p $app/Contents/MacOS $app/Contents/Resources
+          cp WhispaLauncher $app/Contents/MacOS/T
+          printf '/bin/sh\n-c\necho "bundle=$WHISPA_BUNDLE args=$*"; exit 3\nsh\n' > $app/Contents/Resources/command
+          out=$($app/Contents/MacOS/T one "two words" -psn_0_1 || echo "exit=$?")
+          echo "$out"
+          echo "$out" | grep -q 'bundle=1 args=one two words'
+          echo "$out" | grep -q 'exit=3'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WhispaLauncher
+          path: WhispaLauncher
