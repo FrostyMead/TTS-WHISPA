@@ -458,6 +458,10 @@ class Overlay(QWidget):
         if sys.platform != "darwin" or self._mac_tweaked:
             return
         self._mac_tweaked = True
+        # winId() is only an NSView* on the real macOS ("cocoa") platform; treating any other
+        # handle (offscreen, minimal) as one crashes the process outright.
+        if QGuiApplication.platformName() != "cocoa":
+            return
         try:
             import objc
             from AppKit import (NSStatusWindowLevel, NSWindowCollectionBehaviorCanJoinAllSpaces,
