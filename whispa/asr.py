@@ -12,6 +12,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")  # nothing about you leaves this machine
 
 _PROVIDERS = {
     "cuda": ("CUDAExecutionProvider", "CUDA"),

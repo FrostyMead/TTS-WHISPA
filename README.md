@@ -77,6 +77,7 @@ Launch at login starts Whispa quietly in the tray (`--background`).
 | Push-to-talk | hold **Ctrl+Win** (Ctrl+Super), release to insert | hold **fn** |
 | Hands-free | while holding, tap **Space**, or **double-tap** the hotkey. Press the hotkey again to finish | same |
 | Cancel | **Esc** | **Esc** |
+| Command Mode | select text, hold **Ctrl+Alt+Win** and say what to do | hold **fn+⌃** |
 | Mouse | click the idle pill to start hands-free. In hands-free, ✕ cancels and ■ finishes | same |
 | Move the pill | drag it anywhere; it snaps to the nearest corner or edge centre and remembers the spot (also in Settings → Pill position). On the left/right edge it stands upright | same |
 
@@ -134,6 +135,27 @@ Detection uses UI Automation on Windows and the Accessibility API on macOS. Linu
   back. Otherwise the plain transcript is used. Compare models yourself:
   `python scripts/bench_llm.py gemma3:4b llama3.2:3b`.
 
+### Command Mode: edit text with your voice
+Select text in any app, hold the Command Mode shortcut and say what to do. Whispa reads the
+selection, the local AI (Ollama, same model as AI clean-up) rewrites it, and the result replaces
+the selection. Ctrl+Z undoes it. While you're giving a command the pill turns violet.
+
+- "make this more professional", "fix the grammar", "make it shorter"
+- "turn this into bullet points", "translate to Spanish", "summarize this in one sentence"
+- **nothing selected**: it writes what you ask for at the cursor ("write a short reply saying
+  I'll be ten minutes late")
+- **selected text you can't edit** (a web page): the result appears in the copy card
+
+The selection is read through accessibility (UI Automation / AX) when possible, otherwise copied
+with Ctrl/Cmd+C (your clipboard is restored; terminals are skipped because Ctrl+C would
+interrupt). Typically 0.3–0.9 s on an RTX 3070 Ti. Command results are marked ✦ in your history.
+
+### Snippets
+Dictionary → Snippets: pick a trigger phrase ("my email", "my calendly link", "my sign off") and
+the text to insert, which can be several lines. Say the trigger alone or inside a sentence ("send
+it to my email") and Whispa inserts the saved text. The AI clean-up never sees or changes
+snippet text. Pick phrases you wouldn't say by accident.
+
 ### Personalization: it learns from your fixes
 After pasting, Whispa watches that text field for up to 45 s (until you send, switch fields, or
 start a new dictation). If you fix a misheard word, it learns the fix and the pill shows
@@ -148,8 +170,11 @@ Everything is stored in `dictionary.json` (tray → **Open personal dictionary**
 `terms` there (names, product words): near-misses snap to your spelling, and the LLM is told to
 prefer them. Hand edits are picked up immediately.
 
-**Your voice:** each dictation's audio and final text, including your corrections, is saved to
-`training/` (up to `training_max_mb`). That's the dataset needed to fine-tune Parakeet on your
+**Your voice:** each dictation's audio is saved to `training/` with what Parakeet heard plus any
+word fixes you made afterwards (not the AI-polished or snippet text, which the audio doesn't
+contain). Each clip is marked *corrected*, *unedited* or *unknown*. About 1.9 MB per minute of
+speech; at `training_max_mb` (2 GB, about 17 hours) the oldest uncorrected clips are removed first.
+Settings shows how much you have and has a Delete button. That's the dataset needed to fine-tune Parakeet on your
 voice and accent with NVIDIA NeMo, which is the real way to "learn how you sound". It needs a few
 hours of your speech and is a separate, heavier step (Linux/WSL + GPU). Turn collection off with
 `save_training_audio: false`.

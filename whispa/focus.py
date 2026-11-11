@@ -39,7 +39,9 @@ class Focus:
     is_text: bool | None = None
     app: str = ""
     is_password: bool = False
+    is_terminal: bool = False
     _read: Callable[[], str | None] | None = field(default=None, repr=False)
+    _selection: Callable[[], str | None] | None = field(default=None, repr=False)
     _same: Callable[["Focus"], bool] | None = field(default=None, repr=False)
     _handle: Any = field(default=None, repr=False)
 
@@ -56,6 +58,17 @@ class Focus:
             log.debug("read_text failed: %s", exc)
             return None
         return text if text is None or len(text) <= MAX_READ else None
+
+    def read_selection(self) -> str | None:
+        """The selected text, read through accessibility (no clipboard). None if unknown."""
+        if self._selection is None or self.is_password:
+            return None
+        try:
+            text = _call(self._selection)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("read_selection failed: %s", exc)
+            return None
+        return text if text and len(text) <= MAX_READ else None
 
     def same_element(self, other: "Focus") -> bool:
         try:
@@ -210,8 +223,20 @@ def _win_inspect() -> Focus:
         u, _ = _uia()
         return bool(u.CompareElements(el, other._handle))
 
+    def selection() -> str | None:
+        text = _pattern(el, U.UIA_TextPatternId, U.IUIAutomationTextPattern)
+        if text is None:
+            return None
+        ranges = text.GetSelection()
+        if ranges is None or ranges.Length == 0:
+            return None
+        parts = [ranges.GetElement(i).GetText(MAX_READ + 1) for i in range(ranges.Length)]
+        return "\n".join(p for p in parts if p) or None
+
     return Focus(is_text=is_text, app=app, is_password=is_password,
-                 _read=read if is_text is not False else None, _same=same, _handle=el)
+                 is_terminal=(el.CurrentClassName or "") in _TERMINAL_CLASSES,
+                 _read=read if is_text is not False else None, _selection=selection,
+                 _same=same, _handle=el)
 
 
 # --------------------------------------------------------------------------- macOS
@@ -252,5 +277,9 @@ def _mac_inspect() -> Focus:
     def same(other: Focus) -> bool:
         return bool(el == other._handle)
 
+    def selection() -> str | None:
+        v = attr("AXSelectedText")
+        return str(v) if v else None
+
     return Focus(is_text=is_text, app=app, is_password=subrole == "AXSecureTextField",
-                 _read=read if is_text else None, _same=same, _handle=el)
+                 _read=read if is_text else None, _selection=selection, _same=same, _handle=el)

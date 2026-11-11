@@ -45,6 +45,41 @@ EXAMPLES = [
 ]
 
 
+COMMAND_EDIT_PROMPT = """You are the editing assistant of a voice dictation app. The user selected some text and spoke an instruction about it (e.g. "make this more formal", "fix the grammar", "turn this into bullet points", "translate to Spanish", "shorten this").
+
+Apply the instruction to the selected text and output ONLY the resulting text, which will replace the selection.
+- No preamble ("Here is..."), no quotes around it, no explanations, no notes.
+- Keep the original language unless the instruction asks for a translation.
+- Keep the meaning and facts. Don't add information that isn't there unless asked.
+- The selection is often part of a longer message: don't add greetings (\"Dear team\"), sign-offs, subject lines or headings unless the instruction asks for them.
+- Keep the formatting style (line breaks, lists) unless the instruction changes it.
+- If the instruction is a question about the text (e.g. "summarize this", "what does this mean"), output just the answer."""
+
+COMMAND_WRITE_PROMPT = """You are the writing assistant of a voice dictation app. The user spoke an instruction (e.g. "write a short reply saying I'll be ten minutes late", "draft a polite no to the meeting invite", "give me three subject lines for a launch email").
+
+Write exactly what they asked for. Output ONLY the text to insert at their cursor: no preamble ("Sure, here's..."), no quotes, no explanations. Keep it concise and natural unless they ask for something long. Never use placeholders like [Your Name] or [Date]: leave the name off a sign-off, and write around unknown details. If they ask a question, output just the answer."""
+
+_PREAMBLE = re.compile(r"^(?:sure[,!.]?\s*)?(?:here(?:'s| is| are)\b[^\n]*?:|okay[,!.]?|certainly[,!.]?)\s*\n+",
+                       re.IGNORECASE)
+
+
+def clean_command_output(out: str, selection: str | None) -> str:
+    """Strip the chatty wrappers small models add ("Here's the revised text:", quotes, fences)."""
+    out = out.strip()
+    out = re.sub(r"^```[a-zA-Z]*\n(.*?)\n```$", r"\1", out, flags=re.DOTALL).strip()
+    out = _PREAMBLE.sub("", out, count=1).strip()
+    for a, b in (('"', '"'), ("“", "”")):
+        quotes = out.count(a) if a == b else out.count(a) + out.count(b)
+        if len(out) > 1 and out.startswith(a) and out.endswith(b) and quotes == 2 \
+                and not (selection or "").strip().startswith(a):
+            out = out[1:-1].strip()
+    if "’" not in (selection or "") and "‘" not in (selection or ""):
+        out = out.replace("’", "'").replace("‘", "'")
+    # Markdown bullets ("*   item") read badly as plain text: use "- item".
+    out = re.sub(r"(?m)^[ 	]*[*•][ 	]+", "- ", out)
+    return out
+
+
 # --- "Only when needed": cheap checks for transcripts that probably need the LLM -------
 _CORRECTION_CUES = re.compile(
     r"\b(?:no,? wait|wait,? no|no,? no|i mean|i meant|sorry,? i mean|or rather|"
@@ -149,6 +184,11 @@ class Polisher:
             return False
         if mode is True or mode == "on":
             return True
+        return self.reachable(wait)
+
+    def reachable(self, wait: bool = False) -> bool:
+        """Is the local model server up with the model pulled? (Ignores the clean-up setting,
+        so Command Mode works even when dictation clean-up is off.)"""
         stale = self.available is None or (
             not self.available and time.monotonic() - self._checked_at > 120)
         if stale:
@@ -304,20 +344,35 @@ class Polisher:
         return msgs
 
     def _complete(self, text: str, app: str, terms: list[str], timeout: float | None = None) -> str:
-        msgs = self._messages(text, app, terms)
+        return self._chat(self._messages(text, app, terms), timeout or self.cfg.timeout_s, 0.1)
+
+    # -- Command Mode ------------------------------------------------------------
+    def command(self, instruction: str, selection: str | None, *, app: str = "") -> str:
+        """Apply a spoken instruction to the selected text, or write new text if nothing is
+        selected. Returns the text to insert (may raise on errors / timeouts)."""
+        system = COMMAND_EDIT_PROMPT if selection else COMMAND_WRITE_PROMPT
+        if app:
+            system += f"\n\nThe user is working in: {app}."
+        user = (f"<instruction>{instruction}</instruction>\n<selected_text>\n{selection}\n</selected_text>"
+                if selection else f"<instruction>{instruction}</instruction>")
+        msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        timeout = 20 + (len(selection or "") / 40)  # long selections take longer to rewrite
+        return clean_command_output(self._chat(msgs, timeout, 0.3), selection)
+
+    def _chat(self, msgs: list[dict], timeout: float, temperature: float) -> str:
         base = self.cfg.base_url.rstrip("/")
         if self.is_ollama:
             url = base + "/api/chat"
             body = {"model": self.cfg.model, "messages": msgs, "stream": False, "think": False,
-                    "keep_alive": self.cfg.keep_alive, "options": {"temperature": 0.1}}
+                    "keep_alive": self.cfg.keep_alive, "options": {"temperature": temperature}}
         else:
             url = base + "/chat/completions"
-            body = {"model": self.cfg.model, "messages": msgs, "temperature": 0.1}
+            body = {"model": self.cfg.model, "messages": msgs, "temperature": temperature}
         headers = {"Content-Type": "application/json"}
         if self.cfg.api_key:
             headers["Authorization"] = f"Bearer {self.cfg.api_key}"
         req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout or self.cfg.timeout_s) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.load(resp)
         if self.is_ollama:
             return data["message"]["content"]

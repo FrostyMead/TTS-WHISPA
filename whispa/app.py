@@ -35,7 +35,7 @@ log = logging.getLogger("whispa")
 class Bridge(QObject):
     """Signals let the keyboard-hook and worker threads talk to the Qt main thread."""
 
-    start = Signal()
+    start = Signal(str)  # mode: "dictate" | "command"
     stop = Signal()
     cancel = Signal(bool)
     lock = Signal()
@@ -75,7 +75,8 @@ class WhispaApp:
         self.transcriber = Transcriber(cfg.model, cfg.device, cfg.quantization)
         self.sm = PTTStateMachine(
             hotkey, hands_free_key=cfg.hands_free_key or None, double_tap=cfg.double_tap_to_lock,
-            on_start=self.bridge.start.emit, on_stop=self.bridge.stop.emit,
+            command_hotkey=self._parse_command_hotkey(cfg.command_hotkey, hotkey),
+            on_start=lambda: self.bridge.start.emit(self.sm.mode), on_stop=self.bridge.stop.emit,
             on_cancel=self.bridge.cancel.emit, on_lock=self.bridge.lock.emit)
         self.hotkeys = HotkeyService(self.sm)
         self.injector = Injector(cfg.paste_method, cfg.paste_shortcut, cfg.restore_clipboard,
@@ -84,11 +85,13 @@ class WhispaApp:
         self.polisher = Polisher(cfg.llm_cleanup)
         cdir = config_mod.config_dir()
         self.dictionary = Dictionary(cdir / "dictionary.json")
-        self.training = TrainingStore(cdir / "training", cfg.training_max_mb)             if cfg.save_training_audio else None
+        self.training = (TrainingStore(cdir / "training", cfg.training_max_mb)
+                         if cfg.save_training_audio else None)
         self.watcher = CorrectionWatcher(
             self.dictionary,
             on_learned=lambda cs: self.bridge.learned.emit(", ".join(c.meant for c in cs)),
-            on_final=self.training.update_text if self.training else None)
+            on_final=self._review_sample)
+        self.mode = "dictate"
         self.card = CopyCard()
 
         self.overlay = Overlay(lambda: self.recorder.level, self._hint(hotkey), cfg.show_idle_pill,
@@ -119,6 +122,21 @@ class WhispaApp:
         self._build_tray()
         self.hotkeys.start()
         threading.Thread(target=self._load_model, name="model-load", daemon=True).start()
+
+    @staticmethod
+    def _parse_command_hotkey(spec: str, dictate: Hotkey) -> Hotkey | None:
+        if not spec:
+            return None
+        try:
+            hk = Hotkey.parse(spec)
+        except ValueError as exc:
+            log.error("Command Mode hotkey %r: %s", spec, exc)
+            return None
+        return None if hk == dictate else hk
+
+    def _review_sample(self, sample_id: str, corrections) -> None:
+        if self.training is not None:
+            self.training.record_review(sample_id, corrections)
 
     @staticmethod
     def _hint(hotkey: Hotkey) -> str:
@@ -154,9 +172,16 @@ class WhispaApp:
                               QSystemTrayIcon.MessageIcon.Critical, 8000)
 
     # -- recording lifecycle ----------------------------------------------
-    def _on_start(self) -> None:
+    def _on_start(self, mode: str = "dictate") -> None:
         if self.recording:
             return
+        self.watcher.finish()  # a new dictation ends the edit-watch of the previous one
+        if mode == "command" and not self.polisher.reachable():
+            self.sm.reset()
+            self.sounds.play("error")
+            self.overlay.flash("Command Mode needs the local AI (Ollama)", error=True, seconds=3)
+            return
+        self.mode = mode
         try:
             self.recorder.start()
         except Exception as exc:  # noqa: BLE001
@@ -167,6 +192,7 @@ class WhispaApp:
             return
         self.recording = True
         self.polisher.prewarm()  # load the AI model while you talk (no-op if it's loaded)
+        self.overlay.set_mode(mode)
         self.overlay.set_state("listening")
         self.tray.setIcon(tray_icon(True))
         self.sounds.play("start")
@@ -188,7 +214,8 @@ class WhispaApp:
         self.sounds.play("stop")
         self.pending += 1
         self.overlay.set_state("transcribing")
-        self.worker.submit(self._process, audio, sr)
+        job = self._process_command if self.mode == "command" else self._process
+        self.worker.submit(job, audio, sr)
 
     def _on_cancel(self, silent: bool) -> None:
         if not self.recording:
@@ -216,13 +243,47 @@ class WhispaApp:
                      self.transcriber.backend)
             if text:
                 self._deliver(text)
-                sample = self.training.add(audio, sr, text) if self.training else None
+                # The label is what was heard (the audio doesn't contain AI edits or snippets).
+                sample = self.training.add(audio, sr, raw) if self.training else None
                 self._remember(raw, text, len(audio) / sr)
                 self._watch_edits(text, sample)
             self.bridge.done.emit(text)
         except Exception as exc:  # noqa: BLE001
             log.exception("Transcription failed")
             self.bridge.failed.emit(str(exc))
+
+    def _process_command(self, audio, sr) -> None:
+        """Command Mode: the recording is an instruction for the selected text."""
+        try:
+            if not self.transcriber.ready.wait(timeout=300):
+                raise RuntimeError("Speech model is still loading")
+            t0 = time.perf_counter()
+            instruction = textproc.process(self.transcriber.transcribe(audio, sr), commands=False)
+            if not instruction:
+                self.bridge.done.emit("")
+                return
+            self.hotkeys.wait_for_modifiers_released()
+            self._focus = f = focus.inspect()
+            selection = f.read_selection()
+            if selection is None and not f.is_terminal:  # Ctrl+C in a terminal would interrupt
+                selection = self.injector.copy_selection()
+            log.info("Command %r on %s (%d chars selected)", instruction, f.app or "?",
+                     len(selection or ""))
+            result = self.polisher.command(instruction, selection, app=f.app)
+            if not result.strip():
+                raise RuntimeError("The AI returned nothing")
+            log.info("Command done in %.0f ms", (time.perf_counter() - t0) * 1000)
+            if f.is_text is False:
+                # Selected text you can't edit (a web page...): show the result to copy.
+                self.injector.copy(result)
+                self.bridge.show_card.emit(result)
+            else:
+                self.injector.inject(result)  # replaces the selection, or inserts at the cursor
+            self._remember(instruction, result, len(audio) / sr, command=instruction)
+            self.bridge.done.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Command failed")
+            self.bridge.failed.emit(f"Command failed: {exc}")
 
     def _clean(self, raw: str) -> str:
         self.hotkeys.wait_for_modifiers_released()
@@ -232,9 +293,16 @@ class WhispaApp:
         text = textproc.process(raw, fillers=self.cfg.remove_fillers,
                                 commands=self.cfg.voice_commands,
                                 replacements=replacements, terms=terms)
-        text = self.polisher.polish(text, app=self._focus.app, terms=terms)
+        snippets = self.dictionary.snippets_snapshot()
+        triggers = textproc.find_snippets(text, snippets)
+        polished = self.polisher.polish(text, app=self._focus.app, terms=terms)
+        if triggers and textproc.find_snippets(polished, snippets) != triggers:
+            polished = text  # the AI reworded a snippet trigger; keep the original wording
         # Corrections again: the LLM may have reintroduced a misspelling.
-        text = textproc.apply_replacements(text, replacements)
+        text = textproc.apply_replacements(polished, replacements)
+        if triggers:  # last, so neither the AI nor the rules touch the saved text
+            text = textproc.expand_snippets(text, snippets)
+            log.info("Snippet: %s", ", ".join(triggers))
         # Never end with a newline: some apps treat it as Enter and send the message.
         return text.strip()
 
@@ -254,21 +322,25 @@ class WhispaApp:
         if self.cfg.learn_from_edits and self._focus.readable and self._before is not None:
             self.watcher.watch(self._focus, self._before, text, sample)
 
-    def _remember(self, raw: str, text: str, seconds: float) -> None:
+    def _remember(self, raw: str, text: str, seconds: float, command: str | None = None) -> None:
         self.history.append(text)
         del self.history[:-10]
         if self.cfg.save_history:
+            row = {"t": time.time(), "seconds": round(seconds, 2), "raw": raw, "text": text,
+                   "app": self._focus.app}
+            if command:
+                row["command"] = command
             try:
                 with self.history_path.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps({"t": time.time(), "seconds": round(seconds, 2),
-                                        "raw": raw, "text": text, "app": self._focus.app},
-                                       ensure_ascii=False) + "\n")
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
             except OSError as exc:
                 log.warning("Could not write history: %s", exc)
             self.bridge.history_changed.emit()
 
     def _on_done(self, text: str) -> None:
         self.pending -= 1
+        if not self.pending:
+            self.overlay.set_mode("dictate")
         if not self.recording:
             if text:
                 self.overlay.set_state("transcribing" if self.pending else "idle")
@@ -278,6 +350,8 @@ class WhispaApp:
 
     def _on_failed(self, err: str) -> None:
         self.pending -= 1
+        if not self.pending:
+            self.overlay.set_mode("dictate")
         if not self.recording:
             self.overlay.set_state("idle")
         self.sounds.play("error")
@@ -378,6 +452,16 @@ class WhispaApp:
             if value and value in self.hotkey.keys:
                 return "The hands-free key can't be part of the push-to-talk shortcut."
             self.hotkeys.set_hotkey(self.hotkey, value or None)
+        elif key == "command_hotkey":
+            if value:
+                try:
+                    hk = Hotkey.parse(value)
+                except ValueError as exc:
+                    return str(exc)
+                if hk == self.hotkey:
+                    return "Command Mode needs a different shortcut from push to talk."
+            self.hotkeys.set_hotkey(self.hotkey, cfg.hands_free_key or None,
+                                    Hotkey.parse(value) if value else None)
         elif key == "launch_at_login":
             try:
                 autostart.set_enabled(bool(value))
@@ -417,9 +501,8 @@ class WhispaApp:
                 if value:
                     self._safe_open_mic()
         elif key == "save_training_audio":
-            self.training = TrainingStore(config_mod.config_dir() / "training", cfg.training_max_mb) \
-                if value else None
-            self.watcher.on_final = self.training.update_text if self.training else None
+            self.training = (TrainingStore(config_mod.config_dir() / "training", cfg.training_max_mb)
+                             if value else None)
         elif key == "double_tap_to_lock":
             self.sm.double_tap = bool(value)
         if not hasattr(cfg, key):
@@ -434,6 +517,15 @@ class WhispaApp:
             self.recorder._open()
         except Exception as exc:  # noqa: BLE001
             log.warning("Could not open mic: %s", exc)
+
+    def training_stats(self) -> dict | None:
+        store = self.training or TrainingStore(config_mod.config_dir() / "training")
+        return store.stats()
+
+    def delete_training(self) -> None:
+        store = self.training or TrainingStore(config_mod.config_dir() / "training")
+        store.delete_all()
+        log.info("Deleted all voice samples")
 
     def delete_history(self, t: float) -> None:
         try:

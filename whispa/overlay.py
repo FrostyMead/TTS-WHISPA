@@ -40,6 +40,8 @@ BORDER = QColor(255, 255, 255, 46)
 FG = QColor(255, 255, 255)
 STOP_RED = QColor(255, 80, 80)
 ERROR_TEXT = QColor(255, 150, 150)
+COMMAND = QColor(196, 181, 253)  # violet: Command Mode (editing with your voice)
+COMMAND_BORDER = QColor(167, 139, 250, 150)
 
 
 def _level_to_unit(rms: float) -> float:
@@ -90,6 +92,7 @@ class Overlay(QWidget):
         self._t0 = time.monotonic()
         self._mac_tweaked = False
         self.anchor = anchor if anchor in ANCHORS else "bottom-center"
+        self.mode = "dictate"
         self._press_global: QPoint | None = None
         self._press_win = QPoint()
         self._press_local = QPointF()
@@ -118,6 +121,11 @@ class Overlay(QWidget):
         if state in ("idle", "transcribing"):
             self.locked = False
         self._ensure_running()
+
+    def set_mode(self, mode: str) -> None:
+        """'command' tints the pill violet so you can tell you're editing, not dictating."""
+        self.mode = mode
+        self.update()
 
     def set_locked(self, locked: bool) -> None:
         self.locked = locked
@@ -280,7 +288,8 @@ class Overlay(QWidget):
         path = QPainterPath()
         path.addRoundedRect(rect, radius, radius)
         p.fillPath(path, BG)
-        p.setPen(QPen(BORDER, 1))
+        command = self.mode == "command" and self.state != "idle"
+        p.setPen(QPen(COMMAND_BORDER if command else BORDER, 1.2 if command else 1))
         p.drawPath(path)
 
         tw, th, _ = self._target()
@@ -320,7 +329,7 @@ class Overlay(QWidget):
     def _draw_bars(self, p: QPainter, rect: QRectF) -> None:
         span = (rect.width() if self.vertical else rect.height()) - 14
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(FG)
+        p.setBrush(COMMAND if self.mode == "command" else FG)
         for i, v in enumerate(self._bars):
             p.drawRoundedRect(self._bar(rect, i, 3 + v * (span - 3)), 1.5, 1.5)
 
@@ -329,7 +338,7 @@ class Overlay(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(N_BARS):
             wave = max(0.0, math.sin(t * 7 - i * 0.55)) ** 2
-            c = QColor(FG)
+            c = QColor(COMMAND if self.mode == "command" else FG)
             c.setAlphaF(0.35 + 0.65 * wave)
             p.setBrush(c)
             p.drawRoundedRect(self._bar(rect, i, 3 + 7 * wave), 1.5, 1.5)

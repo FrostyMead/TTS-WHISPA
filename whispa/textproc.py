@@ -69,6 +69,34 @@ def apply_terms(text: str, terms: list[str], threshold: float = 0.84) -> str:
     return text
 
 
+def _snippet_pattern(trigger: str) -> re.Pattern:
+    words = re.findall(r"[\w']+", trigger.lower())
+    # Spoken triggers come back with any punctuation/spacing: "my email", "My email.", "my, email"
+    body = r"[\s,.\-]*".join(re.escape(w) for w in words)
+    return re.compile(rf"(?<![\w']){body}(?![\w'])", re.IGNORECASE)
+
+
+def find_snippets(text: str, snippets: dict[str, str]) -> list[str]:
+    """Triggers that appear in the text (longest first, so "my work email" beats "my email")."""
+    found = []
+    for trigger in sorted(snippets, key=len, reverse=True):
+        if trigger.strip() and _snippet_pattern(trigger).search(text):
+            found.append(trigger)
+    return found
+
+
+def expand_snippets(text: str, snippets: dict[str, str]) -> str:
+    """Replace spoken triggers with their saved text. A dictation that is only a trigger
+    ("My email.") becomes exactly the snippet, without the transcript's punctuation."""
+    for trigger in find_snippets(text, snippets):
+        pat = _snippet_pattern(trigger)
+        expansion = snippets[trigger]
+        if re.fullmatch(r"[\s,.!?;:]*", pat.sub("", text)):
+            return expansion
+        text = pat.sub(lambda _m, e=expansion: e, text)
+    return text
+
+
 def apply_replacements(text: str, replacements: dict[str, str]) -> str:
     # Longest phrases first so "open ai api" wins over "open ai".
     for src in sorted(replacements, key=len, reverse=True):

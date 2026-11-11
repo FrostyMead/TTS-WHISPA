@@ -32,6 +32,10 @@ def config_path() -> Path:
     return config_dir() / "config.json"
 
 
+def default_command_hotkey() -> str:
+    return "fn+ctrl" if sys.platform == "darwin" else "ctrl+alt+cmd"
+
+
 def default_hotkey() -> str:
     # macOS exposes the fn/globe key to apps; Windows and Linux keyboards
     # handle fn in firmware, so the OS never sees it.
@@ -58,6 +62,7 @@ class Config:
     # Keys
     hotkey: str = field(default_factory=default_hotkey)
     hands_free_key: str = "space"
+    command_hotkey: str = field(default_factory=default_command_hotkey)  # "" disables Command Mode
     double_tap_to_lock: bool = True
     # Speech recognition
     model: str = "nemo-parakeet-tdt-0.6b-v3"

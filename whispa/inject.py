@@ -63,6 +63,41 @@ class Injector:
         except Exception as exc:  # noqa: BLE001
             log.warning("Copy to clipboard failed: %s", exc)
 
+    def copy_selection(self, timeout: float = 0.5) -> str | None:
+        """Copy the current selection with Ctrl/Cmd+C and return it, restoring the clipboard.
+
+        Returns None when nothing was selected (the clipboard didn't change).
+        """
+        import uuid
+
+        import pyperclip
+
+        self.wait_for_release()
+        try:
+            previous = pyperclip.paste()
+        except Exception:  # noqa: BLE001
+            previous = None
+        sentinel = f"whispa-{uuid.uuid4()}"
+        try:
+            pyperclip.copy(sentinel)
+            self._send_shortcut("cmd+c" if sys.platform == "darwin" else "ctrl+c")
+            deadline = time.monotonic() + timeout
+            got = sentinel
+            while time.monotonic() < deadline:
+                time.sleep(0.03)
+                got = pyperclip.paste()
+                if got != sentinel:
+                    break
+            return None if got == sentinel or not got.strip() else got
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Copying the selection failed: %s", exc)
+            return None
+        finally:
+            try:
+                pyperclip.copy(previous if previous is not None else "")
+            except Exception:  # noqa: BLE001
+                pass
+
     def _type(self, text: str) -> None:
         """Type text; line breaks use Shift+Enter so chat apps don't send the message."""
         from pynput.keyboard import Key

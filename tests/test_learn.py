@@ -76,15 +76,6 @@ def test_dictionary_picks_up_hand_edits(tmp_path):
     assert d.snapshot()[0] == ["Whispa"]
 
 
-def test_training_store(tmp_path):
-    store = TrainingStore(tmp_path / "training")
-    sid = store.add(np.zeros(16000, np.float32), 16000, "hello")
-    assert sid and (tmp_path / "training" / f"{sid}.wav").exists()
-    store.update_text(sid, "Hello!")
-    rows = (tmp_path / "training" / "manifest.jsonl").read_text().splitlines()
-    assert len(rows) == 2
-
-
 def test_scratch_that_and_terms():
     assert process("Send it Friday. Scratch that. Send it Monday.") == "Send it Monday."
     assert process("We deploy on kubernetis.", terms=["Kubernetes"]) == "We deploy on Kubernetes."

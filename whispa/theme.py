@@ -107,6 +107,7 @@ QLabel#time {{ color: {p.faint}; font-size: 12px; }}
 QLabel#app {{ color: {p.muted}; font-size: 11px; background: {p.surface_hover};
     border: 1px solid {p.border}; border-radius: 6px; padding: 1px 6px; }}
 QLabel#entry {{ font-size: 14px; }}
+QLabel#command {{ color: #8b5cf6; font-size: 12px; font-weight: 600; }}
 QLabel#keycap {{ background: {p.keycap}; border: 1px solid {p.keycap_border};
     border-bottom-width: 2px; border-radius: 6px; padding: 3px 9px; font-weight: 600; font-size: 12px; }}
 QLabel#chip {{ background: {p.surface_hover}; border: 1px solid {p.border}; border-radius: 12px;
@@ -131,9 +132,9 @@ QPushButton#icon:hover {{ background: {p.border}; color: {p.text}; }}
 QPushButton#link {{ background: transparent; border: none; padding: 0; color: {p.muted};
     text-decoration: underline; font-weight: 500; }}
 
-QLineEdit, QComboBox {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px;
+QLineEdit, QComboBox, QPlainTextEdit {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px;
     padding: 6px 10px; selection-background-color: {p.accent}; selection-color: {p.accent_text}; }}
-QLineEdit:focus, QComboBox:focus {{ border-color: {p.muted}; }}
+QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {{ border-color: {p.muted}; }}
 QComboBox::drop-down {{ border: none; width: 26px; }}
 QComboBox::down-arrow {{ image: url("{_arrow(p.muted)}"); width: 10px; height: 10px; }}
 QComboBox QAbstractItemView {{ background: {p.surface}; border: 1px solid {p.border};

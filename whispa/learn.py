@@ -83,6 +83,37 @@ def edited_region(before: str, after: str) -> str:
     return after[p:len(after) - s]
 
 
+def align_to_inserted(inserted: str, region: str) -> str:
+    """The part of ``region`` that corresponds to the dictated text.
+
+    The edited region can also contain text typed before/after the dictation, or the next
+    dictation pasted right behind it. Leading and trailing words that don't match the
+    dictation are dropped; edits *inside* it are kept.
+    """
+    a = [w.lower() for w in _WORD.findall(inserted)]
+    spans = list(_WORD.finditer(region))
+    b = [m.group().lower() for m in spans]
+    if not a or not b:
+        return ""
+    ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+    while ops and ops[0][0] in ("insert", "delete"):
+        ops.pop(0)
+    while ops and ops[-1][0] in ("insert", "delete"):
+        ops.pop()
+    if not ops or ops[-1][4] <= ops[0][3]:
+        return ""
+    start, end = spans[ops[0][3]].start(), spans[ops[-1][4] - 1].end()
+    end += len(re.match(r"[.!?,;:]*", region[end:]).group())
+    return region[start:end]
+
+
+def apply_corrections(text: str, corrections: list["Correction"]) -> str:
+    for c in corrections:
+        text = re.sub(rf"(?<!\w){re.escape(c.heard)}(?!\w)", lambda _m, m=c.meant: m, text,
+                      flags=re.IGNORECASE)
+    return text
+
+
 @dataclass
 class Correction:
     heard: str
@@ -124,6 +155,7 @@ class Dictionary:
         self.terms: list[str] = []
         self.corrections: dict[str, str] = {}
         self.pending: dict[str, dict] = {}  # seen once, needs confirmation
+        self.snippets: dict[str, str] = {}  # spoken trigger -> text to insert
         self._mtime = 0.0
         self._lock = threading.RLock()
         self.load()
@@ -140,14 +172,17 @@ class Dictionary:
         self.terms = list(data.get("terms", []))
         self.corrections = {k.lower(): v for k, v in data.get("corrections", {}).items()}
         self.pending = dict(data.get("pending", {}))
+        self.snippets = {k.strip().lower(): v for k, v in data.get("snippets", {}).items() if k.strip()}
         self._mtime = self.path.stat().st_mtime
 
     def save(self) -> None:
         data = {
             "_help": "terms: words/names you use (helps spelling). corrections: heard -> meant, "
                      "applied to every dictation. Whispa adds to both when you fix its mistakes. "
-                     "pending: seen once, learned after the second time.",
-            "terms": self.terms, "corrections": self.corrections, "pending": self.pending,
+                     "pending: seen once, learned after the second time. snippets: say the "
+                     "trigger phrase and the text is inserted instead.",
+            "terms": self.terms, "corrections": self.corrections, "snippets": self.snippets,
+            "pending": self.pending,
         }
         self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self._mtime = self.path.stat().st_mtime
@@ -204,6 +239,24 @@ class Dictionary:
             self.pending.pop(heard, None)
             self.save()
 
+    def snippets_snapshot(self) -> dict[str, str]:
+        with self._lock:
+            self.snapshot()  # reloads on hand edits
+            return dict(self.snippets)
+
+    def set_snippet(self, trigger: str, text: str) -> None:
+        trigger = " ".join(trigger.lower().split())
+        if not trigger or not text.strip():
+            return
+        with self._lock:
+            self.snippets[trigger] = text
+            self.save()
+
+    def remove_snippet(self, trigger: str) -> None:
+        with self._lock:
+            if self.snippets.pop(trigger, None) is not None:
+                self.save()
+
     def remove_correction(self, heard: str) -> None:
         with self._lock:
             if self.corrections.pop(heard.lower(), None) is not None:
@@ -211,19 +264,65 @@ class Dictionary:
 
 
 class TrainingStore:
-    """Audio + final text pairs for fine-tuning on your voice."""
+    """Audio + transcript pairs for fine-tuning the speech model on your voice.
+
+    The label is what Parakeet heard (before AI polish or snippets, which the audio doesn't
+    contain) plus any word fixes you made afterwards. Each sample gets a status:
+    ``corrected`` (you fixed words: the most valuable), ``unedited`` (you left it as is:
+    probably right) or ``unknown`` (couldn't watch the field). When the folder reaches its
+    size limit, the oldest non-corrected clips are deleted first.
+    """
 
     def __init__(self, root: Path, max_mb: int = 2000):
         self.root = root
         self.max_bytes = max_mb * 1_000_000
         self.manifest = root / "manifest.jsonl"
         self._lock = threading.Lock()
+        self._raw: dict[str, str] = {}
+        self._corrected: set[str] = set()
+        self._load()
+
+    def _load(self) -> None:
+        if not self.manifest.exists():
+            return
+        rows = []
+        for line in self.manifest.read_text(encoding="utf-8").splitlines():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        if any("verified" in r for r in rows):
+            # v1 labels could include text typed after the dictation: keep the audio,
+            # reset those labels to what was transcribed.
+            base = [dict(r, status="unknown") for r in rows if "audio" in r]
+            for r in base:
+                r.pop("verified", None)
+            self.manifest.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in base),
+                                     encoding="utf-8")
+            rows = base
+            log.info("Reset %d voice-sample labels from the old format", len(base))
+        for r in rows:
+            if r.get("status") == "corrected":
+                self._corrected.add(r["id"])
+
+    def stats(self) -> dict:
+        wavs = list(self.root.glob("*.wav")) if self.root.exists() else []
+        size = sum(p.stat().st_size for p in wavs)
+        return {"clips": len(wavs), "bytes": size, "seconds": size / 32000,
+                "corrected": len(self._corrected)}
+
+    def delete_all(self) -> None:
+        with self._lock:
+            for p in self.root.glob("*.wav"):
+                p.unlink(missing_ok=True)
+            self.manifest.unlink(missing_ok=True)
+            self._raw.clear()
+            self._corrected.clear()
 
     def add(self, audio: np.ndarray, sr: int, asr_text: str) -> str | None:
         try:
             self.root.mkdir(parents=True, exist_ok=True)
-            if self._size() > self.max_bytes:
-                return None
+            self._enforce_cap()
             sample_id = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
             pcm = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
             with wave.open(str(self.root / f"{sample_id}.wav"), "wb") as w:
@@ -232,15 +331,39 @@ class TrainingStore:
                 w.setframerate(sr)
                 w.writeframes(pcm.tobytes())
             self._append({"id": sample_id, "audio": f"{sample_id}.wav", "duration": round(len(audio) / sr, 2),
-                          "asr": asr_text, "text": asr_text, "verified": False})
+                          "asr": asr_text, "text": asr_text, "status": "unknown"})
+            self._raw[sample_id] = asr_text
             return sample_id
         except OSError as exc:
             log.warning("Could not save training sample: %s", exc)
             return None
 
-    def update_text(self, sample_id: str, text: str) -> None:
-        """Record what the user ended up with after editing (the better label)."""
-        self._append({"id": sample_id, "text": text, "verified": True})
+    def record_review(self, sample_id: str, corrections: list[Correction]) -> None:
+        """You had a chance to fix the text: apply your word fixes to the transcript label."""
+        raw = self._raw.get(sample_id)
+        if raw is None:
+            return
+        label = apply_corrections(raw, corrections)
+        if label != raw:
+            self._corrected.add(sample_id)
+            self._append({"id": sample_id, "text": label, "status": "corrected"})
+        else:
+            self._append({"id": sample_id, "status": "unedited"})
+
+    def _enforce_cap(self) -> None:
+        """Over the limit: delete the oldest clips, uncorrected ones first."""
+        wavs = sorted(self.root.glob("*.wav"))  # ids are timestamps: oldest first
+        total = sum(p.stat().st_size for p in wavs)
+        if total <= self.max_bytes:
+            return
+        target = self.max_bytes * 0.9
+        order = [p for p in wavs if p.stem not in self._corrected] + \
+                [p for p in wavs if p.stem in self._corrected]
+        for p in order:
+            if total <= target:
+                break
+            total -= p.stat().st_size
+            p.unlink(missing_ok=True)
 
     def _append(self, row: dict) -> None:
         with self._lock, self.manifest.open("a", encoding="utf-8") as f:
@@ -257,10 +380,10 @@ class CorrectionWatcher:
     WATCH_S = 45.0
 
     def __init__(self, dictionary: Dictionary, on_learned: Callable[[list[Correction]], None],
-                 on_final: Callable[[str, str], None] | None = None):
+                 on_final: Callable[[str, list[Correction]], None] | None = None):
         self.dictionary = dictionary
         self.on_learned = on_learned
-        self.on_final = on_final  # (sample_id, final_text)
+        self.on_final = on_final  # (sample_id, corrections the user made; [] = left as is)
         self._session: dict | None = None
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
@@ -303,12 +426,13 @@ class CorrectionWatcher:
             self._timer.cancel()
         if not s or not s["last"]:
             return
-        final, inserted = s["last"], s["inserted"]
-        if final == inserted:
-            return
-        if s["sample"] and self.on_final:
-            self.on_final(s["sample"], final)
-        learned = [c for c in find_corrections(inserted, final) if self.dictionary.learn(c)]
+        inserted = s["inserted"]
+        # Only the words that were dictated: drop anything typed or dictated around them.
+        final = align_to_inserted(inserted, s["last"])
+        corrections = find_corrections(inserted, final) if final else []
+        if s["sample"] and self.on_final and final:
+            self.on_final(s["sample"], corrections)
+        learned = [c for c in corrections if self.dictionary.learn(c)]
         if learned:
             log.info("Learned: %s", ", ".join(f"{c.heard!r}->{c.meant!r}" for c in learned))
             self.on_learned(learned)

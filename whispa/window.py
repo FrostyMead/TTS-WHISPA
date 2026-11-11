@@ -15,7 +15,8 @@ from typing import Protocol
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QLayout,
-                               QLineEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
+                               QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
+                               QStackedWidget,
                                QVBoxLayout, QWidget)
 
 from . import __version__, theme
@@ -231,6 +232,11 @@ class EntryRow(QFrame):
         lay.addWidget(t, 0, Qt.AlignmentFlag.AlignTop)
         body = QVBoxLayout()
         body.setSpacing(4)
+        if entry.get("command"):
+            cmd = QLabel(f"✦ {entry['command']}")
+            cmd.setObjectName("command")
+            cmd.setWordWrap(True)
+            body.addWidget(cmd)
         text = QLabel(entry["text"])
         text.setObjectName("entry")
         text.setWordWrap(True)
@@ -333,8 +339,9 @@ class HomePage(QScrollArea):
         labels = " + ".join(hotkey_labels(self.ctl.cfg.hotkey))
         self.hint.setText(f"Hold {labels} anywhere and start talking. Everything stays on this computer.")
         rows = load_history(self.ctl.history_path)
-        words = sum(len(r["text"].split()) for r in rows)
-        seconds = sum(r.get("seconds", 0) for r in rows)
+        dictated = [r for r in rows if not r.get("command")]
+        words = sum(len(r["text"].split()) for r in dictated)
+        seconds = sum(r.get("seconds", 0) for r in dictated)
         self.s_words.set(_fmt_int(words))
         self.s_wpm.set(_fmt_int(words / seconds * 60) if seconds > 5 else "–")
         saved = max(0.0, words / TYPING_WPM * 60 - seconds)
@@ -373,7 +380,7 @@ class DictionaryPage(QScrollArea):
         self.ctl = ctl
         area, lay = _page("Dictionary",
                           "Whispa learns names and words it got wrong when you fix them after a "
-                          "dictation. Add your own here too.")
+                          "dictation. Add your own words, corrections and snippets here too.")
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setWidget(area.takeWidget())
@@ -423,6 +430,38 @@ class DictionaryPage(QScrollArea):
         self.corr_list.setContentsMargins(0, 8, 0, 8)
         self.corr_list.setSpacing(0)
         corr.addLayout(self.corr_list)
+
+        snip = _section(lay, "Snippets")
+        desc3 = QLabel("Say the trigger phrase and Whispa types the saved text instead: an email "
+                       "address, a link, an address, a sign-off. Pick phrases you wouldn't say by "
+                       "accident, like “my calendly link”.")
+        desc3.setObjectName("muted")
+        desc3.setWordWrap(True)
+        desc3.setContentsMargins(0, 12, 0, 8)
+        snip.addWidget(desc3)
+        add3 = QHBoxLayout()
+        add3.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.trigger_in = QLineEdit()
+        self.trigger_in.setPlaceholderText("When I say…  e.g. my email")
+        self.expansion_in = QPlainTextEdit()
+        self.expansion_in.setPlaceholderText("Type this…  (can be several lines)")
+        self.expansion_in.setFixedHeight(64)
+        self.expansion_in.setTabChangesFocus(True)
+        b3 = QPushButton("Add")
+        b3.setObjectName("primary")
+        b3.clicked.connect(self._add_snippet)
+        add3.addWidget(self.trigger_in, 2, Qt.AlignmentFlag.AlignTop)
+        arrow3 = QLabel("→")
+        arrow3.setObjectName("muted")
+        add3.addWidget(arrow3, 0, Qt.AlignmentFlag.AlignTop)
+        add3.addWidget(self.expansion_in, 3)
+        add3.addWidget(b3, 0, Qt.AlignmentFlag.AlignTop)
+        snip.addLayout(add3)
+        self.snip_list = QVBoxLayout()
+        self.snip_list.setContentsMargins(0, 8, 0, 8)
+        self.snip_list.setSpacing(0)
+        snip.addLayout(self.snip_list)
+
         self.pending = QLabel()
         self.pending.setObjectName("faint")
         lay.addWidget(self.pending)
@@ -467,6 +506,22 @@ class DictionaryPage(QScrollArea):
             x.clicked.connect(lambda _=False, h=heard: self._remove_correction(h))
             row = setting_row(f"{heard}  →  {meant}", "", x, first=i == 0)
             self.corr_list.addWidget(row)
+        clear_layout(self.snip_list)
+        snippets = self.ctl.dictionary.snippets_snapshot()
+        if not snippets:
+            none = QLabel("No snippets yet.")
+            none.setObjectName("faint")
+            none.setContentsMargins(0, 8, 0, 8)
+            self.snip_list.addWidget(none)
+        for i, (trigger, text) in enumerate(sorted(snippets.items())):
+            x = QPushButton("✕")
+            x.setObjectName("icon")
+            x.setCursor(Qt.CursorShape.PointingHandCursor)
+            x.clicked.connect(lambda _=False, t=trigger: self._remove_snippet(t))
+            preview = text.replace("\n", " ⏎ ")
+            preview = preview if len(preview) <= 90 else preview[:87] + "…"
+            self.snip_list.addWidget(setting_row(f"“{trigger}”", preview, x, first=i == 0))
+
         n = len(self.ctl.dictionary.pending)
         self.pending.setText(f"{n} more fix{'es' if n != 1 else ''} waiting to be seen a second time."
                              if n else "")
@@ -488,6 +543,16 @@ class DictionaryPage(QScrollArea):
 
     def _remove_correction(self, heard: str) -> None:
         self.ctl.dictionary.remove_correction(heard)
+        self.refresh()
+
+    def _add_snippet(self) -> None:
+        self.ctl.dictionary.set_snippet(self.trigger_in.text(), self.expansion_in.toPlainText().strip())
+        self.trigger_in.clear()
+        self.expansion_in.clear()
+        self.refresh()
+
+    def _remove_snippet(self, trigger: str) -> None:
+        self.ctl.dictionary.remove_snippet(trigger)
         self.refresh()
 
 
@@ -515,6 +580,14 @@ class SettingsPage(QScrollArea):
         sec.addWidget(setting_row("Hands-free lock",
                                   "Tap this while holding the shortcut to keep listening without "
                                   "holding. Press the shortcut again to finish.", self.hands))
+        self.command = HotkeyField(hotkey_labels(cfg.command_hotkey) if cfg.command_hotkey else ["Off"])
+        self.command.change_requested.connect(lambda: self._record("command_hotkey"))
+        self.command.cancel_requested.connect(self._cancel_record)
+        sec.addWidget(setting_row("Command Mode",
+                                  "Select text, hold this and say what to do: “make this more "
+                                  "formal”, “turn this into bullet points”, “translate to "
+                                  "Spanish”. With nothing selected, it writes what you ask for. "
+                                  "Uses the local AI.", self.command))
         sec.addWidget(self._switch_row("double_tap_to_lock", "Double-tap for hands-free",
                                        "Double-tap the shortcut to start hands-free mode."))
         self.hotkey_msg = QLabel("")
@@ -581,10 +654,21 @@ class SettingsPage(QScrollArea):
         sec.addWidget(llm_row)
         sec.addWidget(self._switch_row("learn_from_edits", "Learn from my corrections",
                                        "After pasting, notice when you fix a word and remember it."))
+        self.samples_info = QLabel()
+        self.samples_info.setObjectName("faint")
+        self.samples_info.setWordWrap(True)
+        self.samples_delete = QPushButton("Delete samples")
+        self.samples_delete.clicked.connect(self._delete_samples)
         sec.addWidget(self._switch_row("save_training_audio", "Keep voice samples",
                                        "Save recordings with their corrected text, to tune the "
                                        "speech model to your voice later. Stored only on this "
                                        "computer."))
+
+        samples = QHBoxLayout()
+        samples.addWidget(self.samples_info, 1)
+        samples.addWidget(self.samples_delete)
+        sec.addLayout(samples)
+        sec.addSpacing(10)
 
         # App
         sec = _section(lay, "App")
@@ -656,13 +740,16 @@ class SettingsPage(QScrollArea):
     def _record(self, kind: str) -> None:
         self._cancel_record()
         self.hotkey_msg.setVisible(False)
-        (self.hotkey if kind == "hotkey" else self.hands).set_recording(True)
+        self._field(kind).set_recording(True)
         self.ctl.capture_hotkey(kind)
 
     def _cancel_record(self) -> None:
         self.ctl.cancel_capture()
-        self.hotkey.set_recording(False)
-        self.hands.set_recording(False)
+        for field in (self.hotkey, self.hands, self.command):
+            field.set_recording(False)
+
+    def _field(self, kind: str) -> HotkeyField:
+        return {"hotkey": self.hotkey, "hands_free_key": self.hands, "command_hotkey": self.command}[kind]
 
     def sync_pill_anchor(self, anchor: str) -> None:
         """The pill was dragged: show its new spot without re-triggering a move."""
@@ -673,7 +760,7 @@ class SettingsPage(QScrollArea):
             self.pill_pos.blockSignals(False)
 
     def capture_finished(self, kind: str, spec: str | None, error: str | None) -> None:
-        field = self.hotkey if kind == "hotkey" else self.hands
+        field = self._field(kind)
         field.set_recording(False)
         if error:
             self.hotkey_msg.setText(error)
@@ -688,7 +775,25 @@ class SettingsPage(QScrollArea):
             return
         field.set_labels(hotkey_labels(spec))
 
+    def _delete_samples(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        if QMessageBox.question(self, "Delete voice samples",
+                                "Delete all saved voice samples? This can't be undone.") \
+                == QMessageBox.StandardButton.Yes:
+            self.ctl.delete_training()
+            self.refresh()
+
     def refresh(self) -> None:
+        st = self.ctl.training_stats()
+        if st:
+            minutes = st["seconds"] / 60
+            self.samples_info.setText(
+                f"{st['clips']} clips · {minutes:.0f} min of speech · {st['bytes'] / 1e6:.0f} MB · "
+                f"{st['corrected']} corrected by you. When the limit "
+                f"({self.ctl.cfg.training_max_mb / 1000:g} GB) is reached, the oldest uncorrected "
+                "clips are removed first.")
+            self.samples_delete.setEnabled(st["clips"] > 0)
         ok, text = self.ctl.llm_status()
         self.llm_row_desc.setText(text)
         self.llm_row_desc.setObjectName("ok" if ok else "faint")
