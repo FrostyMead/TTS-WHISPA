@@ -1,0 +1,37 @@
+# Tests on Windows and macOS for every push and pull request.
+# The in-app updater only offers commits whose CI run passed, so a broken change
+# never reaches an installed Whispa.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        shell: bash
+        run: |
+          uv venv --python 3.13
+          uv pip install -e ".[cpu,dev]"
+      - name: Test
+        shell: bash
+        run: |
+          py=.venv/bin/python
+          [ -f .venv/Scripts/python.exe ] && py=.venv/Scripts/python.exe
+          "$py" -m pytest -q
+      - name: Installer scripts parse
+        shell: bash
+        run: bash -n install.sh
