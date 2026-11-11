@@ -743,6 +743,12 @@ class SettingsPage(QScrollArea):
         sec.addLayout(samples)
         sec.addSpacing(10)
 
+        # Speech model: base or tuned to your voice (speech_model.py)
+        from .speech_model import SpeechModelSection
+
+        self.speech_model = SpeechModelSection(ctl)
+        _section(lay, "Speech model").addWidget(self.speech_model)
+
         # Read aloud
         from .speak import VOICES
 
@@ -1012,6 +1018,7 @@ class SettingsPage(QScrollArea):
                 f"({self.ctl.cfg.training_max_mb / 1000:g} GB) is reached, the oldest uncorrected "
                 "clips are removed first.")
             self.samples_delete.setEnabled(st["clips"] > 0)
+        self.speech_model.refresh()
         ok, text = self.ctl.llm_status()
         self.llm_row_desc.setText(text)
         self.llm_row_desc.setObjectName("ok" if ok else "faint")
@@ -1129,6 +1136,7 @@ class MainWindow(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             self.nav.addButton(b, i)
             sl.addWidget(b)
+        self._add_voice_training_page(ctl, sl)
         self.nav.idClicked.connect(self.show_page)
         sl.addStretch(1)
         self.side_status = Label()
@@ -1149,6 +1157,21 @@ class MainWindow(QWidget):
             pass
         self.show_page(0)
 
+    def _add_voice_training_page(self, ctl, sidebar: QVBoxLayout) -> None:
+        """Voice training (voice_training.py): the last page index, listed above Settings."""
+        from .voice_training import VoiceTrainingPage
+
+        self.voice_training = VoiceTrainingPage(ctl)
+        index = self.pages.addWidget(self.voice_training)
+        b = QPushButton("  Voice training")
+        b.setObjectName("nav")
+        b.setProperty("kind", "training")
+        b.setIconSize(QSize(18, 18))
+        b.setCheckable(True)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.nav.addButton(b, index)
+        sidebar.insertWidget(sidebar.indexOf(self.nav.button(self.pages.indexOf(self.settings))), b)
+
     def apply_theme(self) -> None:
         pal = theme.current()
         self.setStyleSheet(theme.stylesheet(pal))
@@ -1167,7 +1190,9 @@ class MainWindow(QWidget):
     @staticmethod
     def _relayout(page) -> None:
         """A page laid out while hidden guessed its text widths; redo it now it's visible."""
-        inner = page.widget()
+        inner = page.widget() if isinstance(page, QScrollArea) else page
+        if inner is None or inner.layout() is None:
+            return
         for lab in inner.findChildren(Label):
             if lab.wordWrap():
                 lab.updateGeometry()

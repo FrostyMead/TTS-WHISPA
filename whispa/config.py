@@ -85,7 +85,7 @@ class Config:
     paste_last_hotkey: str = field(default_factory=default_paste_last_hotkey)  # "" = off
     read_hotkey: str = field(default_factory=default_read_hotkey)  # read the selection aloud
     # Speech recognition
-    model: str = "nemo-parakeet-tdt-0.6b-v3"
+    model: str = "nemo-parakeet-tdt-0.6b-v3"  # or a folder with an exported model (your tuned one)
     device: str = "auto"  # auto | cuda | directml | coreml | cpu
     quantization: str = "auto"  # auto (int8 on CPU, fp32 on GPU) | int8 | none
     # Audio

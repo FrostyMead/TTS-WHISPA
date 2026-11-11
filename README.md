@@ -108,6 +108,8 @@ icon for hands-free dictation, recent transcripts, settings, restart and quit.
 - **Home**: your dictations grouped by day (search, paste again, copy, delete), plus words
   dictated, speaking speed, time saved compared with typing, and your day streak.
 - **Dictionary**: your words and learned corrections. Add or remove entries.
+- **Voice training**: read sentences aloud to build a dataset for tuning the speech model to
+  your voice (see [Tune the speech model to your voice](#tune-the-speech-model-to-your-voice)).
 - **Settings** (changes apply immediately): record a new push-to-talk shortcut or hands-free key
   by pressing it, pick a microphone, filler removal / voice commands, what happens with no text
   field, AI clean-up status, learning, voice samples, launch at login, sounds, idle pill, and
@@ -269,12 +271,24 @@ prefer them. Hand edits are picked up immediately.
 
 **Your voice:** each dictation's audio is saved to `training/` with what Parakeet heard plus any
 word fixes you made afterwards (not the AI-polished or snippet text, which the audio doesn't
-contain). Each clip is marked *corrected*, *unedited* or *unknown*. About 1.9 MB per minute of
-speech; at `training_max_mb` (2 GB, about 17 hours) the oldest uncorrected clips are removed first.
-Settings shows how much you have and has a Delete button. That's the dataset needed to fine-tune Parakeet on your
-voice and accent with NVIDIA NeMo, which is the real way to "learn how you sound". It needs a few
-hours of your speech and is a separate, heavier step (Linux/WSL + GPU). Turn collection off with
-`save_training_audio: false`.
+contain). Each clip is marked *corrected*, *unedited* or *unknown* (reading-session clips are
+*read*). About 1.9 MB per minute of speech; at `training_max_mb` (2 GB, about 17 hours) the oldest
+clips are removed first, keeping *read* and *corrected* ones. Settings shows how much you have and
+has a Delete button. Turn collection off with `save_training_audio: false`.
+
+### Tune the speech model to your voice
+**1. Record (Voice training page).** Whispa shows one sentence at a time. Hold **Hold to record**
+(or **Space**), read it at your normal pace without saying the punctuation, and let go. Each take
+is run through Parakeet first: if it heard something very different from the sentence (you
+misread it, or the mic was silent) you're asked to try again, so bad labels never get saved. If
+you read it right and Parakeet just misheard you, **Save anyway**: those clips teach it the most.
+Saved clips have the sentence itself as their label. You can re-record the previous sentence or
+skip one.
+
+The built-in set has 420 original sentences: messages, meetings, tech vocabulary, numbers, dates
+and money, international names, questions and punctuation-heavy lines. Sentences built around your
+Dictionary words and correction targets are mixed in. Progress is shown against a 60-minute target;
+about 30 minutes is enough for a first tune. Everything stays in `training/`.
 
 Recent transcripts are in the tray menu, and the full history is in `history.jsonl` next to the config.
 
@@ -357,6 +371,8 @@ whispa/
   llm.py       local LLM polish (Ollama native API or OpenAI-compatible), with sanity guards
   focus.py     is the cursor in a text field? read its text (Windows UIA / macOS AX)
   learn.py     learn corrections from your edits, personal dictionary, training-data store
+  voice_training.py  reading session: prompts, take checking, the Voice training page
+  reading_prompts.py the built-in sentences
   inject.py    clipboard paste with restore / typing / wtype (never presses Enter)
   overlay.py   frameless, non-activating, always-on-top Qt pill with animations
   card.py      "no text field" copy card

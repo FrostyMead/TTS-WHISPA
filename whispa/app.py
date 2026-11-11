@@ -785,6 +785,22 @@ class MurmrApp:
         store.delete_all()
         log.info("Deleted all voice samples")
 
+    # Voice training page (voice_training.py) ----------------------------------
+    def training_store(self) -> TrainingStore:
+        """Reading sessions always save (they're an explicit action), even with samples off."""
+        if self.training is not None:
+            return self.training
+        if getattr(self, "_reading_store", None) is None:
+            self._reading_store = TrainingStore(config_mod.config_dir() / "training",
+                                                self.cfg.training_max_mb)
+        return self._reading_store
+
+    def transcribe_sample(self, audio, sr: int) -> str:
+        """Raw Parakeet output (no clean-up) for checking a reading take. Blocking."""
+        if not self.transcriber.ready.wait(timeout=300):
+            raise RuntimeError("Speech model is still loading")
+        return self.transcriber.transcribe(audio, sr)
+
     def delete_history(self, t: float) -> None:
         try:
             lines = self.history_path.read_text(encoding="utf-8").splitlines()

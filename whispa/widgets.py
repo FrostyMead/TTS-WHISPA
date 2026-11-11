@@ -80,6 +80,13 @@ def nav_icon(kind: str, off: str, on: str, size: int = 18) -> QIcon:
                 p.drawRoundedRect(QRectF(s * 0.22, s * 0.15, s * 0.56, s * 0.7), 2, 2)
                 p.drawLine(QPointF(s * 0.36, s * 0.36), QPointF(s * 0.64, s * 0.36))
                 p.drawLine(QPointF(s * 0.36, s * 0.52), QPointF(s * 0.58, s * 0.52))
+            elif kind == "training":  # microphone
+                p.drawRoundedRect(QRectF(s * 0.38, s * 0.14, s * 0.24, s * 0.42), s * 0.12, s * 0.12)
+                arc = QPainterPath()
+                arc.moveTo(s * 0.26, s * 0.44)
+                arc.cubicTo(s * 0.26, s * 0.78, s * 0.74, s * 0.78, s * 0.74, s * 0.44)
+                p.drawPath(arc)
+                p.drawLine(QPointF(s * 0.5, s * 0.7), QPointF(s * 0.5, s * 0.86))
             elif kind == "settings":
                 for y, x in ((0.3, 0.62), (0.5, 0.38), (0.7, 0.58)):
                     p.drawLine(QPointF(s * 0.17, s * y), QPointF(s * 0.83, s * y))

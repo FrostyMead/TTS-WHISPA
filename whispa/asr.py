@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 import time
+
+from pathlib import Path
 
 import numpy as np
 
@@ -22,6 +25,33 @@ _PROVIDERS = {
 }
 
 LONG_AUDIO_S = 60.0  # beyond this, split on silence with Silero VAD
+BASE_MODEL = "nemo-parakeet-tdt-0.6b-v3"
+
+
+def local_model_dir(model: str) -> Path | None:
+    """``model`` is a folder with an exported model (config.json + ONNX files), not a name."""
+    try:
+        p = Path(model).expanduser()
+        return p if p.is_dir() and (p / "config.json").is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _load(model: str, quantization: str | None, providers: list, sess_options=None):
+    """onnx_asr.load_model for a model name or a local folder (e.g. your tuned model)."""
+    import onnx_asr
+
+    folder = local_model_dir(model)
+    if folder is None:
+        return onnx_asr.load_model(model, quantization=quantization, providers=providers,
+                                   sess_options=sess_options)
+    model_type = json.loads((folder / "config.json").read_text(encoding="utf-8")).get(
+        "model_type", "nemo-conformer-tdt")
+    if quantization and not any(folder.glob(f"*.{quantization}.onnx")):
+        log.info("%s has no %s files; using full precision", folder.name, quantization)
+        quantization = None
+    return onnx_asr.load_model(model_type, folder, quantization=quantization, providers=providers,
+                               sess_options=sess_options)
 
 
 def select_providers(device: str) -> tuple[list[str], str]:
@@ -58,6 +88,7 @@ class Transcriber:
         self.backend = "?"
         self.ready = threading.Event()
         self.error: Exception | None = None
+        self.fallback_reason = ""  # set when a local model failed and the base model was used
         self._model = None
         self._vad_model = None
         self._lock = threading.Lock()
@@ -84,14 +115,24 @@ class Transcriber:
         return so, tuned
 
     def load(self) -> None:
-        import onnx_asr
+        try:
+            self._load_model()
+        except Exception as exc:  # noqa: BLE001
+            if local_model_dir(self.model_name) is None and Path(self.model_name).anchor == "":
+                raise
+            # A tuned/local model that won't load must never leave you without dictation.
+            log.error("Model %s failed to load (%s); using the base model", self.model_name, exc)
+            self.fallback_reason = str(exc) or exc.__class__.__name__
+            self.model_name = BASE_MODEL
+            self.error = None
+            self._load_model()
 
+    def _load_model(self) -> None:
         t0 = time.perf_counter()
         providers, label = select_providers(self.device)
         try:
             so, tuned = self._lean_options(providers)
-            self._model = onnx_asr.load_model(
-                self.model_name, quantization=self._quant(label), providers=tuned, sess_options=so)
+            self._model = _load(self.model_name, self._quant(label), tuned, so)
             self._warmup()
         except Exception as exc:  # noqa: BLE001
             if label == "CPU":
@@ -99,8 +140,7 @@ class Transcriber:
                 raise
             log.warning("Loading on %s failed (%s); falling back to CPU", label, exc)
             label = "CPU"
-            self._model = onnx_asr.load_model(
-                self.model_name, quantization=self._quant(label), providers=["CPUExecutionProvider"])
+            self._model = _load(self.model_name, self._quant(label), ["CPUExecutionProvider"])
             self._warmup()
         self.backend = label
         log.info("Loaded %s on %s in %.1fs", self.model_name, label, time.perf_counter() - t0)
