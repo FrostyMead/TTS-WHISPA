@@ -161,6 +161,7 @@ class WhispaApp:
             self.overlay.flash("Microphone unavailable", error=True)
             return
         self.recording = True
+        self.polisher.prewarm()  # load the AI model while you talk (no-op if it's loaded)
         self.overlay.set_state("listening")
         self.tray.setIcon(tray_icon(True))
         self.sounds.play("start")
@@ -378,10 +379,15 @@ class WhispaApp:
             except Exception as exc:  # noqa: BLE001
                 return f"Couldn't change launch at login: {exc}"
             return None
-        elif key == "llm_enabled":
-            cfg.llm_cleanup.enabled = value
+        elif key == "llm_mode":  # off | smart | always
+            if value == "off":
+                cfg.llm_cleanup.enabled = False
+            else:
+                cfg.llm_cleanup.enabled = "auto"
+                cfg.llm_cleanup.when = value
             self.polisher.available = None
             config_mod.save(cfg)
+            log.info("AI clean-up: %s", value)
             return None
         elif key == "sounds":
             self.sounds.enabled = bool(value)

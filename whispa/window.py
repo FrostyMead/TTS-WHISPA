@@ -561,13 +561,22 @@ class SettingsPage(QScrollArea):
 
         # Smart features
         sec = _section(lay, "Smart features")
-        self.llm_switch = Switch(cfg.llm_cleanup.enabled not in (False, "off"))
-        self.llm_switch.toggled.connect(lambda on: self._set("llm_enabled", "auto" if on else False))
+        self.llm_mode = QComboBox()
+        self.llm_mode.addItem("Off", "off")
+        self.llm_mode.addItem("Only when needed", "smart")
+        self.llm_mode.addItem("Always", "always")
+        llm = cfg.llm_cleanup
+        current = "off" if llm.enabled in (False, "off") else ("always" if llm.when == "always" else "smart")
+        self.llm_mode.setCurrentIndex(self.llm_mode.findData(current))
+        self.llm_mode.currentIndexChanged.connect(
+            lambda: (self._set("llm_mode", self.llm_mode.currentData()), self.refresh()))
         self.llm_row_desc = QLabel()
         self.llm_row_desc.setWordWrap(True)
-        llm_row = setting_row("AI clean-up", "Fixes self-corrections (“Tuesday, no wait, "
-                              "Wednesday”), grammar and misheard words with a local AI model.",
-                              self.llm_switch, first=True)
+        llm_row = setting_row(
+            "AI clean-up",
+            "Fixes self-corrections (“Tuesday, no wait, Wednesday”), stumbles, lists and grammar "
+            "with a local AI model. “Only when needed” runs it just on dictations that look like "
+            "they need it, so the rest stay instant.", self.llm_mode, first=True)
         llm_row.layout().itemAt(0).layout().addWidget(self.llm_row_desc)
         sec.addWidget(llm_row)
         sec.addWidget(self._switch_row("learn_from_edits", "Learn from my corrections",

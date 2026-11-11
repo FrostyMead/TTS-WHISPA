@@ -43,6 +43,7 @@ class LLMCleanup:
     """Local LLM polish (self-corrections, grammar). Default: Ollama on this machine."""
 
     enabled: str | bool = "auto"  # auto = use it when the server/model is available
+    when: str = "smart"  # smart = only dictations that look like they need it | always
     provider: str = "ollama"  # ollama | openai (any OpenAI-compatible server)
     base_url: str = "http://127.0.0.1:11434"
     model: str = "gemma3:4b"

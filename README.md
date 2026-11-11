@@ -104,10 +104,34 @@ Detection uses UI Automation on Windows and the Accessibility API on macOS. Linu
   It needs Ollama:
   ```
   winget install Ollama.Ollama      # macOS: brew install ollama
-  ollama pull gemma3:4b             # ~3.3 GB; or a smaller model, then set llm_cleanup.model
+  ollama pull gemma3:4b             # ~3.3 GB download, ~2.9 GB of GPU memory
   ```
   Whispa picks it up within 2 minutes, with no restart needed. If the LLM is slow or gives a strange
   answer, the plain transcript is used.
+
+  **Only when needed (default).** Most dictations are already clean, so Whispa only sends a
+  dictation to the LLM when it looks like it needs help: self-correction phrases ("no wait",
+  "I mean", "sorry", "or rather", "make that"...), repeated words or phrases, spoken lists, or long
+  run-on dictations (40+ words). Everything else is inserted right away. Choose **Always** or
+  **Off** in Settings → AI clean-up.
+
+  If Ollama is installed but its server isn't running, Whispa starts it (hidden). The model is
+  loaded as soon as you press the hotkey, so it's ready by the time you stop talking.
+
+  **Model choice** (`scripts/bench_llm.py`: 30 realistic dictations including 5 held-out
+  phrasings; RTX 3070 Ti with Parakeet loaded):
+
+  | Model | Pass | Typical | Notes |
+  |---|---|---|---|
+  | `gemma3:1b` | 15/25 (first version of the benchmark) | ~0.1 s | Swapped numbers ("40K, or rather 45K" → "45K, or rather 40K"). Not recommended. |
+  | `llama3.2:3b` | 27/30 | ~0.09 s | Fast, but answered a dictated question ("…capital of France?" → "Paris."). |
+  | **`gemma3:4b`** (default) | **29/30** | **0.1–0.4 s** | All self-corrections, stumbles, lists and held-out phrasings right. |
+
+  The one `gemma3:4b` miss is jargon it has never heard ("cooper netties" → Kubernetes), which
+  the learned dictionary covers after one fix. Output is checked before it's used: it must reuse
+  your words (no answers or additions) and keep most of what you said, unless you took something
+  back. Otherwise the plain transcript is used. Compare models yourself:
+  `python scripts/bench_llm.py gemma3:4b llama3.2:3b`.
 
 ### Personalization: it learns from your fixes
 After pasting, Whispa watches that text field for up to 45 s (until you send, switch fields, or
@@ -150,6 +174,7 @@ Windows `%APPDATA%\Whispa\config.json`, macOS `~/Library/Application Support/Whi
 | `remove_fillers`, `voice_commands`, `append_space` | `true` | |
 | `replacements` | `{}` | case-insensitive whole-phrase replacements |
 | `llm_cleanup.enabled` | `auto` | `auto` (on when Ollama + model found) · `true` · `false` |
+| `llm_cleanup.when` | `smart` | `smart` (only dictations that look like they need it) · `always` |
 | `llm_cleanup.provider` / `base_url` / `model` | `ollama` / `http://127.0.0.1:11434` / `gemma3:4b` | `provider: "openai"` for LM Studio, llama.cpp server etc. (`base_url` ending in `/v1`) |
 | `llm_cleanup.keep_alive`, `timeout_s`, `prompt` | `30m`, `6`, built-in | |
 | `learn_from_edits` | `true` | watch your edits after pasting and learn corrections |
