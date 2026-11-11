@@ -31,7 +31,7 @@ jobs:
         run: |
           py=.venv/bin/python
           [ -f .venv/Scripts/python.exe ] && py=.venv/Scripts/python.exe
-          "$py" -m pytest -q
+          "$py" -m pytest -q -rs
       - name: Installer scripts parse
         shell: bash
         run: bash -n install.sh && bash -n uninstall.sh
