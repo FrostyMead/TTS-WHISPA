@@ -43,7 +43,7 @@ STOP_RED = QColor(255, 80, 80)
 ERROR_TEXT = QColor(255, 150, 150)
 COMMAND = QColor(196, 181, 253)  # violet: Command Mode (editing with your voice)
 COMMAND_BORDER = QColor(167, 139, 250, 150)
-SPEAK = QColor(125, 211, 252)  # sky blue: Whispa is reading to you
+SPEAK = QColor(125, 211, 252)  # sky blue: Murmr is reading to you
 SPEAK_BORDER = QColor(125, 211, 252, 130)
 
 
@@ -77,7 +77,7 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
-        self.setWindowTitle("Whispa")
+        self.setWindowTitle("Murmr")
         self.resize(self.WIN_W, self.WIN_H)
 
         self.level_fn = level_fn

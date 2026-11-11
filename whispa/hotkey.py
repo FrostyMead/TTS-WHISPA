@@ -325,7 +325,7 @@ class HotkeyService:
 
     @property
     def keys_arriving(self) -> bool:
-        """macOS: key events have reached Whispa (so Input Monitoring works)."""
+        """macOS: key events have reached Murmr (so Input Monitoring works)."""
         return self._tap is not None and self._tap.working
 
     @staticmethod

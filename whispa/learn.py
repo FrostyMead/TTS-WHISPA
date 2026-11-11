@@ -1,6 +1,6 @@
 """Personalization: learn from the user's edits, like Wispr Flow's auto-dictionary.
 
-After Whispa pastes text it keeps watching that text field for a short while.
+After Murmr pastes text it keeps watching that text field for a short while.
 If you fix a misheard word ("Sara" -> "Sarah", "cooper netties" -> "Kubernetes"),
 the fix is learned and applied to every future dictation. Your corrected text
 plus the audio are also saved as training pairs for fine-tuning Parakeet on
@@ -178,7 +178,7 @@ class Dictionary:
     def save(self) -> None:
         data = {
             "_help": "terms: words/names you use (helps spelling). corrections: heard -> meant, "
-                     "applied to every dictation. Whispa adds to both when you fix its mistakes. "
+                     "applied to every dictation. Murmr adds to both when you fix its mistakes. "
                      "pending: seen once, learned after the second time. snippets: say the "
                      "trigger phrase and the text is inserted instead.",
             "terms": self.terms, "corrections": self.corrections, "snippets": self.snippets,

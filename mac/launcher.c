@@ -1,18 +1,18 @@
 /*
- * Whispa.app's executable (Contents/MacOS/Whispa).
+ * Murmr.app's executable (Contents/MacOS/Murmr).
  *
  * macOS grants Microphone, Input Monitoring and Accessibility to the app that is
  * "responsible" for a process. A shell script that execs Python makes the responsible
- * process Python itself, so Whispa never appears in Privacy & Security. This launcher
- * stays alive as Python's parent instead: Python inherits Whispa.app as its responsible
- * app, and the permissions you grant to Whispa apply to it.
+ * process Python itself, so Murmr never appears in Privacy & Security. This launcher
+ * stays alive as Python's parent instead: Python inherits Murmr.app as its responsible
+ * app, and the permissions you grant to Murmr apply to it.
  *
  * It runs the command in Contents/Resources/command (one argument per line), adds the
  * arguments it was given (e.g. from `open --args`), forwards quit signals, and exits
  * with Python's exit code.
  *
  * Build (universal):  clang -O2 -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
- *                         -o whispa/resources/WhispaLauncher mac/launcher.c
+ *                         -o whispa/resources/MurmrLauncher mac/launcher.c
  */
 #include <errno.h>
 #include <libgen.h>
@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
 
     FILE *f = fopen(path, "rb");
     if (!f) {
-        fprintf(stderr, "Whispa: can't read %s: %s\n", path, strerror(errno));
+        fprintf(stderr, "Murmr: can't read %s: %s\n", path, strerror(errno));
         return 66;
     }
     static char buf[65536];
@@ -58,13 +58,13 @@ int main(int argc, char **argv) {
         if (strncmp(argv[i], "-psn_", 5) != 0) args[k++] = argv[i];  /* old Finder argument */
     args[k] = NULL;
 
-    setenv("WHISPA_BUNDLE", "1", 1);  /* tells Whispa it was started through the app */
+    setenv("WHISPA_BUNDLE", "1", 1);  /* tells Murmr it was started through the app */
     signal(SIGTERM, forward);
     signal(SIGINT, forward);
     signal(SIGHUP, forward);
     int err = posix_spawn(&child, args[0], NULL, NULL, args, environ);
     if (err) {
-        fprintf(stderr, "Whispa: can't start %s: %s\n", args[0], strerror(err));
+        fprintf(stderr, "Murmr: can't start %s: %s\n", args[0], strerror(err));
         return 69;
     }
     int status;

@@ -39,7 +39,7 @@ def make_app(dest: Path, pyproject: str = "[project]\nname='whispa'\n") -> None:
 
 def zip_of(sha: str, pyproject: str) -> bytes:
     tmp = Path(__import__("tempfile").mkdtemp())
-    make_app(tmp / f"TTS-WHISPA-{sha}", pyproject)
+    make_app(tmp / f"murmr-{sha}", pyproject)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for p in tmp.rglob("*"):
@@ -91,7 +91,7 @@ def github():
 
 @pytest.fixture
 def runtime(tmp_path):
-    rt = tmp_path / "Whispa"
+    rt = tmp_path / "Murmr"
     make_app(rt / "app" / "current")
     (rt / "app" / "current" / "version.json").write_text(json.dumps({"sha": OLD, "date": "2026-11-11"}))
     shutil.copy(REAL_BOOT, rt / "boot.py")
@@ -195,7 +195,7 @@ def test_windows_installer_files_with_bom_are_read(runtime, github, tmp_path):
 
 
 def test_boot_works_when_started_inside_the_app_folder(runtime, github, tmp_path):
-    """The old shortcut started Whispa with app/current as its working folder."""
+    """The old shortcut started Murmr with app/current as its working folder."""
     u = updater(runtime, github)
     u.stage(u.check())
     out = tmp_path / "ran.txt"
@@ -206,7 +206,7 @@ def test_boot_works_when_started_inside_the_app_folder(runtime, github, tmp_path
 
 
 def test_locked_folder_starts_current_version_and_keeps_update(runtime, github, tmp_path, monkeypatch):
-    """If the update can't be applied (folder open elsewhere), Whispa still starts."""
+    """If the update can't be applied (folder open elsewhere), Murmr still starts."""
     u = updater(runtime, github)
     u.stage(u.check())
     import os

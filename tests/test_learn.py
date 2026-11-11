@@ -70,10 +70,10 @@ def test_dictionary_picks_up_hand_edits(tmp_path):
     path = tmp_path / "dictionary.json"
     d = Dictionary(path)
     data = json.loads(path.read_text())
-    data["terms"] = ["Whispa"]
+    data["terms"] = ["Murmr"]
     path.write_text(json.dumps(data))
     os.utime(path, (time.time() + 5, time.time() + 5))
-    assert d.snapshot()[0] == ["Whispa"]
+    assert d.snapshot()[0] == ["Murmr"]
 
 
 def test_scratch_that_and_terms():

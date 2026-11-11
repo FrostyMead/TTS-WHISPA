@@ -1,11 +1,11 @@
-"""macOS privacy permissions Whispa needs, and macOS's own prompts for them.
+"""macOS privacy permissions Murmr needs, and macOS's own prompts for them.
 
 * Microphone: to hear you.
 * Input Monitoring: to see the dictation shortcut (fn and friends) in every app.
 * Accessibility: to paste with ⌘V and to read the focused text field.
 
-Asking is what adds Whispa to each list in System Settings > Privacy & Security; until
-then there's nothing to switch on. They're granted to Whispa.app (see mac/launcher.c).
+Asking is what adds Murmr to each list in System Settings > Privacy & Security; until
+then there's nothing to switch on. They're granted to Murmr.app (see mac/launcher.c).
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def missing() -> list[str]:
 
 
 def request(kinds: list[str] | None = None) -> None:
-    """Show macOS's prompts for the permissions not granted yet (each one adds Whispa to
+    """Show macOS's prompts for the permissions not granted yet (each one adds Murmr to
     its list in System Settings). macOS shows each prompt only once per app."""
     if sys.platform != "darwin":
         return

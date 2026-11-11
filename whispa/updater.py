@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 API = "https://api.github.com"
 CODELOAD = "https://codeload.github.com"
-USER_AGENT = "Whispa-Updater"
+USER_AGENT = "Murmr-Updater"
 CI_WORKFLOW = "ci.yml"
 
 APP_DIR = Path(__file__).resolve().parent.parent  # .../app/current, or the git checkout
@@ -59,7 +59,9 @@ class Updater:
                  api: str = API, codeload: str = CODELOAD):
         self.runtime = runtime if runtime is not None else runtime_dir()
         info = self.install_info()
-        self.repo = repo or info.get("repo", "FrostyMead/TTS-WHISPA")
+        self.repo = repo or info.get("repo", "FrostyMead/murmr")
+        if self.repo.lower() == "frostymead/tts-whispa":  # renamed on GitHub
+            self.repo = "FrostyMead/murmr"
         self.branch = branch or info.get("branch", "main")
         self.api, self.codeload = api.rstrip("/"), codeload.rstrip("/")
         self.last: UpdateInfo | None = None
@@ -164,7 +166,7 @@ class Updater:
         roots = [p for p in tmp.iterdir() if p.is_dir()]
         src = roots[0] if len(roots) == 1 else tmp  # GitHub zips have one top-level folder
         if not (src / "whispa" / "__main__.py").is_file():
-            raise RuntimeError("The download doesn't look like Whispa")
+            raise RuntimeError("The download doesn't look like Murmr")
         current_pyproject = app / "current" / "pyproject.toml"
         new_pyproject = src / "pyproject.toml"
         if not current_pyproject.is_file() or \

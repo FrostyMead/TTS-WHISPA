@@ -73,7 +73,7 @@ def modifier_change(code: int, flags: int, fn_was_down: bool) -> tuple[str, set[
 
 class KeyTap:
     """Listen-only event tap on its own thread. Retries until Input Monitoring is allowed,
-    so granting it takes effect without restarting Whispa."""
+    so granting it takes effect without restarting Murmr."""
 
     def __init__(self, on_press: Callable[[set[str], str], None],
                  on_release: Callable[[set[str], str], None]):
@@ -120,7 +120,7 @@ class KeyTap:
                                           Quartz.kCGEventTapOptionListenOnly, mask, callback, None)
             if tap is None:
                 if not warned:
-                    log.error("Can't see the keyboard yet: allow Whispa in System Settings > "
+                    log.error("Can't see the keyboard yet: allow Murmr in System Settings > "
                               "Privacy & Security > Input Monitoring. Waiting for it...")
                     warned = True
                 time.sleep(2)

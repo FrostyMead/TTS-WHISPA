@@ -1,4 +1,4 @@
-"""Small reusable widgets for the Whispa window."""
+"""Small reusable widgets for the Murmr window."""
 
 from __future__ import annotations
 

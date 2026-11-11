@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Whispa installer for macOS and Linux. No admin rights needed.
+# Murmr installer for macOS and Linux. No admin rights needed.
 #
 # Install (or re-install) from GitHub, with in-app updates:
-#     curl -fsSL https://raw.githubusercontent.com/FrostyMead/TTS-WHISPA/main/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/FrostyMead/murmr/main/install.sh | bash
 #
 # Developer setup inside a git checkout (editable install, no updater):
 #     ./install.sh [cuda|cpu]
 #
-# Environment overrides: WHISPA_RUNTIME=cpu|cuda  WHISPA_REPO=owner/name  WHISPA_BRANCH=main
-#                        WHISPA_USER_INSTALL=1 (normal install even from a checkout)
+# Environment overrides: MURMR_RUNTIME=cpu|cuda  MURMR_REPO=owner/name  MURMR_BRANCH=main
+#                        MURMR_USER_INSTALL=1 (normal install even from a checkout)
 set -euo pipefail
 
-REPO="${WHISPA_REPO:-FrostyMead/TTS-WHISPA}"
-BRANCH="${WHISPA_BRANCH:-main}"
-RUNTIME="${WHISPA_RUNTIME:-${1:-auto}}"
+REPO="${MURMR_REPO:-FrostyMead/murmr}"
+BRANCH="${MURMR_BRANCH:-main}"
+RUNTIME="${MURMR_RUNTIME:-${1:-auto}}"
 if [[ "$RUNTIME" == "auto" ]]; then
   RUNTIME="cpu"   # macOS: CPU (fast on Apple Silicon); Linux: CUDA when an NVIDIA GPU is present
   if [[ "$(uname)" == "Linux" ]] && command -v nvidia-smi >/dev/null 2>&1; then RUNTIME="cuda"; fi
@@ -31,7 +31,7 @@ fi
 
 # ---------------------------------------------------------------------------- developer setup
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
-if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/pyproject.toml" && -z "${WHISPA_USER_INSTALL:-}" ]]; then
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/pyproject.toml" && -z "${MURMR_USER_INSTALL:-}" ]]; then
   cd "$SCRIPT_DIR"
   step "Developer setup in $SCRIPT_DIR ($RUNTIME)"
   [[ -d .venv ]] || "$UV" venv .venv --python 3.13 --python-preference only-managed
@@ -39,22 +39,24 @@ if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/pyproject.toml" && -z "${WHISPA_USER_I
   .venv/bin/python -m whispa --download-model
   .venv/bin/python -m whispa --install-shortcuts || true
   echo
-  echo "Done. Start with: .venv/bin/whispa   (developer copy: update it with git)"
+  echo "Done. Start with: .venv/bin/murmr   (developer copy: update it with git)"
   exit 0
 fi
 
 # ---------------------------------------------------------------------------- normal install
 if [[ "$(uname)" == "Darwin" ]]; then
-  ROOT="$HOME/Library/Application Support/Whispa/runtime"
+  ROOT="$HOME/Library/Application Support/Murmr/runtime"
+  OLD="$HOME/Library/Application Support/Whispa/runtime"
+  [[ ! -d "$ROOT" && -f "$OLD/install.json" ]] && ROOT="$OLD"  # installed before the rename
 else
   ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/whispa"
 fi
 APP="$ROOT/app"
 VENV="$ROOT/venv"
-step "Installing Whispa to $ROOT ($RUNTIME)"
+step "Installing Murmr to $ROOT ($RUNTIME)"
 mkdir -p "$APP"
 
-# Stop a running Whispa so its files can be replaced.
+# Stop a running Murmr so its files can be replaced.
 pkill -f "$ROOT/boot.py" 2>/dev/null || true
 
 step "Setting up Python (first time: a minute)"
@@ -68,7 +70,7 @@ trap 'rm -rf "$TMP"' EXIT
 import io, json, sys, urllib.request, zipfile
 repo, branch, tmp = sys.argv[1:4]
 def get(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "Whispa-Installer"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Murmr-Installer"})
     with urllib.request.urlopen(req, timeout=120) as r:
         return r.read()
 sha = date = None
@@ -118,23 +120,23 @@ BOOT="$ROOT/boot.py"
 
 step "Downloading the speech model (first time: ~650 MB)"
 "$BOOTPY" -I -S "$BOOT" --download-model
-step "Adding Whispa to your applications"
+step "Adding Murmr to your applications"
 "$BOOTPY" -I -S "$BOOT" --install-shortcuts
 "$BOOTPY" -I -S "$BOOT" --autostart on >/dev/null
 
 if [[ "$(uname)" == "Darwin" ]]; then
-  open "$HOME/Applications/Whispa.app"
+  open "$HOME/Applications/Murmr.app"
   cat <<'EOF'
 
-Whispa is installed: ~/Applications/Whispa.app (menu-bar icon, starts at login).
-Whispa's icon is in the menu bar (top right). Before the first dictation:
-  • Allow Whispa when macOS asks (Microphone, Input Monitoring, Accessibility),
-    or in Whispa's Settings > Permissions.
+Murmr is installed: ~/Applications/Murmr.app (menu-bar icon, starts at login).
+Murmr's icon is in the menu bar (top right). Before the first dictation:
+  • Allow Murmr when macOS asks (Microphone, Input Monitoring, Accessibility),
+    or in Murmr's Settings > Permissions.
   • System Settings > Keyboard > "Press 🌐 key to" > Do Nothing
 Settings > Updates keeps it current.
 EOF
 else
   nohup "$BOOTPY" -I -S "$BOOT" >/dev/null 2>&1 &
   echo
-  echo "Whispa is installed and running. It's in your app launcher and starts at login."
+  echo "Murmr is installed and running. It's in your app launcher and starts at login."
 fi

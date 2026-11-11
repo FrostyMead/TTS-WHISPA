@@ -1,4 +1,4 @@
-# Whispa
+# Murmr
 
 Local push-to-talk dictation for **Windows, macOS and Linux**, in the spirit of Wispr Flow.
 Hold a key, talk, let go, and the text appears in whatever app has focus. Speech recognition
@@ -38,29 +38,46 @@ Measured on this dev box (RTX 3070 Ti / Ryzen 5 5600X), one 6.8 s sentence:
 
 ## Install
 
+| | Download | |
+|---|---|---|
+| **Windows 10/11** | [**Murmr-Setup.exe**](https://github.com/FrostyMead/murmr/releases/latest/download/Murmr-Setup.exe) | If Windows says it "protected your PC" (the installer isn't code-signed): **More info → Run anyway** |
+| **macOS 11+** | [**Murmr-macOS.dmg**](https://github.com/FrostyMead/murmr/releases/latest/download/Murmr-macOS.dmg) | Open it, double-click **Install Murmr**. First time: System Settings → Privacy & Security → **Open Anyway** |
+
 No admin rights needed. The installer sets up its own Python (via [uv](https://docs.astral.sh/uv/)),
-picks GPU or CPU, downloads the speech model (~650 MB), adds Whispa to your apps, turns on
-launch at login and starts it.
+picks GPU or CPU, downloads the newest version that passed the tests and the speech model
+(~650 MB), adds Murmr to your apps, turns on launch at login and starts it. The installers are
+rebuilt automatically after every change ([release workflow](.github/workflows/release.yml)).
+
+Prefer a terminal? These one-liners do exactly the same:
 
 **Windows** (PowerShell):
 ```powershell
-irm https://raw.githubusercontent.com/FrostyMead/TTS-WHISPA/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/FrostyMead/murmr/main/install.ps1 | iex
 ```
 
-**macOS** (Terminal), installs `~/Applications/Whispa.app`:
+**macOS** (Terminal), installs `~/Applications/Murmr.app`:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FrostyMead/TTS-WHISPA/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/FrostyMead/murmr/main/install.sh | bash
 ```
 Then in System Settings: Keyboard → "Press 🌐 key to" → **Do Nothing**, and under Privacy &
-Security allow **Whispa** for Microphone, Input Monitoring and Accessibility. The permissions
-belong to Whispa.app (not Terminal) and survive updates.
+Security allow **Murmr** for Microphone, Input Monitoring and Accessibility. The permissions
+belong to Murmr.app (not Terminal) and survive updates.
 
 **Linux**: the same `curl … | bash` line.
 
-Run the same command again to repair or reinstall; your settings, dictionary and history are kept.
+Run the installer (or the command) again to repair or reinstall; your settings, dictionary and
+history are kept.
+
+**Uninstall:** Windows: Settings → Apps → Murmr → Uninstall. macOS: **Uninstall Murmr** in the
+.dmg, or `curl -fsSL https://raw.githubusercontent.com/FrostyMead/murmr/main/uninstall.sh | bash`.
+Your settings and history are kept unless you choose to remove everything (`-All` /
+`--all`).
+
+*Murmr was called Whispa before; existing installs update and rename themselves, keeping your
+data and settings. On the Mac, allow Murmr once more in Privacy & Security after the rename.*
 
 ### Updates
-Whispa checks GitHub every few hours, downloads a new version in the background and restarts
+Murmr checks GitHub every few hours, downloads a new version in the background and restarts
 into it when you've been away for 10 minutes (no typing, nothing being dictated or read, window
 closed); the restart takes a few seconds. Afterwards a notification lists **what's new**, also
 shown in Settings → Updates. Prefer to choose the moment? Switch off **Install updates
@@ -74,8 +91,8 @@ Where things live:
 
 | | Windows | macOS |
 |---|---|---|
-| App (code + Python) | `%LOCALAPPDATA%\Whispa` | `~/Library/Application Support/Whispa/runtime`, `~/Applications/Whispa.app` |
-| Your settings, dictionary, history | `%APPDATA%\Whispa` | `~/Library/Application Support/Whispa` |
+| App (code + Python) | `%LOCALAPPDATA%\Murmr` | `~/Library/Application Support/Murmr/runtime`, `~/Applications/Murmr.app` |
+| Your settings, dictionary, history | `%APPDATA%\Murmr` | `~/Library/Application Support/Murmr` |
 
 ### Developer setup
 Clone the repo and run `install.ps1` (Windows) or `./install.sh` (macOS/Linux) inside it: you get
@@ -84,7 +101,7 @@ the in-app updater leaves developer copies alone. `python -m pytest` runs the te
 
 ## The app
 
-Whispa lives in the system tray. **Click the tray icon** (or launch Whispa again from the Start
+Murmr lives in the system tray. **Click the tray icon** (or launch Murmr again from the Start
 Menu) to open the window; closing the window keeps it running in the tray. Right-click the tray
 icon for hands-free dictation, recent transcripts, settings, restart and quit.
 
@@ -96,7 +113,7 @@ icon for hands-free dictation, recent transcripts, settings, restart and quit.
   field, AI clean-up status, learning, voice samples, launch at login, sounds, idle pill, and
   GPU/CPU.
 
-Launch at login starts Whispa quietly in the tray (`--background`).
+Launch at login starts Murmr quietly in the tray (`--background`).
 
 ## Using it
 
@@ -115,7 +132,7 @@ Pressing another key within 0.4 s of the hotkey (e.g. Ctrl+Win+D) counts as an O
 and silently cancels, so your normal shortcuts keep working.
 
 ### Where the text goes
-- **Cursor in a text field:** the text is pasted at the cursor. Whispa **never presses Enter**:
+- **Cursor in a text field:** the text is pasted at the cursor. Murmr **never presses Enter**:
   you review and send it yourself. Line breaks never come last, and in `type` mode they're sent as
   Shift+Enter, so chat apps don't send early.
 - **No text field focused** (desktop, a file list, a web page you haven't clicked into): a card
@@ -138,16 +155,16 @@ Detection uses UI Automation on Windows and the Accessibility API on macOS. Linu
   winget install Ollama.Ollama      # macOS: brew install ollama
   ollama pull gemma3:4b             # ~3.3 GB download, ~2.9 GB of GPU memory
   ```
-  Whispa picks it up within 2 minutes, with no restart needed. If the LLM is slow or gives a strange
+  Murmr picks it up within 2 minutes, with no restart needed. If the LLM is slow or gives a strange
   answer, the plain transcript is used.
 
-  **Only when needed (default).** Most dictations are already clean, so Whispa only sends a
+  **Only when needed (default).** Most dictations are already clean, so Murmr only sends a
   dictation to the LLM when it looks like it needs help: self-correction phrases ("no wait",
   "I mean", "sorry", "or rather", "make that"...), repeated words or phrases, spoken lists, or long
   run-on dictations (40+ words). Everything else is inserted right away. Choose **Always** or
   **Off** in Settings → AI clean-up.
 
-  If Ollama is installed but its server isn't running, Whispa starts it (hidden). The model is
+  If Ollama is installed but its server isn't running, Murmr starts it (hidden). The model is
   loaded as soon as you press the hotkey, so it's ready by the time you stop talking.
 
   **Model choice** (`scripts/bench_llm.py`: 30 realistic dictations including 5 held-out
@@ -166,7 +183,7 @@ Detection uses UI Automation on Windows and the Accessibility API on macOS. Linu
   `python scripts/bench_llm.py gemma3:4b llama3.2:3b`.
 
 ### Command Mode: edit text with your voice
-Select text in any app, hold the Command Mode shortcut and say what to do. Whispa reads the
+Select text in any app, hold the Command Mode shortcut and say what to do. Murmr reads the
 selection, the local AI (Ollama, same model as AI clean-up) rewrites it, and the result replaces
 the selection. Ctrl+Z undoes it. While you're giving a command the pill turns violet.
 
@@ -183,11 +200,11 @@ interrupt). Typically 0.3–0.9 s on an RTX 3070 Ti. Command results are marked 
 ### Snippets
 Dictionary → Snippets: pick a trigger phrase ("my email", "my calendly link", "my sign off") and
 the text to insert, which can be several lines. Say the trigger alone or inside a sentence ("send
-it to my email") and Whispa inserts the saved text. The AI clean-up never sees or changes
+it to my email") and Murmr inserts the saved text. The AI clean-up never sees or changes
 snippet text. Pick phrases you wouldn't say by accident.
 
 ### Style per app
-Settings → Style per app. Whispa sees which app you're typing into and adjusts:
+Settings → Style per app. Murmr sees which app you're typing into and adjusts:
 
 | Where | Default | What it does |
 |---|---|---|
@@ -200,7 +217,7 @@ Settings → Style per app. Whispa sees which app you're typing into and adjusts
 Browser tabs are recognised by their title (Gmail, Slack, WhatsApp Web…).
 
 ### Names from the screen
-When you start talking, Whispa reads the names in the window you're dictating into (people in
+When you start talking, Murmr reads the names in the window you're dictating into (people in
 an email thread or chat, code identifiers in an editor) and uses them to spell what you say:
 "Kowalcyk" becomes "Kowalczyk" if that's on screen. It's careful: only words the speech model
 heard as a name, never a change of case or an ordinary word. It takes at most 0.4 s in the
@@ -232,12 +249,12 @@ number next to the unit), so "the dot com bubble" or "lost 5 pounds" stay as the
 Writing → Smart formatting.
 
 ### Long dictations
-For dictations longer than about 20 s, Whispa transcribes while you're still talking: it cuts
+For dictations longer than about 20 s, Murmr transcribes while you're still talking: it cuts
 the audio at a pause and works on that piece in the background, so letting go only waits for
 the last few seconds.
 
 ### Personalization: it learns from your fixes
-After pasting, Whispa watches that text field for up to 45 s (until you send, switch fields, or
+After pasting, Murmr watches that text field for up to 45 s (until you send, switch fields, or
 start a new dictation). If you fix a misheard word, it learns the fix and the pill shows
 **"Learned: Sarah"**:
 - names and jargon (`Sara → Sarah`, `cooper netties → Kubernetes`, `github → GitHub`) are learned
@@ -264,8 +281,8 @@ Recent transcripts are in the tray menu, and the full history is in `history.jso
 ## Settings
 
 Most options are in the Settings window. Everything is also in a JSON file you can edit
-(restart Whispa afterwards). Locations:
-Windows `%APPDATA%\Whispa\config.json`, macOS `~/Library/Application Support/Whispa/`, Linux `~/.config/whispa/`.
+(restart Murmr afterwards). Locations:
+Windows `%APPDATA%\Murmr\config.json`, macOS `~/Library/Application Support/Murmr/`, Linux `~/.config/whispa/`.
 
 | Key | Default | |
 |---|---|---|
@@ -275,7 +292,7 @@ Windows `%APPDATA%\Whispa\config.json`, macOS `~/Library/Application Support/Whi
 | `model` | `nemo-parakeet-tdt-0.6b-v3` | any [onnx-asr model name](https://istupakov.github.io/onnx-asr/usage/) |
 | `device` | `auto` | `auto` · `cuda` · `directml` · `coreml` · `cpu` |
 | `quantization` | `auto` | int8 on CPU, full precision on GPU; or `int8` / `none` |
-| `input_device` | `null` | mic index or name substring (see `whispa-cli --list-devices`) |
+| `input_device` | `null` | mic index or name substring (see `murmr-cli --list-devices`) |
 | `keep_mic_open` | `false` | `true` keeps the mic hot and adds 300 ms of pre-roll so the first syllable is never clipped |
 | `remove_fillers`, `voice_commands`, `append_space` | `true` | |
 | `replacements` | `{}` | case-insensitive whole-phrase replacements |
@@ -299,16 +316,16 @@ Using LM Studio instead of Ollama:
 
 **macOS**
 - System Settings → Keyboard → "Press 🌐 key to" → **Do Nothing**, so fn doesn't open the emoji picker.
-- Whispa asks for **Microphone**, **Input Monitoring** and **Accessibility** on first start;
+- Murmr asks for **Microphone**, **Input Monitoring** and **Accessibility** on first start;
   Settings → Permissions shows each one and opens the right page in System Settings. They're
-  granted to **Whispa** itself: Whispa.app's executable is a small native launcher
-  (`mac/launcher.c`) that stays the parent of Python, so macOS treats Whispa.app as the
+  granted to **Murmr** itself: Murmr.app's executable is a small native launcher
+  (`mac/launcher.c`) that stays the parent of Python, so macOS treats Murmr.app as the
   responsible app (a script that `exec`s Python would make macOS ask for Python instead).
 - Keys are read with a Quartz event tap and pasted with CGEvents (no pynput on macOS).
 
 **Windows**
 - The physical Fn key is handled inside the keyboard and is invisible to Windows, so the default is Ctrl+Win (same as Wispr Flow on Windows).
-- No console window: `whispa.exe` is a GUI launcher.
+- No console window: `murmr.exe` is a GUI launcher.
 
 **Linux**
 - X11 works out of the box (needs `xclip` or `xsel` for the clipboard).
@@ -319,9 +336,9 @@ Using LM Studio instead of Ollama:
 ## Diagnostics
 
 ```
-whispa-cli --test-mic          # record 3 s, report the input level
-whispa-cli --list-devices
-whispa-cli --transcribe x.wav  # run Parakeet on a file (prints raw + cleaned)
+murmr-cli --test-mic          # record 3 s, report the input level
+murmr-cli --list-devices
+murmr-cli --transcribe x.wav  # run Parakeet on a file (prints raw + cleaned)
 ```
 Logs: `whispa.log` next to the config (tray → Open log).
 
@@ -345,7 +362,7 @@ whispa/
   card.py      "no text field" copy card
   window.py    the app window: Home (history + stats), Dictionary, Settings
   widgets.py   switch, keycap shortcut recorder, stat cards;  theme.py: light/dark styles
-  icons.py     app + tray icons drawn in code;  shortcuts.py: Start Menu / Desktop / Whispa.app
+  icons.py     app + tray icons drawn in code;  shortcuts.py: Start Menu / Desktop / Murmr.app
   updater.py   GitHub updates (newest commit that passed CI), staged for the bootstrap
   _boot.py     installed copies start here: applies a staged update, rolls back a bad one
 launcher.pyw   windowless start on Windows (base pythonw.exe + the venv's packages; some venv
@@ -370,6 +387,6 @@ launcher.pyw   windowless start on Windows (base pythonw.exe + the venv's packag
 
 ## License
 
-Whispa is MIT licensed (see `LICENSE`). The Parakeet model it downloads is NVIDIA's, released
+Murmr is MIT licensed (see `LICENSE`). The Parakeet model it downloads is NVIDIA's, released
 under CC-BY-4.0; the ONNX conversion used here comes from
 [istupakov/parakeet-tdt-0.6b-v3-onnx](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx).

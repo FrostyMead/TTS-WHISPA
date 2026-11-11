@@ -58,7 +58,7 @@ class Bridge(QObject):
     notice = Signal(str, bool)  # message, is_error
 
 
-class WhispaApp:
+class MurmrApp:
     def __init__(self, qapp: QApplication, cfg: config_mod.Config):
         self.qapp = qapp
         self.cfg = cfg
@@ -142,7 +142,7 @@ class WhispaApp:
         self._update_checked = False
         b.update_changed.connect(self._on_update_changed)
         b.update_notice.connect(lambda msg: self.tray.showMessage(
-            "Whispa update available", f"{msg}. Open Settings > Updates to install.", tray_icon(), 6000))
+            "Murmr update available", f"{msg}. Open Settings > Updates to install.", tray_icon(), 6000))
         b.update_restart.connect(self.restart)
         b.update_auto.connect(lambda: self.auto_timer.isActive() or self.auto_timer.start())
         self.update_timer = QTimer()
@@ -208,10 +208,10 @@ class WhispaApp:
                 self.show_window(page=2)
             return
         log.info("macOS permissions missing: %s", ", ".join(missing))
-        macperms.request(missing)  # macOS's prompts; they add Whispa to each list
+        macperms.request(missing)  # macOS's prompts; they add Murmr to each list
         names = ", ".join(macperms.LABELS[k] for k in missing)
-        self.tray.showMessage("Whispa needs your permission",
-                              f"Allow Whispa under {names} in System Settings > Privacy & Security.",
+        self.tray.showMessage("Murmr needs your permission",
+                              f"Allow Murmr under {names} in System Settings > Privacy & Security.",
                               tray_icon(), 10000)
         self.show_window(page=2)
 
@@ -248,14 +248,14 @@ class WhispaApp:
 
     def _on_model_ready(self, backend: str) -> None:
         self._status(f"Ready · Parakeet on {backend}")
-        self.tray.showMessage("Whispa is ready",
+        self.tray.showMessage("Murmr is ready",
                               f"Hold {self.hotkey.label()} and speak. Running locally on {backend}.",
                               tray_icon(), 4000)
 
     def _on_model_failed(self, err: str) -> None:
         self._status("Model failed to load")
         self.overlay.flash("Speech model failed to load", error=True, seconds=4)
-        self.tray.showMessage("Whispa: model failed to load", err[:300],
+        self.tray.showMessage("Murmr: model failed to load", err[:300],
                               QSystemTrayIcon.MessageIcon.Critical, 8000)
 
     # -- recording lifecycle ----------------------------------------------
@@ -264,7 +264,7 @@ class WhispaApp:
             return
         self.watcher.finish()  # a new dictation ends the edit-watch of the previous one
         if self._speaker is not None and self._speaker.speaking:
-            self._speaker.stop()  # don't dictate over Whispa reading aloud (the mic would hear it)
+            self._speaker.stop()  # don't dictate over Murmr reading aloud (the mic would hear it)
         if mode == "command" and not self.polisher.reachable():
             self.sm.reset()
             self.sounds.play("error")
@@ -497,7 +497,7 @@ class WhispaApp:
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(tray_icon(), self.qapp)
         menu = QMenu()
-        menu.addAction("Open Whispa", self.show_window)
+        menu.addAction("Open Murmr", self.show_window)
         self.status_action = QAction("Loading speech model…", menu)
         self.status_action.setEnabled(False)
         menu.addAction(self.status_action)
@@ -511,15 +511,15 @@ class WhispaApp:
         self.recent_menu.aboutToShow.connect(self._fill_recent)
         menu.addSeparator()
         menu.addAction("Settings…", lambda: self.show_window(page=2))
-        self.update_action = QAction("Update Whispa…", menu)
+        self.update_action = QAction("Update Murmr…", menu)
         self.update_action.triggered.connect(lambda: self.show_window(page=2))
         self.update_action.setVisible(False)
         menu.addAction(self.update_action)
-        menu.addAction("Restart Whispa", self.restart)
-        menu.addAction("Quit Whispa", self.quit)
+        menu.addAction("Restart Murmr", self.restart)
+        menu.addAction("Quit Murmr", self.quit)
         self._menu = menu
         self.tray.setContextMenu(menu)
-        self.tray.setToolTip("Whispa")
+        self.tray.setToolTip("Murmr")
         self.tray.activated.connect(self._tray_activated)
         self.tray.messageClicked.connect(
             lambda: self._tray_click_page is not None and self.show_window(page=self._tray_click_page))
@@ -533,7 +533,7 @@ class WhispaApp:
     def _status(self, text: str) -> None:
         self._status_text = text
         self.status_action.setText(text)
-        self.tray.setToolTip(f"Whispa — {text}")
+        self.tray.setToolTip(f"Murmr — {text}")
         if self.window is not None and self.window.isVisible():
             self.window.refresh()
 
@@ -574,7 +574,7 @@ class WhispaApp:
         self.worker.submit(self.injector.inject, self.history[-1])
 
     def paste_text(self, text: str) -> None:
-        """Paste a past dictation into the app you were using before opening Whispa."""
+        """Paste a past dictation into the app you were using before opening Murmr."""
         if self.window is not None:
             self.window.hide()
         if sys.platform == "darwin":
@@ -621,7 +621,7 @@ class WhispaApp:
             self.bridge.notice.emit(f"Read aloud failed: {exc}"[:60], True)
 
     def speak_sample(self) -> None:
-        self.speaker().speak("Hi! This is how Whispa reads your text aloud.")
+        self.speaker().speak("Hi! This is how Murmr reads your text aloud.")
 
     def _on_speak_state(self, state: str) -> None:
         speaking = self._speaker is not None and self._speaker.speaking
@@ -821,7 +821,7 @@ class WhispaApp:
         lines = "\n".join(f"• {c}" for c in changes[:3]) + \
             (f"\n…and {len(changes) - 3} more" if len(changes) > 3 else "")
         self._tray_click_page = 2
-        self.tray.showMessage(f"Whispa updated · {len(changes)} change{'s' if len(changes) != 1 else ''}",
+        self.tray.showMessage(f"Murmr updated · {len(changes)} change{'s' if len(changes) != 1 else ''}",
                               lines, tray_icon(), 12000)
         log.info("What's new shown for %s", sha[:7])
 
@@ -832,7 +832,7 @@ class WhispaApp:
                 staged = self.updater.staged()
                 if not (staged and staged.get("sha") == info.target_sha):
                     self.updater.stage(info)
-                log.info("Update %s ready; restarting when Whispa is idle", info.target_sha[:7])
+                log.info("Update %s ready; restarting when Murmr is idle", info.target_sha[:7])
                 self.bridge.update_changed.emit()
             except Exception as exc:  # noqa: BLE001
                 log.warning("Background update failed (will retry later): %s", exc)
@@ -840,7 +840,7 @@ class WhispaApp:
         threading.Thread(target=work, name="update-stage", daemon=True).start()
 
     def _quiet(self) -> bool:
-        """Nobody's using Whispa: safe to restart for an update."""
+        """Nobody's using Murmr: safe to restart for an update."""
         speaking = self._speaker is not None and self._speaker.speaking
         window_open = self.window is not None and self.window.isVisible()
         away = time.monotonic() - self.hotkeys.last_activity > 10 * 60
@@ -931,7 +931,7 @@ class WhispaApp:
 
         background = self.window is None or not self.window.isVisible()
         self.shutdown()
-        if mac_app_usable():  # through Whispa.app, so it keeps Whispa's permissions
+        if mac_app_usable():  # through Murmr.app, so it keeps Murmr's permissions
             self.instance.release()
             if open_mac_app(background):
                 self.qapp.quit()
@@ -958,7 +958,7 @@ class WhispaApp:
 
 
 class SingleInstance:
-    """One Whispa per user. Launching it again just opens the running one's window."""
+    """One Murmr per user. Launching it again just opens the running one's window."""
 
     NAME = "whispa-" + (os.environ.get("USERNAME") or os.environ.get("USER") or "user")
 
@@ -977,7 +977,7 @@ class SingleInstance:
             sock.waitForBytesWritten(400)
             sock.disconnectFromServer()
             return True
-        # An older Whispa without the socket may still hold the lock.
+        # An older Murmr without the socket may still hold the lock.
         return not self.lock.tryLock(200)
 
     def listen(self, on_show) -> None:
@@ -1088,17 +1088,24 @@ def run(background: bool = False) -> int:
         try:  # own taskbar identity/icon instead of python.exe's
             import ctypes
 
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Whispa.Dictation")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Murmr.Dictation")
         except Exception:  # noqa: BLE001
             pass
     cfg = config_mod.load()
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     qapp = QApplication(sys.argv)
-    qapp.setApplicationName("Whispa")
+    qapp.setApplicationName("Murmr")
     qapp.setWindowIcon(app_icon())
     qapp.setQuitOnLastWindowClosed(False)
 
+    from .shortcuts import migrate_from_whispa
+
+    if migrate_from_whispa():  # macOS: Murmr.app replaced Whispa.app; continue in there
+        from .shortcuts import open_mac_app
+
+        if open_mac_app(background):
+            return 0
     if sys.platform == "darwin":
         from .shortcuts import relaunch_through_mac_app
 
@@ -1107,10 +1114,10 @@ def run(background: bool = False) -> int:
 
     instance = SingleInstance()
     if instance.notify_running():
-        log.info("Whispa is already running; asked it to show its window")
+        log.info("Murmr is already running; asked it to show its window")
         if not instance.server and instance.lock.error() != QLockFile.LockError.NoError:
-            QMessageBox.information(None, "Whispa", "Whispa is already running. Quit the old "
-                                    "copy from its tray icon, then start Whispa again.")
+            QMessageBox.information(None, "Murmr", "Murmr is already running. Quit the old "
+                                    "copy from its tray icon, then start Murmr again.")
         return 0
 
     if sys.platform == "darwin":
@@ -1121,12 +1128,12 @@ def run(background: bool = False) -> int:
         except Exception:  # noqa: BLE001
             pass
 
-    app = WhispaApp(qapp, cfg)
+    app = MurmrApp(qapp, cfg)
     app.instance = instance
     instance.listen(app.show_window)
     if not background:
         app.show_window()
-    log.info("Whispa started; hotkey %s, config %s", app.hotkey.label(), config_mod.config_path())
+    log.info("Murmr started; hotkey %s, config %s", app.hotkey.label(), config_mod.config_path())
     code = qapp.exec()
     app.worker.shutdown(wait=False, cancel_futures=True)
     return code

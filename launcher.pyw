@@ -1,4 +1,4 @@
-"""Start Whispa with no console window.
+"""Start Murmr with no console window.
 
 Run with the *base* interpreter's pythonw.exe:  pythonw.exe -I -S launcher.pyw <site-packages>
 (Some virtual-environment launchers start console python.exe, which makes Windows open a

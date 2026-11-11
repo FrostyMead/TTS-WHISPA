@@ -1,7 +1,7 @@
-# Whispa installer for Windows. No admin rights needed.
+# Murmr installer for Windows. No admin rights needed.
 #
 # Install (or re-install) from GitHub, with in-app updates:
-#     irm https://raw.githubusercontent.com/FrostyMead/TTS-WHISPA/main/install.ps1 | iex
+#     irm https://raw.githubusercontent.com/FrostyMead/murmr/main/install.ps1 | iex
 #
 # Developer setup inside a git checkout (editable install, no updater):
 #     powershell -ExecutionPolicy Bypass -File install.ps1 [-Runtime cuda|directml|cpu]
@@ -10,7 +10,7 @@
 param(
     [ValidateSet("auto", "cuda", "directml", "cpu")][string]$Runtime = "auto",
     [switch]$User,
-    [string]$Repo = "FrostyMead/TTS-WHISPA",
+    [string]$Repo = "FrostyMead/murmr",
     [string]$Branch = "main"
 )
 $ErrorActionPreference = "Stop"
@@ -52,24 +52,28 @@ if ($checkout -and -not $User) {
     Run $uv pip install --python .venv -e ".[$Runtime,dev]"
     Run .venv\Scripts\python.exe -m whispa --download-model
     Run .venv\Scripts\python.exe -m whispa --install-shortcuts
-    Write-Host "`nDone. Start Whispa from the Start Menu. (Developer copy: update it with git.)"
+    Write-Host "`nDone. Start Murmr from the Start Menu. (Developer copy: update it with git.)"
     return
 }
 
 # ---------------------------------------------------------------------------- normal install
-$Root = Join-Path $env:LOCALAPPDATA "Whispa"
+$Root = Join-Path $env:LOCALAPPDATA "Murmr"
+$OldRoot = Join-Path $env:LOCALAPPDATA "Whispa"
+if (-not (Test-Path $Root) -and (Test-Path (Join-Path $OldRoot "install.json"))) {
+    $Root = $OldRoot  # installed before the rename: update that copy in place
+}
 $App = Join-Path $Root "app"
 $Venv = Join-Path $Root "venv"
-Step "Installing Whispa to $Root ($Runtime)"
+Step "Installing Murmr to $Root ($Runtime)"
 New-Item -ItemType Directory -Force $App | Out-Null
 
-# Stop a running Whispa so its files can be replaced.
+# Stop a running Murmr so its files can be replaced.
 Get-CimInstance Win32_Process |
     Where-Object { $_.CommandLine -and ($_.CommandLine -match "boot\.py|launcher\.pyw|-m whispa") -and $_.Name -match "python" } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 # Newest commit whose tests passed on GitHub (falls back to the branch head).
-$headers = @{ "User-Agent" = "Whispa-Installer" }
+$headers = @{ "User-Agent" = "Murmr-Installer" }
 $sha = $null
 try {
     $runs = Invoke-RestMethod -Headers $headers "https://api.github.com/repos/$Repo/actions/workflows/ci.yml/runs?branch=$Branch&status=success&event=push&per_page=1"
@@ -103,7 +107,7 @@ Remove-Item -Force (Join-Path $Root "trial") -ErrorAction SilentlyContinue
 
 Step "Setting up Python and packages (first time: a few minutes)"
 if (-not (Test-Path (Join-Path $Venv "Scripts\python.exe"))) {
-    # uv's own Python, so removing or upgrading a system Python can't break Whispa.
+    # uv's own Python, so removing or upgrading a system Python can't break Murmr.
     Run $uv venv $Venv --python 3.13 --python-preference only-managed
 }
 Run $uv pip install --python (Join-Path $Venv "Scripts\python.exe") -r (Join-Path $current "pyproject.toml") --extra $Runtime
@@ -119,9 +123,9 @@ $boot = Join-Path $Root "boot.py"
 
 Step "Downloading the speech model (first time: ~650 MB)"
 Run $python -I -S $boot --download-model
-Step "Adding Whispa to the Start Menu and Desktop"
+Step "Adding Murmr to the Start Menu and Desktop"
 Run $python -I -S $boot --install-shortcuts
 Run $python -I -S $boot --autostart on
 
 Start-Process $pythonw -ArgumentList "-I", "-S", "`"$boot`"" -WorkingDirectory $Root
-Write-Host "`nWhispa is installed and running (tray icon). It starts at login; Settings > Updates keeps it current." -ForegroundColor Green
+Write-Host "`nMurmr is installed and running (tray icon). It starts at login; Settings > Updates keeps it current." -ForegroundColor Green

@@ -1,6 +1,6 @@
 # Tests on Windows and macOS for every push and pull request.
 # The in-app updater only offers commits whose CI run passed, so a broken change
-# never reaches an installed Whispa.
+# never reaches an installed Murmr.
 name: CI
 
 on:
@@ -34,4 +34,4 @@ jobs:
           "$py" -m pytest -q
       - name: Installer scripts parse
         shell: bash
-        run: bash -n install.sh
+        run: bash -n install.sh && bash -n uninstall.sh

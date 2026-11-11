@@ -1,0 +1,123 @@
+# Builds the downloadable installers after every change that passed CI on main, and
+# publishes them on the GitHub release for the current version:
+#   Murmr-Setup.exe   Windows, per-user (no admin), uninstall from Settings > Apps
+#   Murmr-macOS.dmg   "Install Murmr" and "Uninstall Murmr" apps
+# Stable links: https://github.com/FrostyMead/murmr/releases/latest/download/<file>
+# The installers fetch the newest tested version when run, and Murmr updates itself after.
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v5
+      - name: Icon
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          uv venv --python 3.13
+          uv pip install PySide6-Essentials
+          .venv/Scripts/python.exe -c "from PySide6.QtGui import QGuiApplication; a = QGuiApplication([]); from whispa.icons import app_pixmap; assert app_pixmap(256).save('packaging/windows/murmr.ico', 'ICO')"
+      - name: Build Murmr-Setup.exe
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $env:MURMR_VERSION = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          & $iscc /Q packaging\windows\murmr.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-Item dist\Murmr-Setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/Murmr-Setup.exe
+
+  macos:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v5
+      - name: Build Murmr-macOS.dmg
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -e
+          uv venv --python 3.13
+          uv pip install PySide6-Essentials
+          .venv/bin/python -c "from pathlib import Path; from whispa.shortcuts import _mac_icon; _mac_icon(Path('murmr.icns'))"
+          mkdir -p dist/dmg
+          for name in Install Uninstall; do
+            app="dist/dmg/$name Murmr.app"
+            lower=$(echo "$name" | tr '[:upper:]' '[:lower:]')
+            osacompile -o "$app" "packaging/macos/$lower.applescript"
+            [ -f murmr.icns ] && cp murmr.icns "$app/Contents/Resources/applet.icns"
+            codesign --force --deep --sign - "$app"
+          done
+          cp packaging/macos/README.txt "dist/dmg/Read me.txt"
+          hdiutil create -volname "Murmr" -srcfolder dist/dmg -ov -format UDZO dist/Murmr-macOS.dmg
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/Murmr-macOS.dmg
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        run: |
+          set -e
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          cat > notes.md <<EOF
+          ## Download
+
+          - **Windows:** [Murmr-Setup.exe](https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/Murmr-Setup.exe), no admin needed. Windows may say it "protected your PC" (the installer isn't code-signed): click **More info → Run anyway**.
+          - **macOS:** [Murmr-macOS.dmg](https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/Murmr-macOS.dmg), open it and double-click **Install Murmr** (first time: System Settings → Privacy & Security → **Open Anyway**).
+
+          The installers download the newest version that passed the tests, its own Python and the speech model (about 1 GB). Murmr keeps itself up to date after that.
+
+          Installers rebuilt from ${SHA::7}.
+          EOF
+          sed -i 's/^          //' notes.md
+          if gh release view "v$v" >/dev/null 2>&1; then
+            gh release upload "v$v" dist/Murmr-Setup.exe dist/Murmr-macOS.dmg --clobber
+            gh release edit "v$v" --notes-file notes.md --latest
+          else
+            gh release create "v$v" dist/Murmr-Setup.exe dist/Murmr-macOS.dmg --target "$SHA" \
+              --title "Murmr $v" --notes-file notes.md --latest
+          fi

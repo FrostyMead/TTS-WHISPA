@@ -1,4 +1,4 @@
-"""Compare local LLMs for Whispa's AI clean-up: accuracy on realistic dictations + latency.
+"""Compare local LLMs for Murmr's AI clean-up: accuracy on realistic dictations + latency.
 
     python scripts/bench_llm.py gemma3:1b llama3.2:3b gemma3:4b
 

@@ -1,6 +1,6 @@
-"""Whispa bootstrap for installed copies (copied to <runtime>/boot.py by the installer).
+"""Murmr bootstrap for installed copies (copied to <runtime>/boot.py by the installer).
 
-Standard library only: it runs before any of Whispa's code or packages are on the path.
+Standard library only: it runs before any of Murmr's code or packages are on the path.
 
 <runtime>/
     boot.py         this file
@@ -49,7 +49,7 @@ def _version(path: str) -> str:
 
 
 def _replace(src: str, dst: str) -> None:
-    for attempt in range(20):  # the previous Whispa may still be shutting down
+    for attempt in range(20):  # the previous Murmr may still be shutting down
         try:
             os.replace(src, dst)
             return

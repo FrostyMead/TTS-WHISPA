@@ -1,4 +1,4 @@
-"""Colors and the Qt stylesheet for the Whispa window (follows the OS light/dark mode)."""
+"""Colors and the Qt stylesheet for the Murmr window (follows the OS light/dark mode)."""
 
 from __future__ import annotations
 

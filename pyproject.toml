@@ -3,7 +3,7 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "whispa"
+name = "murmr"
 version = "0.3.0"
 description = "Local, cross-platform push-to-talk dictation powered by NVIDIA Parakeet"
 readme = "README.md"
@@ -32,10 +32,10 @@ directml = ["onnxruntime-directml>=1.20"]
 dev = ["pytest>=8"]
 
 [project.gui-scripts]
-whispa = "whispa.__main__:main"
+murmr = "whispa.__main__:main"
 
 [project.scripts]
-whispa-cli = "whispa.__main__:main"
+murmr-cli = "whispa.__main__:main"
 
 [tool.setuptools]
 packages = ["whispa"]

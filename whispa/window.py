@@ -1,7 +1,7 @@
-"""The Whispa window: Home (stats + dictation history), Dictionary, Settings.
+"""The Murmr window: Home (stats + dictation history), Dictionary, Settings.
 
 It talks to the running app through a small controller interface (see
-``WhispaApp`` in app.py), so it can also be rendered with a fake controller.
+``MurmrApp`` in app.py), so it can also be rendered with a fake controller.
 """
 
 from __future__ import annotations
@@ -404,7 +404,7 @@ class DictionaryPage(QScrollArea):
         super().__init__()
         self.ctl = ctl
         area, lay = _page("Dictionary",
-                          "Whispa learns names and words it got wrong when you fix them after a "
+                          "Murmr learns names and words it got wrong when you fix them after a "
                           "dictation. Add your own words, corrections and snippets here too.")
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -431,7 +431,7 @@ class DictionaryPage(QScrollArea):
         words.addWidget(self.chips_host)
 
         corr = _section(lay, "Corrections")
-        desc2 = QLabel("When Whispa hears the left side, it writes the right side.")
+        desc2 = QLabel("When Murmr hears the left side, it writes the right side.")
         desc2.setObjectName("muted")
         desc2.setContentsMargins(0, 12, 0, 8)
         corr.addWidget(desc2)
@@ -457,7 +457,7 @@ class DictionaryPage(QScrollArea):
         corr.addLayout(self.corr_list)
 
         snip = _section(lay, "Snippets")
-        desc3 = QLabel("Say the trigger phrase and Whispa types the saved text instead: an email "
+        desc3 = QLabel("Say the trigger phrase and Murmr types the saved text instead: an email "
                        "address, a link, an address, a sign-off. Pick phrases you wouldn't say by "
                        "accident, like “my calendly link”.")
         desc3.setObjectName("muted")
@@ -721,7 +721,7 @@ class SettingsPage(QScrollArea):
         sec.addWidget(self._switch_row("learn_from_edits", "Learn from my corrections",
                                        "After pasting, notice when you fix a word and remember it."))
         sec.addWidget(self._switch_row("screen_context", "Spell names from the screen",
-                                       "When you start talking, Whispa looks at the names in the "
+                                       "When you start talking, Murmr looks at the names in the "
                                        "window you're typing into (an email thread, a chat), so "
                                        "they come out spelled the same way. Read on this computer "
                                        "only, never saved."))
@@ -827,7 +827,7 @@ class SettingsPage(QScrollArea):
         sec.addWidget(self.update_auto)
         self.update_install = self._switch_row(
             "auto_update", "Install updates automatically",
-            "Downloads in the background and restarts Whispa when you've been away for 10 minutes "
+            "Downloads in the background and restarts Murmr when you've been away for 10 minutes "
             "(takes a few seconds). Off: you choose when, here.")
         sec.addWidget(self.update_install)
         self.whats_new = QLabel()
@@ -846,7 +846,7 @@ class SettingsPage(QScrollArea):
         about.addWidget(self.status, 1)
         folder = QPushButton("Open data folder")
         folder.clicked.connect(ctl.open_folder)
-        restart = QPushButton("Restart Whispa")
+        restart = QPushButton("Restart Murmr")
         restart.clicked.connect(ctl.restart)
         about.addWidget(folder)
         about.addWidget(restart)
@@ -871,9 +871,9 @@ class SettingsPage(QScrollArea):
             bl.addWidget(btn)
             sec.addWidget(setting_row(LABELS[kind], WHY[kind], box, first=i == 0))
             self.perm_rows[kind] = (state, btn)
-        note = QLabel("Allow opens System Settings: switch Whispa on there, then restart Whispa "
+        note = QLabel("Allow opens System Settings: switch Murmr on there, then restart Murmr "
                       "(macOS often only applies it after a restart). Still not allowed? Select "
-                      "Whispa in that list, remove it with −, and restart Whispa so it asks again.")
+                      "Murmr in that list, remove it with −, and restart Murmr so it asks again.")
         note.setObjectName("faint")
         note.setWordWrap(True)
         note.setContentsMargins(0, 0, 0, 10)
@@ -986,21 +986,21 @@ class SettingsPage(QScrollArea):
         self.llm_row_desc.setObjectName("ok" if ok else "faint")
         self.llm_row_desc.style().unpolish(self.llm_row_desc)
         self.llm_row_desc.style().polish(self.llm_row_desc)
-        self.status.setText(f"Whispa {__version__} · {self.ctl.status_text()}")
+        self.status.setText(f"Murmr {__version__} · {self.ctl.status_text()}")
         self.refresh_updates()
         self.refresh_permissions()
 
     def refresh_updates(self) -> None:
         u = self.ctl.update_state()
         if not u["installed"]:
-            self.update_title.setText(f"Whispa {__version__} · developer copy")
+            self.update_title.setText(f"Murmr {__version__} · developer copy")
             self.update_detail.setText("Running from a git checkout: update it with git pull. "
                                        "Copies installed with the installer update here.")
             for w in (self.update_check_btn, self.update_now_btn, self.update_auto, self.rollback_row,
                       self.update_changes, self.update_install, self.whats_new):
                 w.setVisible(False)
             return
-        version = f"Whispa {__version__}"
+        version = f"Murmr {__version__}"
         if u["sha"]:
             version += f" · {u['sha'][:7]}"
         if u["date"]:
@@ -1015,7 +1015,7 @@ class SettingsPage(QScrollArea):
             n = len(u["changes"])
             detail = (f"{n} update{'s' if n != 1 else ''} available." if n else "An update is available.")
             detail += (" Downloaded: it installs when you're away, or now." if u.get("staged")
-                       else " Updating restarts Whispa (a few seconds).")
+                       else " Updating restarts Murmr (a few seconds).")
         elif u["checked"]:
             detail = "You're up to date."
         else:
@@ -1048,7 +1048,7 @@ class MainWindow(QWidget):
         super().__init__()
         self.ctl = ctl
         self.setObjectName("root")
-        self.setWindowTitle("Whispa")
+        self.setWindowTitle("Murmr")
         self.setWindowIcon(app_icon())
         self.resize(980, 680)
         self.setMinimumSize(820, 540)
@@ -1068,7 +1068,7 @@ class MainWindow(QWidget):
         logo.setPixmap(app_pixmap(56).scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatio,
                                              Qt.TransformationMode.SmoothTransformation))
         brand.addWidget(logo)
-        name = QLabel("Whispa")
+        name = QLabel("Murmr")
         name.setObjectName("brand")
         brand.addWidget(name)
         brand.addStretch(1)
@@ -1136,7 +1136,7 @@ class MainWindow(QWidget):
         self.activateWindow()
 
     def closeEvent(self, event) -> None:
-        # Closing the window keeps Whispa running in the tray (like Wispr Flow).
+        # Closing the window keeps Murmr running in the tray (like Wispr Flow).
         self.settings._cancel_record()
         event.ignore()
         self.hide()

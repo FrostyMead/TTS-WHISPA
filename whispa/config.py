@@ -10,7 +10,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-APP_NAME = "Whispa"
+APP_NAME = "Murmr"
+OLD_NAME = "Whispa"  # earlier name: existing installs keep their data folder
 CONFIG_VERSION = 3
 log = logging.getLogger(__name__)
 
@@ -18,12 +19,15 @@ log = logging.getLogger(__name__)
 def config_dir() -> Path:
     if sys.platform == "win32":
         base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
-        d = base / APP_NAME
+        d, old = base / APP_NAME, base / OLD_NAME
     elif sys.platform == "darwin":
-        d = Path.home() / "Library" / "Application Support" / APP_NAME
+        base = Path.home() / "Library" / "Application Support"
+        d, old = base / APP_NAME, base / OLD_NAME
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-        d = base / APP_NAME.lower()
+        d, old = base / APP_NAME.lower(), base / OLD_NAME.lower()
+    if not d.exists() and old.exists():
+        return old  # installed before the rename: settings, history and dictionary stay put
     d.mkdir(parents=True, exist_ok=True)
     return d
 

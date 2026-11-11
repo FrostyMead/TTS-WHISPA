@@ -1,4 +1,4 @@
-"""How Whispa is started: Start Menu / Desktop shortcuts (Windows), Whispa.app (macOS),
+"""How Murmr is started: Start Menu / Desktop shortcuts (Windows), Murmr.app (macOS),
 an app-launcher entry (Linux). None of them opens a console window.
 """
 
@@ -14,12 +14,13 @@ from pathlib import Path
 
 from . import config
 
-MAC_APP = Path.home() / "Applications" / "Whispa.app"
-BUNDLE_ID = "io.github.frostymead.whispa"
+MAC_APP = Path.home() / "Applications" / "Murmr.app"
+OLD_MAC_APP = Path.home() / "Applications" / "Whispa.app"  # before the rename
+BUNDLE_ID = "io.github.frostymead.murmr"
 
 
 def launcher() -> tuple[str, list[str]]:
-    """(executable, args) that start Whispa without a console window."""
+    """(executable, args) that start Murmr without a console window."""
     if getattr(sys, "frozen", False):
         return sys.executable, []
     from .updater import boot_command, runtime_dir
@@ -60,9 +61,9 @@ def install(desktop: bool = True) -> list[Path]:
     made: list[Path] = []
     if sys.platform == "win32":
         icon = _icon_path()
-        targets = [Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Whispa.lnk"]
+        targets = [Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Murmr.lnk"]
         if desktop:
-            targets.append(Path(os.environ["USERPROFILE"]) / "Desktop/Whispa.lnk")
+            targets.append(Path(os.environ["USERPROFILE"]) / "Desktop/Murmr.lnk")
         from .updater import runtime_dir
 
         # Installed copies start in the install root, never inside app/current (which
@@ -74,7 +75,7 @@ def install(desktop: bool = True) -> list[Path]:
                 "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:WHISPA_LNK);"
                 "$s.TargetPath=$env:WHISPA_EXE;$s.Arguments=$env:WHISPA_ARGS;"
                 "$s.WorkingDirectory=$env:WHISPA_DIR;$s.IconLocation=$env:WHISPA_ICO;"
-                "$s.Description='Whispa voice dictation';$s.Save()"
+                "$s.Description='Murmr voice dictation';$s.Save()"
             )
             env = dict(os.environ, WHISPA_LNK=str(lnk), WHISPA_EXE=exe,
                        WHISPA_ARGS=subprocess.list2cmdline(args), WHISPA_DIR=workdir,
@@ -92,7 +93,7 @@ def install(desktop: bool = True) -> list[Path]:
         app_pixmap(256).save(str(icon))
         entry = Path.home() / ".local/share/applications/whispa.desktop"
         entry.parent.mkdir(parents=True, exist_ok=True)
-        entry.write_text("[Desktop Entry]\nType=Application\nName=Whispa\n"
+        entry.write_text("[Desktop Entry]\nType=Application\nName=Murmr\n"
                          "Comment=Local voice dictation\n"
                          f"Exec={shlex.join([exe, *args])}\nIcon={icon}\nTerminal=false\n"
                          "Categories=Utility;Accessibility;\n", encoding="utf-8")
@@ -101,43 +102,43 @@ def install(desktop: bool = True) -> list[Path]:
 
 
 # --------------------------------------------------------------------------- macOS app
-LAUNCHER_BIN = Path(__file__).resolve().parent / "resources" / "WhispaLauncher"
+LAUNCHER_BIN = Path(__file__).resolve().parent / "resources" / "MurmrLauncher"
 BUNDLE_FORMAT = 2  # 1: shell-script launcher, 2: native launcher (mac/launcher.c)
 
 
 def mac_app_files(exe: str, args: list[str], launcher_bin: Path = LAUNCHER_BIN) -> dict[str, bytes]:
-    """Files of a small Whispa.app that starts the bootstrap.
+    """Files of a small Murmr.app that starts the bootstrap.
 
     Its executable is a native launcher that stays running as Python's parent, so macOS
-    attributes the Microphone / Input Monitoring / Accessibility permissions to Whispa.app.
+    attributes the Microphone / Input Monitoring / Accessibility permissions to Murmr.app.
     Updates replace the Python code, not this bundle, so granted permissions stay granted.
     """
     native = launcher_bin.exists()
     info = {
-        "CFBundleName": "Whispa",
-        "CFBundleDisplayName": "Whispa",
+        "CFBundleName": "Murmr",
+        "CFBundleDisplayName": "Murmr",
         "CFBundleIdentifier": BUNDLE_ID,
-        "CFBundleExecutable": "Whispa",
-        "CFBundleIconFile": "Whispa",
+        "CFBundleExecutable": "Murmr",
+        "CFBundleIconFile": "Murmr",
         "CFBundlePackageType": "APPL",
         # Fixed versions: the bundle only changes when its launcher does, and macOS ties
         # granted permissions to the bundle's exact contents.
         "CFBundleShortVersionString": "1.0",
         "CFBundleVersion": str(BUNDLE_FORMAT if native else 1),
-        "WhispaBundleFormat": BUNDLE_FORMAT if native else 1,
+        "MurmrBundleFormat": BUNDLE_FORMAT if native else 1,
         "LSMinimumSystemVersion": "11.0",
         "LSUIElement": True,  # menu-bar app: no Dock icon
         "NSHighResolutionCapable": True,
-        "NSMicrophoneUsageDescription": "Whispa listens while you hold the dictation shortcut "
+        "NSMicrophoneUsageDescription": "Murmr listens while you hold the dictation shortcut "
                                         "and transcribes on this Mac.",
-        "NSAppleEventsUsageDescription": "Whispa pastes your dictation into the app you're using.",
+        "NSAppleEventsUsageDescription": "Murmr pastes your dictation into the app you're using.",
     }
     files = {"Contents/Info.plist": plistlib.dumps(info)}
     if native:
-        files["Contents/MacOS/Whispa"] = launcher_bin.read_bytes()
+        files["Contents/MacOS/Murmr"] = launcher_bin.read_bytes()
         files["Contents/Resources/command"] = _command_file(exe, args)
-    else:  # fallback; permissions then go to Python rather than Whispa
-        files["Contents/MacOS/Whispa"] = ("#!/bin/bash\n# Starts Whispa (generated by the installer).\n"
+    else:  # fallback; permissions then go to Python rather than Murmr
+        files["Contents/MacOS/Murmr"] = ("#!/bin/bash\n# Starts Murmr (generated by the installer).\n"
                                           "exec " + shlex.join([exe, *args]) + ' "$@"\n').encode()
     return files
 
@@ -153,8 +154,8 @@ def build_mac_app(dest: Path, exe: str, args: list[str]) -> Path:
         path = tmp / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    (tmp / "Contents/MacOS/Whispa").chmod(0o755)
-    _mac_icon(tmp / "Contents/Resources/Whispa.icns")
+    (tmp / "Contents/MacOS/Murmr").chmod(0o755)
+    _mac_icon(tmp / "Contents/Resources/Murmr.icns")
     shutil.rmtree(dest, ignore_errors=True)
     tmp.rename(dest)
     if shutil.which("codesign"):  # ad-hoc signature: a stable identity for macOS privacy settings
@@ -164,7 +165,7 @@ def build_mac_app(dest: Path, exe: str, args: list[str]) -> Path:
 
 
 def mac_app_outdated(app: Path = MAC_APP) -> bool:
-    """Whispa.app exists but predates the native launcher, or starts another command."""
+    """Murmr.app exists but predates the native launcher, or starts another command."""
     if not app.exists() or not LAUNCHER_BIN.exists():
         return False
     try:
@@ -172,11 +173,11 @@ def mac_app_outdated(app: Path = MAC_APP) -> bool:
         command = (app / "Contents/Resources/command").read_bytes()
     except Exception:  # noqa: BLE001 - missing or damaged
         return True
-    return info.get("WhispaBundleFormat", 1) < BUNDLE_FORMAT or command != _command_file(*launcher())
+    return info.get("MurmrBundleFormat", 1) < BUNDLE_FORMAT or command != _command_file(*launcher())
 
 
 def open_mac_app(background: bool) -> bool:
-    """Start a new Whispa through Whispa.app. False if that didn't work."""
+    """Start a new Murmr through Murmr.app. False if that didn't work."""
     cmd = ["/usr/bin/open", "-n", "-a", str(MAC_APP)]
     if background:
         cmd += ["--args", "--background"]
@@ -192,11 +193,11 @@ def mac_app_usable() -> bool:
 
 
 def relaunch_through_mac_app(background: bool) -> bool:
-    """macOS: if this Whispa wasn't started by Whispa.app, start it through the app instead
-    (refreshing an old Whispa.app first) and return True: this process should then exit.
+    """macOS: if this Murmr wasn't started by Murmr.app, start it through the app instead
+    (refreshing an old Murmr.app first) and return True: this process should then exit.
 
-    Started any other way (an older Whispa.app, a restart, a terminal), macOS would
-    attribute Whispa's permissions to Python instead of Whispa.
+    Started any other way (an older Murmr.app, a restart, a terminal), macOS would
+    attribute Murmr's permissions to Python instead of Murmr.
     """
     if os.environ.get("WHISPA_BUNDLE") or not mac_app_usable():
         return False
@@ -230,3 +231,45 @@ def _mac_icon(icns: Path) -> None:
         app_pixmap(size * 2).save(str(iconset / f"icon_{size}x{size}@2x.png"))
     subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(icns)], capture_output=True)
     shutil.rmtree(iconset, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- rename
+def _old_windows_shortcuts() -> list[Path]:
+    return [Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs/Whispa.lnk",
+            Path(os.environ.get("USERPROFILE", "")) / "Desktop/Whispa.lnk"]
+
+
+def migrate_from_whispa() -> bool:
+    """One-time move from the old name: shortcuts, the Mac app and launch at login.
+
+    Returns True on macOS when Murmr.app was just created: this process (still running
+    inside Whispa.app) should hand over to it.
+    """
+    import logging
+
+    from . import autostart
+
+    log = logging.getLogger(__name__)
+    try:
+        if sys.platform == "win32":
+            old = [p for p in _old_windows_shortcuts() if p.exists()]
+            if old:
+                install(desktop=any("Desktop" in str(p) for p in old))
+                for p in old:
+                    p.unlink(missing_ok=True)
+                log.info("Renamed shortcuts to Murmr")
+            if autostart.migrate_old():
+                log.info("Launch at login now starts Murmr")
+            return False
+        if sys.platform == "darwin" and OLD_MAC_APP.exists():
+            moved_login = autostart.migrate_old(before_app=True)
+            if not MAC_APP.exists():
+                build_mac_app(MAC_APP, *launcher())
+            shutil.rmtree(OLD_MAC_APP, ignore_errors=True)
+            if moved_login:
+                autostart.set_enabled(True)  # now pointing at Murmr.app
+            log.info("Replaced Whispa.app with Murmr.app")
+            return True
+    except Exception as exc:  # noqa: BLE001 - never stop the app over this
+        log.warning("Rename migration failed: %s", exc)
+    return False
