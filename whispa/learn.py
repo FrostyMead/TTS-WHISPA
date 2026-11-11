@@ -268,9 +268,11 @@ class TrainingStore:
 
     The label is what Parakeet heard (before AI polish or snippets, which the audio doesn't
     contain) plus any word fixes you made afterwards. Each sample gets a status:
-    ``corrected`` (you fixed words: the most valuable), ``unedited`` (you left it as is:
-    probably right) or ``unknown`` (couldn't watch the field). When the folder reaches its
-    size limit, the oldest non-corrected clips are deleted first.
+    ``read`` (a reading-session sentence: the label is exactly the text you read),
+    ``corrected`` (you fixed words: the most valuable dictations), ``unedited`` (you left it
+    as is: probably right) or ``unknown`` (couldn't watch the field). Re-recorded reading
+    clips are marked ``deleted``. When the folder reaches its size limit, the oldest
+    clips that aren't ``read`` or ``corrected`` are deleted first.
     """
 
     def __init__(self, root: Path, max_mb: int = 2000):
@@ -280,6 +282,7 @@ class TrainingStore:
         self._lock = threading.Lock()
         self._raw: dict[str, str] = {}
         self._corrected: set[str] = set()
+        self._read: dict[str, tuple[str, float]] = {}  # id -> (prompt, seconds)
         self._load()
 
     def _load(self) -> None:
@@ -294,7 +297,8 @@ class TrainingStore:
         if any("verified" in r for r in rows):
             # v1 labels could include text typed after the dictation: keep the audio,
             # reset those labels to what was transcribed.
-            base = [dict(r, status="unknown") for r in rows if "audio" in r]
+            base = [dict(r, status="read" if r.get("status") == "read" else "unknown")
+                    for r in rows if "audio" in r]
             for r in base:
                 r.pop("verified", None)
             self.manifest.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in base),
@@ -302,14 +306,29 @@ class TrainingStore:
             rows = base
             log.info("Reset %d voice-sample labels from the old format", len(base))
         for r in rows:
-            if r.get("status") == "corrected":
-                self._corrected.add(r["id"])
+            status, sid = r.get("status"), r.get("id")
+            if status == "corrected":
+                self._corrected.add(sid)
+            elif status == "read" and "audio" in r:
+                self._read[sid] = (r.get("text", ""), float(r.get("duration", 0)))
+            elif status == "deleted":
+                self._corrected.discard(sid)
+                self._read.pop(sid, None)
 
     def stats(self) -> dict:
         wavs = list(self.root.glob("*.wav")) if self.root.exists() else []
         size = sum(p.stat().st_size for p in wavs)
         return {"clips": len(wavs), "bytes": size, "seconds": size / 32000,
-                "corrected": len(self._corrected)}
+                "corrected": len(self._corrected), "read": len(self._read),
+                "read_seconds": self.read_seconds()}
+
+    def read_seconds(self) -> float:
+        """Reading-session speech still on disk, in seconds."""
+        return sum(sec for sid, (_, sec) in self._read.items() if (self.root / f"{sid}.wav").exists())
+
+    def read_prompts(self) -> set[str]:
+        """Sentences already read (and still on disk)."""
+        return {text for sid, (text, _) in self._read.items() if (self.root / f"{sid}.wav").exists()}
 
     def delete_all(self) -> None:
         with self._lock:
@@ -318,25 +337,54 @@ class TrainingStore:
             self.manifest.unlink(missing_ok=True)
             self._raw.clear()
             self._corrected.clear()
+            self._read.clear()
+
+    def _new_id(self) -> str:
+        sample_id = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
+        while (self.root / f"{sample_id}.wav").exists():  # two saves in the same millisecond
+            sample_id = sample_id[:-3] + f"{(int(sample_id[-3:]) + 1) % 1000:03d}"
+        return sample_id
+
+    def _write(self, audio: np.ndarray, sr: int, row: dict) -> str:
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._enforce_cap()
+        sample_id = self._new_id()
+        pcm = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
+        with wave.open(str(self.root / f"{sample_id}.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(pcm.tobytes())
+        self._append({"id": sample_id, "audio": f"{sample_id}.wav",
+                      "duration": round(len(audio) / sr, 2), **row})
+        return sample_id
 
     def add(self, audio: np.ndarray, sr: int, asr_text: str) -> str | None:
         try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            self._enforce_cap()
-            sample_id = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
-            pcm = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
-            with wave.open(str(self.root / f"{sample_id}.wav"), "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(sr)
-                w.writeframes(pcm.tobytes())
-            self._append({"id": sample_id, "audio": f"{sample_id}.wav", "duration": round(len(audio) / sr, 2),
-                          "asr": asr_text, "text": asr_text, "status": "unknown"})
-            self._raw[sample_id] = asr_text
-            return sample_id
+            sample_id = self._write(audio, sr, {"asr": asr_text, "text": asr_text, "status": "unknown"})
         except OSError as exc:
             log.warning("Could not save training sample: %s", exc)
             return None
+        self._raw[sample_id] = asr_text
+        return sample_id
+
+    def add_read(self, audio: np.ndarray, sr: int, prompt: str, asr_text: str) -> str | None:
+        """A reading-session clip: the label is the sentence that was read, word for word."""
+        try:
+            sample_id = self._write(audio, sr, {"asr": asr_text, "text": prompt, "status": "read"})
+        except OSError as exc:
+            log.warning("Could not save reading sample: %s", exc)
+            return None
+        self._read[sample_id] = (prompt, round(len(audio) / sr, 2))
+        return sample_id
+
+    def remove(self, sample_id: str) -> None:
+        """Drop one clip (e.g. you re-recorded that sentence)."""
+        (self.root / f"{sample_id}.wav").unlink(missing_ok=True)
+        self._read.pop(sample_id, None)
+        self._corrected.discard(sample_id)
+        self._raw.pop(sample_id, None)
+        self._append({"id": sample_id, "status": "deleted"})
 
     def record_review(self, sample_id: str, corrections: list[Correction]) -> None:
         """You had a chance to fix the text: apply your word fixes to the transcript label."""
@@ -351,14 +399,14 @@ class TrainingStore:
             self._append({"id": sample_id, "status": "unedited"})
 
     def _enforce_cap(self) -> None:
-        """Over the limit: delete the oldest clips, uncorrected ones first."""
+        """Over the limit: delete the oldest clips, read and corrected ones last."""
         wavs = sorted(self.root.glob("*.wav"))  # ids are timestamps: oldest first
         total = sum(p.stat().st_size for p in wavs)
         if total <= self.max_bytes:
             return
         target = self.max_bytes * 0.9
-        order = [p for p in wavs if p.stem not in self._corrected] + \
-                [p for p in wavs if p.stem in self._corrected]
+        keep = self._corrected | set(self._read)
+        order = [p for p in wavs if p.stem not in keep] + [p for p in wavs if p.stem in keep]
         for p in order:
             if total <= target:
                 break

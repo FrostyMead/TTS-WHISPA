@@ -856,6 +856,7 @@ class MainWindow(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             self.nav.addButton(b, i)
             sl.addWidget(b)
+        self._add_voice_training_page(ctl, sl)
         self.nav.idClicked.connect(self.show_page)
         sl.addStretch(1)
         self.side_status = QLabel()
@@ -871,6 +872,19 @@ class MainWindow(QWidget):
         except AttributeError:
             pass
         self.show_page(0)
+
+    def _add_voice_training_page(self, ctl, sidebar: QVBoxLayout) -> None:
+        """Voice training (voice_training.py): the last page index, listed above Settings."""
+        from .voice_training import VoiceTrainingPage
+
+        self.voice_training = VoiceTrainingPage(ctl)
+        index = self.pages.addWidget(self.voice_training)
+        b = QPushButton("Voice training")
+        b.setObjectName("nav")
+        b.setCheckable(True)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.nav.addButton(b, index)
+        sidebar.insertWidget(sidebar.indexOf(self.nav.button(self.pages.indexOf(self.settings))), b)
 
     def apply_theme(self) -> None:
         self.setStyleSheet(theme.stylesheet(theme.current()))
