@@ -362,12 +362,15 @@ class HomePage(QScrollArea):
         self.hint.setText(f"Hold {labels} anywhere and start talking. Everything stays on this computer.")
         rows = load_history(self.ctl.history_path)
         dictated = [r for r in rows if not r.get("command")]
-        words = sum(len(r["text"].split()) for r in dictated)
-        seconds = sum(r.get("seconds", 0) for r in dictated)
+        from .history import totals
+
+        archived = totals(self.ctl.history_path)  # dictations past the history's keep time
+        words = sum(len(r["text"].split()) for r in dictated) + archived["words"]
+        seconds = sum(r.get("seconds", 0) for r in dictated) + archived["seconds"]
         self.s_words.set(_fmt_int(words))
         self.s_wpm.set(_fmt_int(words / seconds * 60) if seconds > 5 else "–")
         saved = max(0.0, words / TYPING_WPM * 60 - seconds)
-        self.s_saved.set(_fmt_duration(saved) if rows else "–")
+        self.s_saved.set(_fmt_duration(saved) if words else "–")
         streak = day_streak({dt.date.fromtimestamp(r.get("t", 0)) for r in rows})
         week_ago = dt.datetime.now().timestamp() - 7 * 86400
         week = sum(len(r["text"].split()) for r in dictated if r.get("t", 0) >= week_ago)
@@ -747,6 +750,30 @@ class SettingsPage(QScrollArea):
                                        "only, never saved."))
 
         # Your voice: opt-ins, exclusions, what's stored, delete everything (privacy.py)
+        # History (history.py)
+        from .history import RETENTION_CHOICES
+
+        sec = _section(lay, "History")
+        sec.addWidget(self._switch_row("save_history", "Keep a history of my dictations",
+                                       "Shown on Home to search, copy and paste again. Kept on "
+                                       "this computer only.", first=True))
+        self.history_keep = QComboBox()
+        for days, label in RETENTION_CHOICES:
+            self.history_keep.addItem(label, days)
+        idx = self.history_keep.findData(int(cfg.history_days or 0))
+        if idx < 0:
+            self.history_keep.addItem(f"{cfg.history_days} days", int(cfg.history_days))
+            idx = self.history_keep.count() - 1
+        self.history_keep.setCurrentIndex(idx)
+        self.history_keep.currentIndexChanged.connect(
+            lambda: self._set("history_days", self.history_keep.currentData()))
+        sec.addWidget(setting_row("Keep it for", "Older dictations are deleted. Your totals on "
+                                  "Home are kept.", self.history_keep))
+        clear_history = QPushButton("Delete all history")
+        clear_history.clicked.connect(self._delete_history)
+        sec.addWidget(setting_row("Delete it now", "Every dictation in the history and the totals "
+                                  "on Home.", clear_history))
+
         sec = _section(lay, "Your voice")
         promise = Label("🔒  Your voice stays on this computer. Murmr never uploads your "
                         "recordings, transcripts or voice models, and training runs on your own "
@@ -1115,6 +1142,17 @@ class SettingsPage(QScrollArea):
             self.hotkey_msg.setVisible(True)
             return
         field.set_labels(hotkey_labels(spec))
+
+    def _delete_history(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        if QMessageBox.question(self, "Delete all history",
+                                "Delete every dictation in your history? This can't be undone.",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        if hasattr(self.ctl, "delete_all_history"):
+            self.ctl.delete_all_history()
 
     def _delete_samples(self) -> None:
         from PySide6.QtWidgets import QMessageBox

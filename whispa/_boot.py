@@ -5,7 +5,10 @@ Standard library only: it runs before any of Murmr's code or packages are on the
 <runtime>/
     boot.py         this file
     install.json    repo, branch, runtime flavour (cuda/cpu), uv path
-    venv/           Python packages
+    venv/           Python packages (from the installer)
+    envs/<sha>/     packages of a later version whose pyproject.toml changed; each
+                    version's version.json says which one it uses ("env"), so a rollback
+                    also goes back to that version's packages
     app/current/    the running version (a GitHub snapshot, with version.json)
     app/next/       an update downloaded by the app, applied on the next start
     app/previous/   the version before, for rollback
@@ -103,8 +106,36 @@ def refresh_self() -> None:
         os.replace(tmp, os.path.abspath(__file__))
 
 
+def _env_of(app_dir: str) -> str:
+    """The environment folder (relative to RUNTIME) a version uses."""
+    try:
+        with open(os.path.join(app_dir, "version.json"), encoding="utf-8-sig") as f:
+            env = str(json.load(f).get("env") or "venv")
+    except (OSError, ValueError):
+        env = "venv"
+    parts = env.replace("\\", "/").split("/")
+    if env != "venv" and (len(parts) != 2 or parts[0] != "envs" or parts[1] in ("", ".", "..")):
+        return "venv"
+    return env
+
+
+def prune_envs() -> None:
+    """Remove package environments no kept version uses."""
+    keep = {_env_of(d) for d in (CURRENT, PREVIOUS, NEXT) if os.path.isdir(d)}
+    root = os.path.join(RUNTIME, "envs")
+    if not os.path.isdir(root):
+        return
+    for name in os.listdir(root):
+        if f"envs/{name}" not in keep:
+            shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+            log(f"removed unused packages envs/{name}")
+
+
 def add_packages() -> None:
-    venv = os.path.join(RUNTIME, "venv")
+    venv = os.path.join(RUNTIME, _env_of(CURRENT))
+    if not os.path.isdir(venv):
+        log(f"packages {venv} missing, using venv")
+        venv = os.path.join(RUNTIME, "venv")
     candidates = [os.path.join(venv, "Lib", "site-packages")]
     candidates += glob.glob(os.path.join(venv, "lib", "python3*", "site-packages"))
     for path in candidates:
@@ -131,6 +162,10 @@ def main() -> None:
     except OSError as exc:
         # e.g. a folder is open in Explorer. Start what we have; the update stays staged.
         log(f"couldn't apply the update yet, starting the current version: {exc}")
+    try:
+        prune_envs()
+    except OSError:
+        pass
     add_packages()
     sys.path.insert(0, CURRENT)
     sys.argv = ["whispa", *args]

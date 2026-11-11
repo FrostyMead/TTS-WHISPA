@@ -4,7 +4,16 @@
 
 - Speech recognition, the AI clean-up and read-aloud run on your computer.
 - Murmr never uploads your recordings, transcripts, dictionary or voice models, and nothing
-  is sent to the developer. The only network traffic is downloading the app, its updates and
+  is sent to the developer.
+- **The AI clean-up** talks to a server on this computer (Ollama). You can point it at
+  another server in config.json, but Murmr refuses to send text anywhere that isn't this
+  computer unless you also set `"allow_remote": true`. Then the text you dictate (and
+  meeting transcripts you summarize) goes to that server, under its own privacy terms.
+- **History:** your dictations are kept on this computer for a year by default (Settings →
+  History: forever, 1 year, 90/30/7 days, or off) so you can find and paste them again.
+  "Delete all history" removes them now. The data folder is readable only by your user
+  account, and an AI API key, if you use one, is kept in the system keychain / Credential
+  Manager rather than in a file. The only network traffic is downloading the app, its updates and
   the speech / AI / voice models (public files from GitHub and Hugging Face).
 - **Sync (off by default)** only talks to your own computers that you paired with a code, on
   your local network, encrypted. It shares your Dictionary and, if you choose, speech models

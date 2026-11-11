@@ -18,12 +18,15 @@ from whispa.updater import Updater
 
 REAL_BOOT = Path(__file__).resolve().parent.parent / "whispa" / "_boot.py"
 BASE_PY = str(Path(sys.base_prefix) / ("python.exe" if sys.platform == "win32" else "bin/python3"))
-STUB_MAIN = '''import json, os
+STUB_MAIN = '''import json, os, sys
 def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sha = json.load(open(os.path.join(here, "version.json")))["sha"]
     with open(os.environ["WHISPA_TEST_OUT"], "a") as f:
         f.write(sha + "\\n")
+    envs = [p for p in sys.path if "envs" in p.replace(os.sep, "/").split("/")]
+    with open(os.environ["WHISPA_TEST_OUT"] + ".env", "w") as f:
+        f.write(envs[0] if envs else "venv")
     return 0
 '''
 OLD, NEW = "a" * 40, "b" * 40
@@ -49,9 +52,20 @@ def zip_of(sha: str, pyproject: str) -> bytes:
     return buf.getvalue()
 
 
+def tree_of(data: bytes) -> dict:
+    from whispa.updater import git_blob_sha
+
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return {"truncated": False, "tree": [
+            {"path": i.filename.split("/", 1)[1], "type": "blob", "mode": "100644",
+             "sha": git_blob_sha(zf.read(i))} for i in zf.infolist() if not i.is_dir()]}
+
+
 @pytest.fixture
 def github():
-    state = {"pyproject": "[project]\nname='whispa'\n", "hits": []}
+    state = {"pyproject": "[project]\nname='whispa'\n", "hits": [], "tamper": False,
+             "runs": [{"head_sha": NEW, "conclusion": "success",
+                       "head_commit": {"timestamp": "2026-11-12T10:00:00Z"}}]}
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -60,13 +74,14 @@ def github():
         def do_GET(self):
             state["hits"].append(self.path)
             if "/actions/workflows/ci.yml/runs" in self.path:
-                body = json.dumps({"workflow_runs": [{"head_sha": NEW,
-                                                      "head_commit": {"timestamp": "2026-11-12T10:00:00Z"}}]})
+                body = json.dumps({"workflow_runs": state["runs"]})
+            elif "/git/trees/" in self.path:
+                body = json.dumps(tree_of(zip_of(NEW, state["pyproject"])))
             elif "/compare/" in self.path:
                 body = json.dumps({"commits": [{"commit": {"message": "Fix the pill\n\nDetails"}},
                                                {"commit": {"message": "Add snippets"}}]})
             elif "/zip/" in self.path:
-                data = zip_of(NEW, state["pyproject"])
+                data = zip_of(NEW, state["pyproject"] + ("# changed in transit\n" if state["tamper"] else ""))
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
@@ -96,6 +111,7 @@ def runtime(tmp_path):
     (rt / "app" / "current" / "version.json").write_text(json.dumps({"sha": OLD, "date": "2026-11-11"}))
     shutil.copy(REAL_BOOT, rt / "boot.py")
     (rt / "install.json").write_text(json.dumps({"repo": "o/r", "branch": "main", "runtime": "cpu"}))
+    (rt / "venv").mkdir()
     return rt
 
 
@@ -150,15 +166,51 @@ def test_manual_rollback(runtime, github, tmp_path):
     assert u.current_version()["sha"] == OLD
 
 
+def _fake_env(self, pyproject, env):
+    sp = env / ("Lib/site-packages" if sys.platform == "win32" else "lib/python3.13/site-packages")
+    sp.mkdir(parents=True)
+    _fake_env.calls.append(env)
+
+
 def test_packages_reinstalled_only_when_pyproject_changes(runtime, github, monkeypatch):
-    calls = []
-    monkeypatch.setattr(Updater, "install_packages", lambda self, p: calls.append(p))
+    _fake_env.calls = []
+    monkeypatch.setattr(Updater, "install_packages", _fake_env)
     u = updater(runtime, github)
     u.stage(u.check())
-    assert calls == []
+    assert _fake_env.calls == [] and u.staged()["env"] == "venv"
     github["pyproject"] = "[project]\nname='whispa'\ndependencies=['new-thing']\n"
     u.stage(u.check())
-    assert len(calls) == 1
+    assert len(_fake_env.calls) == 1 and u.staged()["env"] == "envs/" + NEW[:12]
+
+
+def test_new_packages_go_in_their_own_environment_and_rollback_leaves_them(runtime, github,
+                                                                         monkeypatch, tmp_path):
+    _fake_env.calls = []
+    monkeypatch.setattr(Updater, "install_packages", _fake_env)
+    github["pyproject"] = "[project]\nname='whispa'\ndependencies=['new-thing']\n"
+    u = updater(runtime, github)
+    u.stage(u.check())
+    out = tmp_path / "out.txt"
+    assert boot(runtime, out) == [NEW]
+    assert NEW[:12] in (tmp_path / "out.txt.env").read_text()  # the new version's packages
+    u.request_rollback()
+    assert boot(runtime, out, "--rollback")[-1] == OLD
+    assert (tmp_path / "out.txt.env").read_text() == "venv"  # the old version's own packages
+
+
+def test_tampered_download_is_refused(runtime, github):
+    github["tamper"] = True
+    u = updater(runtime, github)
+    with pytest.raises(RuntimeError, match="didn't match"):
+        u.stage(u.check())
+    assert u.staged() is None
+
+
+def test_no_tested_version_means_no_update(runtime, github):
+    github["runs"] = []
+    info = updater(runtime, github).check()
+    assert not info.available and "passed the tests" in info.error
+    assert not any("/commits/" in h for h in github["hits"])  # no fallback to the branch head
 
 
 def test_up_to_date(runtime, github):

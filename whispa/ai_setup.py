@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import logging
 import os
 import shutil
@@ -123,12 +124,17 @@ def _release_asset(name: str) -> tuple[str, str]:
     if name not in assets:
         raise RuntimeError(f"Ollama's latest release has no {name}")
     sha = ""
-    if "sha256sum.txt" in assets:
+    digest = next((a.get("digest") or "" for a in rel["assets"] if a["name"] == name), "")
+    if digest.startswith("sha256:"):  # GitHub's own checksum of the uploaded file
+        sha = digest.split(":", 1)[1].lower()
+    elif "sha256sum.txt" in assets:
         with _get(assets["sha256sum.txt"]) as r:
             for line in r.read().decode().splitlines():
                 parts = line.split()
                 if len(parts) == 2 and parts[1].lstrip("*./") == name:
                     sha = parts[0].lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise RuntimeError("Ollama's download has no checksum to check it against; not installing it.")
     return assets[name], sha
 
 
@@ -141,7 +147,7 @@ def install_ollama(progress, cancel: threading.Event) -> str:
         if sys.platform == "darwin":
             url, sha = _release_asset("ollama-darwin.tgz")
             got = _download(url, tmp / "ollama.tgz", progress, "Ollama", cancel)
-            if sha and got != sha:
+            if got != sha:
                 raise RuntimeError("The Ollama download didn't match its checksum; not installing it.")
             progress("Unpacking Ollama…", None)
             dest = local_dir()
@@ -157,7 +163,7 @@ def install_ollama(progress, cancel: threading.Event) -> str:
         if sys.platform == "win32":
             url, sha = _release_asset("OllamaSetup.exe")
             got = _download(url, tmp / "OllamaSetup.exe", progress, "Ollama", cancel)
-            if sha and got != sha:
+            if got != sha:
                 raise RuntimeError("The Ollama download didn't match its checksum; not installing it.")
             progress("Installing Ollama…", None)
             subprocess.run([str(tmp / "OllamaSetup.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],

@@ -1,10 +1,14 @@
 """Updates from GitHub for installed copies (see whispa/_boot.py for the folder layout).
 
 * check():  newest commit on the branch whose CI run passed, compared with ours,
-            plus the list of changes in between
-* stage():  download that snapshot to app/next, install new packages if
-            pyproject.toml changed; the bootstrap applies it on the next start
-* rollback(): ask the bootstrap to go back to app/previous on the next start
+            plus the list of changes in between. If that can't be confirmed (GitHub
+            unreachable, no passing run), there is no update: never an untested one.
+* stage():  download that snapshot, check every file against the commit's own git
+            hashes (and size limits), and put it in app/next. If pyproject.toml changed,
+            the new packages go into a separate environment (envs/<sha>) used only by
+            that version, so the running version and a rollback keep their own packages.
+            The bootstrap applies it on the next start.
+* rollback(): ask the bootstrap to go back to app/previous (and its environment)
 
 Only public data is fetched from GitHub. Nothing about you or your dictations is sent.
 A development checkout (a git clone) is never touched: update it with git.
@@ -13,6 +17,7 @@ A development checkout (a git clone) is never touched: update it with git.
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import logging
 import os
@@ -32,6 +37,8 @@ API = "https://api.github.com"
 CODELOAD = "https://codeload.github.com"
 USER_AGENT = "Murmr-Updater"
 CI_WORKFLOW = "ci.yml"
+MAX_DOWNLOAD = 100 << 20  # the snapshot zip (about 1 MB today)
+MAX_UNPACKED = 300 << 20
 
 APP_DIR = Path(__file__).resolve().parent.parent  # .../app/current, or the git checkout
 
@@ -117,18 +124,14 @@ class Updater:
         return json.loads(self._get(f"{self.api}/repos/{self.repo}{path}"))
 
     def latest_good_commit(self) -> tuple[str, str]:
-        """(sha, date) of the newest commit on the branch whose CI passed (or the branch head
-        if the repo has no CI runs yet)."""
-        try:
-            runs = self._json(f"/actions/workflows/{CI_WORKFLOW}/runs?branch={self.branch}"
-                              "&status=success&event=push&per_page=1")
-            if runs.get("workflow_runs"):
-                run = runs["workflow_runs"][0]
-                return run["head_sha"], run.get("head_commit", {}).get("timestamp", "")
-        except Exception as exc:  # noqa: BLE001 - no CI configured, or the API is unreachable
-            log.debug("CI lookup failed: %s", exc)
-        head = self._json(f"/commits/{self.branch}")
-        return head["sha"], head["commit"]["committer"]["date"]
+        """(sha, date) of the newest commit on the branch whose CI passed. Raises when that
+        can't be confirmed: an untested version is never installed."""
+        runs = self._json(f"/actions/workflows/{CI_WORKFLOW}/runs?branch={self.branch}"
+                          "&status=success&event=push&per_page=1")
+        for run in runs.get("workflow_runs") or []:
+            if run.get("conclusion", "success") == "success" and run.get("head_sha"):
+                return run["head_sha"], (run.get("head_commit") or {}).get("timestamp", "")
+        raise RuntimeError("no version that passed the tests was found")
 
     def check(self) -> UpdateInfo:
         info = UpdateInfo(current_sha=self.current_version().get("sha", ""))
@@ -160,8 +163,11 @@ class Updater:
         shutil.rmtree(tmp, ignore_errors=True)
         shutil.rmtree(nxt, ignore_errors=True)
         progress("Downloading…")
-        data = self._get(f"{self.codeload}/{self.repo}/zip/{info.target_sha}", timeout=120)
+        data = self._get_limited(f"{self.codeload}/{self.repo}/zip/{info.target_sha}", MAX_DOWNLOAD,
+                                 timeout=120)
+        tree = self._json(f"/git/trees/{info.target_sha}?recursive=1")
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            verify_snapshot(zf, tree)
             zf.extractall(tmp)
         roots = [p for p in tmp.iterdir() if p.is_dir()]
         src = roots[0] if len(roots) == 1 else tmp  # GitHub zips have one top-level folder
@@ -169,39 +175,86 @@ class Updater:
             raise RuntimeError("The download doesn't look like Murmr")
         current_pyproject = app / "current" / "pyproject.toml"
         new_pyproject = src / "pyproject.toml"
-        if not current_pyproject.is_file() or \
+        env = self.current_version().get("env") or "venv"
+        if not current_pyproject.is_file() or not (self.runtime / env).is_dir() or \
                 current_pyproject.read_bytes() != new_pyproject.read_bytes():
             progress("Installing new packages…")
-            self.install_packages(new_pyproject)
+            env = f"envs/{info.target_sha[:12]}"
+            self.install_packages(new_pyproject, self.runtime / env)
         (src / "version.json").write_text(json.dumps({
             "sha": info.target_sha, "date": info.target_date, "repo": self.repo,
             "branch": self.branch, "changes": info.changes, "staged_at": time.time(),
+            "env": env,
         }, indent=2), encoding="utf-8")
         src.replace(nxt) if src != tmp else tmp.replace(nxt)
         shutil.rmtree(tmp, ignore_errors=True)
         progress("Ready to restart")
         log.info("Staged update %s", info.target_sha[:7])
 
-    def install_packages(self, pyproject: Path) -> None:
+    def _get_limited(self, url: str, limit: int, timeout: float = 60) -> bytes:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read(limit + 1)
+        if len(data) > limit:
+            raise RuntimeError("The download is far bigger than Murmr; not installing it")
+        return data
+
+    def install_packages(self, pyproject: Path, env: Path) -> None:
+        """A fresh environment at ``env`` with ``pyproject``'s packages. uv links them from
+        its cache, so this is quick and takes little extra disk space."""
         meta = self.install_info()
         uv = meta.get("uv") or shutil.which("uv")
         if not uv or not Path(uv).exists() and not shutil.which(uv):
             raise RuntimeError("uv is missing; re-run the installer")
-        venv = self.runtime / "venv"
-        python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        base = Path(sys.base_prefix) / ("python.exe" if sys.platform == "win32" else "bin/python3")
+        flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+        shutil.rmtree(env, ignore_errors=True)
+        env.parent.mkdir(parents=True, exist_ok=True)
+
+        def run(cmd: list[str]) -> None:
+            proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=flags,
+                                  timeout=1800, env=env_without_venv())
+            if proc.returncode:
+                shutil.rmtree(env, ignore_errors=True)
+                raise RuntimeError(f"Installing packages failed: {proc.stderr.strip()[-400:]}")
+
+        run([uv, "venv", "--python", str(base if base.exists() else sys.executable), str(env)])
+        python = env / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         cmd = [uv, "pip", "install", "--python", str(python), "-r", str(pyproject)]
         if meta.get("runtime"):
             cmd += ["--extra", meta["runtime"]]
-        flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
-        proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=flags, timeout=1800)
-        if proc.returncode:
-            raise RuntimeError(f"Installing packages failed: {proc.stderr.strip()[-400:]}")
+        run(cmd)
 
     def request_rollback(self) -> None:
         if not self.has_previous():
             raise RuntimeError("There's no previous version to go back to")
         shutil.rmtree(self.runtime / "app" / "next", ignore_errors=True)
         (self.runtime / "trial").write_text("rollback requested", encoding="utf-8")
+
+
+def git_blob_sha(data: bytes) -> str:
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()  # noqa: S324 - git's id
+
+
+def verify_snapshot(zf: zipfile.ZipFile, tree: dict) -> None:
+    """Every file in the downloaded zip is exactly the commit's file (git blob hash), none
+    missing or extra, within the size limits. Raises otherwise."""
+    if tree.get("truncated"):
+        raise RuntimeError("Couldn't verify the download (file list incomplete)")
+    expected = {e["path"]: e["sha"] for e in tree.get("tree", [])
+                if e.get("type") == "blob" and e.get("mode") != "120000"}
+    files = [i for i in zf.infolist() if not i.is_dir()]
+    if sum(i.file_size for i in files) > MAX_UNPACKED:
+        raise RuntimeError("The download unpacks far bigger than Murmr; not installing it")
+    seen = set()
+    for item in files:
+        rel = item.filename.split("/", 1)[1] if "/" in item.filename else item.filename
+        if rel not in expected or git_blob_sha(zf.read(item)) != expected[rel]:
+            raise RuntimeError(f"The download didn't match the published version ({rel}); "
+                               "not installing it")
+        seen.add(rel)
+    if seen != set(expected):
+        raise RuntimeError("The download is missing files; not installing it")
 
 
 def boot_command(extra: list[str] | None = None) -> list[str]:

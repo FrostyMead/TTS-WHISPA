@@ -53,6 +53,8 @@ class LiveSession:
         self.parts: list[Future] = []
 
     def poll(self, samples_since: Callable[[int], np.ndarray], sr: int) -> None:
+        if self.parts and not self.parts[-1].done():
+            return  # the last piece isn't done (a slow computer): never queue up more work
         waiting = samples_since(self.cut)
         if len(waiting) < MIN_CHUNK_S * sr:
             return

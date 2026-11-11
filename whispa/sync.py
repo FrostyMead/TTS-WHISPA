@@ -58,6 +58,8 @@ CHUNK = 1 << 20
 MAX_FRAME = 8 << 20
 MAX_FRAME_PLAIN = 64 << 10  # before encryption is set up
 MAX_FOLDER_BYTES = 8 << 30
+MAX_CONNECTIONS = 4  # at once; more are closed straight away
+HANDSHAKE_S = 10.0  # to say who you are and prove it, before the longer transfer timeout
 KINDS = ("models", "voices")
 _NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,120}$")
 
@@ -358,6 +360,7 @@ class SyncService:
         self._udp: socket.socket | None = None
         self.port = 0
         self._dict_mtime = 0.0
+        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
         self._load()
 
     # -- identity & peers ------------------------------------------------
@@ -539,11 +542,20 @@ class SyncService:
                 continue
             except OSError:
                 break
-            threading.Thread(target=self._serve, args=(conn, addr), name="sync-serve",
+            if not self._slots.acquire(blocking=False):  # someone is holding connections open
+                conn.close()
+                continue
+            threading.Thread(target=self._serve_slot, args=(conn, addr), name="sync-serve",
                              daemon=True).start()
 
+    def _serve_slot(self, conn: socket.socket, addr) -> None:
+        try:
+            self._serve(conn, addr)
+        finally:
+            self._slots.release()
+
     def _serve(self, conn: socket.socket, addr) -> None:
-        conn.settimeout(60)
+        conn.settimeout(HANDSHAKE_S)  # until the other side has proved who it is
         ch = Channel(conn)
         try:
             msg = ch.recv()
@@ -688,6 +700,7 @@ class SyncService:
         auth = ch.expect("auth")
         if not hmac.compare_digest(_unb64(auth["mac"]), _mac(peer.key, b"initiator", n_init, n_resp)):
             raise SyncError("not paired")
+        ch.sock.settimeout(60)  # a paired computer: big files may take a while
         to_peer, from_peer = self._session_keys(peer.key, n_init, n_resp)
         ch.secure(tx_key=from_peer, rx_key=to_peer)
         if msg.get("port"):

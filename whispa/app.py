@@ -202,6 +202,11 @@ class MurmrApp:
         self.hotkeys.start()
         threading.Thread(target=self._load_model, name="model-load", daemon=True).start()
         self._welcome = None
+        self._prune_history()
+        self.history_timer = QTimer()
+        self.history_timer.setInterval(24 * 3600 * 1000)
+        self.history_timer.timeout.connect(self._prune_history)
+        self.history_timer.start()
         if not cfg.welcome_done:
             QTimer.singleShot(900, self.show_welcome)  # it asks for the macOS permissions too
         elif sys.platform == "darwin":
@@ -835,11 +840,32 @@ class MurmrApp:
     # -- paste again / read aloud -----------------------------------------
     def _recent_history(self) -> list[str]:
         """The last dictations, so "paste last" works right after a restart too."""
+        from .history import recent_texts
+
         try:
-            lines = self.history_path.read_text(encoding="utf-8").splitlines()[-10:]
-            return [r["text"] for r in map(json.loads, lines) if r.get("text")]
-        except (OSError, ValueError, KeyError, TypeError):
+            return recent_texts(self.history_path, 10)
+        except OSError:
             return []
+
+    def _prune_history(self) -> None:
+        from .history import prune
+
+        def work():
+            try:
+                if prune(self.history_path, int(self.cfg.history_days or 0)):
+                    self.bridge.history_changed.emit()
+            except (OSError, ValueError) as exc:
+                log.warning("History clean-up failed: %s", exc)
+
+        threading.Thread(target=work, name="history-prune", daemon=True).start()
+
+    def delete_all_history(self) -> None:
+        from .history import delete_all
+
+        delete_all(self.history_path)
+        self.history.clear()
+        log.info("History deleted")
+        self.bridge.history_changed.emit()
 
     def _apply_action_hotkeys(self) -> None:
         for name, spec, signal in (("paste_last", self.cfg.paste_last_hotkey, self.bridge.paste_last),
@@ -1285,6 +1311,10 @@ class MurmrApp:
                     return "That's already your push-to-talk shortcut."
             setattr(cfg, key, value)
             self._apply_action_hotkeys()
+        elif key == "history_days":
+            value = int(value)
+            setattr(cfg, key, value)
+            self._prune_history()
         elif key == "sync_enabled":
             if value:
                 err = self._start_sync()

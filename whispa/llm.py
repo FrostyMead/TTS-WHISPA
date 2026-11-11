@@ -177,6 +177,17 @@ def check_edit(original: str, edited: str, terms: list[str]) -> str | None:
     return None
 
 
+def is_local_url(url: str) -> bool:
+    """A server on this computer (loopback), where text never leaves it."""
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in ("localhost", "::1") or host.startswith("127.")
+
+
 class Polisher:
     def __init__(self, cfg: LLMCleanup):
         self.cfg = cfg
@@ -223,7 +234,16 @@ class Polisher:
         with urllib.request.urlopen(self.cfg.base_url.rstrip("/") + path, timeout=1.5) as resp:
             return json.load(resp)
 
+    def endpoint_allowed(self) -> bool:
+        """Local server, or a remote one you explicitly allowed (llm_cleanup.allow_remote)."""
+        return is_local_url(self.cfg.base_url) or bool(getattr(self.cfg, "allow_remote", False))
+
     def _probe(self) -> bool:
+        if not self.endpoint_allowed():
+            log.warning("AI server %s isn't on this computer; not sending it text. Set "
+                        "llm_cleanup.allow_remote to true in config.json to allow it.",
+                        self.cfg.base_url)
+            return False
         path = "/api/tags" if self.is_ollama else "/models"
         try:
             data = self._fetch(path)
@@ -378,6 +398,9 @@ class Polisher:
                           timeout, temperature, num_ctx=8192)
 
     def _chat(self, msgs: list[dict], timeout: float, temperature: float, num_ctx: int | None = None) -> str:
+        if not self.endpoint_allowed():
+            raise RuntimeError("The AI server isn't on this computer and sending text to it "
+                               "isn't allowed (llm_cleanup.allow_remote)")
         base = self.cfg.base_url.rstrip("/")
         if self.is_ollama:
             url = base + "/api/chat"

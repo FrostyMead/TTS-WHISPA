@@ -27,9 +27,20 @@ def config_dir() -> Path:
         base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
         d, old = base / APP_NAME.lower(), base / OLD_NAME.lower()
     if not d.exists() and old.exists():
-        return old  # installed before the rename: settings, history and dictionary stay put
+        d = old  # installed before the rename: settings, history and dictionary stay put
     d.mkdir(parents=True, exist_ok=True)
+    _private(d)
     return d
+
+
+def _private(d: Path) -> None:
+    """Only you can open the data folder (macOS / Linux; on Windows it's already per-user)."""
+    if sys.platform != "win32":
+        try:
+            if d.stat().st_mode & 0o077:
+                os.chmod(d, 0o700)
+        except OSError:
+            pass
 
 
 def config_path() -> Path:
@@ -73,7 +84,11 @@ class LLMCleanup:
     provider: str = "ollama"  # ollama | openai (any OpenAI-compatible server)
     base_url: str = "http://127.0.0.1:11434"
     model: str = "gemma3:4b"
-    api_key: str = ""
+    api_key: str = ""  # kept in the system keychain / Credential Manager, not in this file
+    api_key_stored: str = ""  # "keychain" when it is
+    # Text is only sent to a server on this computer. A server elsewhere (a cloud API, another
+    # machine) also needs this set to true: your dictations would leave this computer.
+    allow_remote: bool = False
     keep_alive: str = "10m"  # how long Ollama keeps the model in GPU memory between uses
     timeout_s: float = 6.0
     prompt: str = ""  # empty = built-in prompt
@@ -126,6 +141,7 @@ class Config:
     show_idle_pill: bool = True
     pill_anchor: str = "bottom-center"  # where the pill snaps; drag it or pick in Settings
     save_history: bool = True
+    history_days: int = 365  # older dictations are removed (0 = keep forever); totals stay
     # Meetings / live captions
     meeting_mic: bool = True  # transcribe your microphone ("You")
     meeting_system: bool = True  # and the computer's audio ("Others"; Windows)
@@ -177,12 +193,30 @@ def load(path: Path | None = None) -> Config:
     for cat, style in _default_styles().items():  # categories added in later versions
         cfg.styles.setdefault(cat, style)
     # Write back so every option is visible and editable in the file.
-    full = asdict(cfg)
+    lc = cfg.llm_cleanup
+    if lc.api_key_stored == "keychain" and not lc.api_key:
+        from . import credentials
+
+        lc.api_key = credentials.load_api_key()
+    full = _file_data(cfg)
     if full != data:
         save(cfg, path)
     return cfg
 
 
+def _file_data(cfg: Config) -> dict:
+    """The config as written to the file: the API key goes to the keychain instead."""
+    data = asdict(cfg)
+    lc = data["llm_cleanup"]
+    if lc.get("api_key"):
+        from . import credentials
+
+        if credentials.store_api_key(lc["api_key"]):
+            lc["api_key"], lc["api_key_stored"] = "", "keychain"
+            cfg.llm_cleanup.api_key_stored = "keychain"
+    return data
+
+
 def save(cfg: Config, path: Path | None = None) -> None:
     path = path or config_path()
-    path.write_text(json.dumps(asdict(cfg), indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(_file_data(cfg), indent=2) + "\n", encoding="utf-8")
