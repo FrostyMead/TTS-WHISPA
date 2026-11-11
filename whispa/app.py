@@ -88,6 +88,7 @@ class MurmrApp:
 
         self.sounds = Sounds(cfg.sounds, cfg.sound_volume)
         self.recorder = Recorder(cfg.input_device, keep_open=cfg.keep_mic_open)
+        self.recorder.limit_s = min(float(cfg.max_duration_s) + 5.0, 3600.0)
         self.transcriber = Transcriber(cfg.model, cfg.device, cfg.quantization)
         self.sm = PTTStateMachine(
             hotkey, hands_free_key=cfg.hands_free_key or None, double_tap=cfg.double_tap_to_lock,
@@ -747,8 +748,9 @@ class MurmrApp:
             if command:
                 row["command"] = command
             try:
-                with self.history_path.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                from .history import append
+
+                append(self.history_path, row)
             except OSError as exc:
                 log.warning("Could not write history: %s", exc)
             self.bridge.history_changed.emit()
@@ -1409,11 +1411,11 @@ class MurmrApp:
         return self.transcriber.transcribe(audio, sr)
 
     def delete_history(self, t: float) -> None:
+        from .history import delete_entry
+
         try:
-            lines = self.history_path.read_text(encoding="utf-8").splitlines()
-            keep = [ln for ln in lines if not ln.strip() or json.loads(ln).get("t") != t]
-            self.history_path.write_text("\n".join(keep) + ("\n" if keep else ""), encoding="utf-8")
-        except (OSError, json.JSONDecodeError) as exc:
+            delete_entry(self.history_path, t)
+        except OSError as exc:
             log.warning("Could not delete history entry: %s", exc)
 
     # -- updates (Controller) -------------------------------------------------------

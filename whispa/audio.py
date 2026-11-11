@@ -92,6 +92,7 @@ class Recorder:
         self._preroll_samples = 0
         self._recording = False
         self._lock = threading.Lock()
+        self.limit_s = 3600.0  # hard cap, enforced as audio arrives (the app stops at its own limit first)
         if keep_open:
             self._open()
 
@@ -154,8 +155,9 @@ class Recorder:
         self.level = float(np.sqrt(np.mean(mono * mono))) if frames else 0.0
         with self._lock:
             if self._recording:
-                self._chunks.append(mono)
-                self._samples += len(mono)
+                if self._samples < self.limit_s * self.samplerate:
+                    self._chunks.append(mono)
+                    self._samples += len(mono)
             elif self.keep_open:
                 self._preroll.append(mono)
                 self._preroll_samples += len(mono)

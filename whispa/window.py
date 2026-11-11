@@ -48,22 +48,6 @@ class Controller(Protocol):
 
 
 # --------------------------------------------------------------------------- helpers
-def load_history(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    rows = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if row.get("text"):
-                rows.append(row)
-    rows.reverse()
-    return rows
-
-
 def hotkey_labels(spec: str) -> list[str]:
     try:
         label = Hotkey.parse(spec).label()
@@ -360,27 +344,25 @@ class HomePage(QScrollArea):
         self._title.setText(self._greeting())
         labels = " + ".join(hotkey_labels(self.ctl.cfg.hotkey))
         self.hint.setText(f"Hold {labels} anywhere and start talking. Everything stays on this computer.")
-        rows = load_history(self.ctl.history_path)
-        dictated = [r for r in rows if not r.get("command")]
-        from .history import totals
+        from . import history
 
-        archived = totals(self.ctl.history_path)  # dictations past the history's keep time
-        words = sum(len(r["text"].split()) for r in dictated) + archived["words"]
-        seconds = sum(r.get("seconds", 0) for r in dictated) + archived["seconds"]
+        path = self.ctl.history_path
+        st = history.stats(path)  # cached until the file changes; includes removed dictations
+        words, seconds = st["words"], st["seconds"]
         self.s_words.set(_fmt_int(words))
         self.s_wpm.set(_fmt_int(words / seconds * 60) if seconds > 5 else "–")
         saved = max(0.0, words / TYPING_WPM * 60 - seconds)
         self.s_saved.set(_fmt_duration(saved) if words else "–")
-        streak = day_streak({dt.date.fromtimestamp(r.get("t", 0)) for r in rows})
-        week_ago = dt.datetime.now().timestamp() - 7 * 86400
-        week = sum(len(r["text"].split()) for r in dictated if r.get("t", 0) >= week_ago)
+        streak = day_streak(st["days"])
         self.s_streak.set(str(streak) if streak else "–")
-        self.s_words.setToolTip(f"{_fmt_int(week)} in the last 7 days")
+        self.s_words.setToolTip(f"{_fmt_int(st['week'])} in the last 7 days")
 
         clear_layout(self.list)
         q = self.search.text().strip().lower()
         if q:
-            rows = [r for r in rows if q in r["text"].lower() or q in r.get("app", "").lower()]
+            rows = history.scan(path, lambda r: q in r["text"].lower() or q in r.get("app", "").lower())
+        else:
+            rows = history.recent_rows(path, self.MAX_ROWS)[::-1]  # newest first, only the end
         if not rows:
             empty = Label("No matches." if q else
                            "No dictations yet. Your transcripts will show up here.")

@@ -171,3 +171,162 @@ def test_ollama_without_checksum_is_refused(monkeypatch):
         ai_setup._release_asset("OllamaSetup.exe")
     release["assets"][0]["digest"] = "sha256:" + "a" * 64
     assert ai_setup._release_asset("OllamaSetup.exe")[1] == "a" * 64
+
+
+# --------------------------------------------------------------------------- round 2
+def test_names_that_only_look_local_are_remote():
+    from whispa.llm import is_local_url
+
+    for remote in ("http://127.attacker.example:11434", "http://localhost.evil.com",
+                   "http://user@evil.com:11434", "file:///etc/passwd", "http://[::ffff:8.8.8.8]/"):
+        assert not is_local_url(remote), remote
+    for local in ("http://127.0.0.1:11434", "http://127.5.6.7", "http://[::1]:8080", "http://localhost"):
+        assert is_local_url(local), local
+
+
+def test_clearing_the_key_removes_it_from_the_store(tmp_path, monkeypatch):
+    from whispa import config as config_mod
+    from whispa import credentials
+
+    store = {}
+
+    class FakeKeyring:
+        set_password = staticmethod(lambda s, a, k: store.__setitem__((s, a), k))
+        get_password = staticmethod(lambda s, a: store.get((s, a)))
+        delete_password = staticmethod(lambda s, a: store.pop((s, a)))
+
+    monkeypatch.setitem(__import__("sys").modules, "keyring", FakeKeyring)
+    monkeypatch.setattr(credentials, "_stored", None)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"config_version": 3, "llm_cleanup": {"api_key": "sk-1"}}))
+    cfg = config_mod.load(path)
+    cfg.llm_cleanup.api_key = ""
+    config_mod.save(cfg, path)
+    assert store == {}
+    monkeypatch.setattr(credentials, "_stored", None)
+    assert config_mod.load(path).llm_cleanup.api_key == ""
+
+
+def test_unreadable_keychain_never_deletes_the_key(tmp_path, monkeypatch):
+    from whispa import config as config_mod
+    from whispa import credentials
+
+    deleted = []
+
+    class Locked:
+        @staticmethod
+        def get_password(s, a):
+            raise RuntimeError("locked")
+
+        delete_password = staticmethod(lambda s, a: deleted.append(1))
+
+    monkeypatch.setitem(__import__("sys").modules, "keyring", Locked)
+    monkeypatch.setattr(credentials, "_stored", None)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"config_version": 3, "llm_cleanup": {"api_key_stored": "keychain"}}))
+    config_mod.load(path)
+    assert deleted == [] and '"api_key_stored": "keychain"' in path.read_text()
+
+
+def test_slow_client_is_cut_off_at_the_handshake_deadline(monkeypatch):
+    from whispa import sync
+    from whispa.learn import Dictionary
+
+    monkeypatch.setattr(sync, "HANDSHAKE_S", 1.0)
+    d = Path(tempfile.mkdtemp())
+    svc = sync.SyncService(d, Dictionary(d / "d.json"), name=lambda: "PC", udp_port=None,
+                           tcp_port=0, auto=False, host="127.0.0.1")
+    svc.start()
+    try:
+        s = socket.create_connection(("127.0.0.1", svc.port))
+        s.sendall(b"\x00\x00\x01\x00")  # a 256-byte frame, then a trickle
+        t0 = time.monotonic()
+        closed = False
+        while time.monotonic() - t0 < 4:
+            try:
+                s.sendall(b"x")
+            except OSError:
+                closed = True
+                break
+            time.sleep(0.2)
+        s.settimeout(1)
+        try:
+            data = s.recv(4096)
+            closed = closed or data is not None
+        except OSError:
+            closed = True
+        assert closed and time.monotonic() - t0 < 3.5
+        s.close()
+    finally:
+        svc.stop()
+
+
+def test_dictations_added_while_pruning_are_kept(tmp_path, monkeypatch):
+    h = tmp_path / "history.jsonl"
+    now = time.time()
+    _write(h, [{"t": now - 400 * 86400, "text": "old"}] + [{"t": now, "text": f"n{i}"} for i in range(2000)])
+    real = history._rewrite
+
+    def slow(path, keep):  # an append arrives in the middle of the rewrite
+        threading.Thread(target=history.append, args=(path, {"t": now, "text": "during"})).start()
+        time.sleep(0.2)
+        return real(path, keep)
+
+    monkeypatch.setattr(history, "_rewrite", slow)
+    assert history.prune(h, 365, now) == 1
+    time.sleep(0.3)
+    texts = [json.loads(x)["text"] for x in h.read_text().splitlines()]
+    assert "during" in texts and "old" not in texts and len(texts) == 2001
+
+
+def test_home_stats_and_list_read_cheaply(tmp_path):
+    h = tmp_path / "history.jsonl"
+    now = time.time()
+    _write(h, [{"t": now - 86400 * 30, "seconds": 1, "text": "one two"},
+               {"t": now, "seconds": 2, "text": "three four five"},
+               {"t": now, "text": "rewrite it", "command": "x"}])
+    history.totals_path(h).write_text('{"words": 10, "seconds": 5}')
+    st = history.stats(h)
+    assert st["words"] == 15 and st["seconds"] == 8 and st["week"] == 3
+    assert [r["text"] for r in history.recent_rows(h, 2)] == ["three four five", "rewrite it"]
+    assert [r["text"] for r in history.scan(h, lambda r: "two" in r["text"])] == ["one two"]
+    history.delete_entry(h, now - 86400 * 30)
+    assert history.stats(h)["words"] == 13
+
+
+def test_recent_package_environments_are_not_pruned(tmp_path, monkeypatch):
+    import importlib.util
+    import os
+
+    spec = importlib.util.spec_from_file_location("boot_under_test", Path("whispa/_boot.py").resolve())
+    boot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(boot)
+    rt = tmp_path
+    for name in ("current", "previous"):
+        (rt / "app" / name).mkdir(parents=True)
+    (rt / "app" / "current" / "version.json").write_text('{"env": "envs/aaa"}')
+    for name in ("aaa", "old", "new", ".building-ccc"):
+        (rt / "envs" / name).mkdir(parents=True)
+    week_ago = time.time() - 7 * 86400
+    os.utime(rt / "envs" / "old", (week_ago, week_ago))
+    os.utime(rt / "envs" / "aaa", (week_ago, week_ago))
+    monkeypatch.setattr(boot, "RUNTIME", str(rt))
+    monkeypatch.setattr(boot, "CURRENT", str(rt / "app" / "current"))
+    monkeypatch.setattr(boot, "PREVIOUS", str(rt / "app" / "previous"))
+    monkeypatch.setattr(boot, "NEXT", str(rt / "app" / "next"))
+    monkeypatch.setattr(boot, "LOG", str(rt / "boot.log"))
+    boot.prune_envs()
+    assert sorted(p.name for p in (rt / "envs").iterdir()) == [".building-ccc", "aaa", "new"]
+
+
+def test_recorder_stops_keeping_audio_past_its_hard_limit():
+    from whispa.audio import Recorder
+
+    r = Recorder.__new__(Recorder)
+    r._lock = threading.Lock()
+    r._recording, r.keep_open, r.samplerate, r.limit_s = True, False, 16000, 1.0
+    r._chunks, r._samples, r.level = [], 0, 0.0
+    block = np.zeros((1600, 1), np.float32)
+    for _ in range(50):  # 5 s of audio
+        r._callback(block, 1600, None, None)
+    assert r._samples == 16000

@@ -208,6 +208,10 @@ class Updater:
             raise RuntimeError("uv is missing; re-run the installer")
         base = Path(sys.base_prefix) / ("python.exe" if sys.platform == "win32" else "bin/python3")
         flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+        # Built under a temporary name and renamed when complete: a half-built environment
+        # is never used, and the bootstrap never removes one that's being built.
+        building = env.with_name(f".building-{env.name}")
+        shutil.rmtree(building, ignore_errors=True)
         shutil.rmtree(env, ignore_errors=True)
         env.parent.mkdir(parents=True, exist_ok=True)
 
@@ -215,15 +219,16 @@ class Updater:
             proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=flags,
                                   timeout=1800, env=env_without_venv())
             if proc.returncode:
-                shutil.rmtree(env, ignore_errors=True)
+                shutil.rmtree(building, ignore_errors=True)
                 raise RuntimeError(f"Installing packages failed: {proc.stderr.strip()[-400:]}")
 
-        run([uv, "venv", "--python", str(base if base.exists() else sys.executable), str(env)])
-        python = env / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        run([uv, "venv", "--python", str(base if base.exists() else sys.executable), str(building)])
+        python = building / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         cmd = [uv, "pip", "install", "--python", str(python), "-r", str(pyproject)]
         if meta.get("runtime"):
             cmd += ["--extra", meta["runtime"]]
         run(cmd)
+        building.rename(env)
 
     def request_rollback(self) -> None:
         if not self.has_previous():

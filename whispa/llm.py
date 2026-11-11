@@ -178,14 +178,37 @@ def check_edit(original: str, edited: str, terms: list[str]) -> str | None:
 
 
 def is_local_url(url: str) -> bool:
-    """A server on this computer (loopback), where text never leaves it."""
+    """A server on this computer (a loopback address, or "localhost"), where text never
+    leaves it. Any other name counts as remote, even one that looks local."""
+    import ipaddress
     from urllib.parse import urlparse
 
     try:
-        host = (urlparse(url).hostname or "").lower()
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
     except ValueError:
         return False
-    return host in ("localhost", "::1") or host.startswith("127.")
+    if parsed.scheme not in ("http", "https") or not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # a local server can't bounce text elsewhere
+        return None
+
+
+# Straight to the configured server: no system proxy, no redirects.
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+def _urlopen(req, timeout: float):
+    return _opener.open(req, timeout=timeout)
 
 
 class Polisher:
@@ -231,7 +254,7 @@ class Polisher:
             self._probing = False
 
     def _fetch(self, path: str):
-        with urllib.request.urlopen(self.cfg.base_url.rstrip("/") + path, timeout=1.5) as resp:
+        with _urlopen(self.cfg.base_url.rstrip("/") + path, timeout=1.5) as resp:
             return json.load(resp)
 
     def endpoint_allowed(self) -> bool:
@@ -316,7 +339,7 @@ class Polisher:
             req = urllib.request.Request(self.cfg.base_url.rstrip("/") + "/api/generate", data=body,
                                          headers={"Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=90) as resp:
+                with _urlopen(req, timeout=90) as resp:
                     resp.read()
             except Exception as exc:  # noqa: BLE001
                 log.debug("prewarm failed: %s", exc)
@@ -415,7 +438,7 @@ class Polisher:
         if self.cfg.api_key:
             headers["Authorization"] = f"Bearer {self.cfg.api_key}"
         req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen(req, timeout=timeout) as resp:
             data = json.load(resp)
         if self.is_ollama:
             return data["message"]["content"]

@@ -44,6 +44,12 @@ def load_api_key() -> str:
     return key
 
 
+def holds_key() -> bool:
+    """A key was read from (or written to) the store in this run. False after a failed read,
+    so a keychain that's briefly unavailable never gets the key deleted."""
+    return bool(_stored)
+
+
 def delete_api_key() -> None:
     global _stored
     try:

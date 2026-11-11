@@ -214,6 +214,12 @@ def _file_data(cfg: Config) -> dict:
         if credentials.store_api_key(lc["api_key"]):
             lc["api_key"], lc["api_key_stored"] = "", "keychain"
             cfg.llm_cleanup.api_key_stored = "keychain"
+    elif lc.get("api_key_stored") == "keychain":
+        from . import credentials
+
+        if credentials.holds_key():  # it was loaded, and has since been cleared: remove it
+            credentials.delete_api_key()
+            lc["api_key_stored"] = cfg.llm_cleanup.api_key_stored = ""
     return data
 
 

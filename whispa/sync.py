@@ -168,10 +168,11 @@ class Channel:
     """Length-prefixed frames over a socket; JSON ("J") or bytes ("B"); encrypted once
     ``secure()`` is called (a separate key and counter nonce per direction)."""
 
-    def __init__(self, sock: socket.socket):
+    def __init__(self, sock: socket.socket, deadline: float | None = None):
         self.sock = sock
         self._tx = self._rx = None
         self._ntx = self._nrx = 0
+        self.deadline = deadline  # time.monotonic() by which every read must be done
 
     def secure(self, tx_key: bytes, rx_key: bytes) -> None:
         from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
@@ -189,6 +190,11 @@ class Channel:
     def _read(self, n: int) -> bytes:
         buf = bytearray()
         while len(buf) < n:
+            if self.deadline is not None:
+                left = self.deadline - time.monotonic()
+                if left <= 0:
+                    raise SyncError("too slow")
+                self.sock.settimeout(min(left, 60))
             chunk = self.sock.recv(min(n - len(buf), 1 << 20))
             if not chunk:
                 raise SyncError("connection closed")
@@ -555,8 +561,8 @@ class SyncService:
             self._slots.release()
 
     def _serve(self, conn: socket.socket, addr) -> None:
-        conn.settimeout(HANDSHAKE_S)  # until the other side has proved who it is
-        ch = Channel(conn)
+        conn.settimeout(HANDSHAKE_S)
+        ch = Channel(conn, deadline=time.monotonic() + HANDSHAKE_S)  # all of the handshake
         try:
             msg = ch.recv()
             if not isinstance(msg, dict):
@@ -700,7 +706,8 @@ class SyncService:
         auth = ch.expect("auth")
         if not hmac.compare_digest(_unb64(auth["mac"]), _mac(peer.key, b"initiator", n_init, n_resp)):
             raise SyncError("not paired")
-        ch.sock.settimeout(60)  # a paired computer: big files may take a while
+        ch.deadline = None  # a paired computer: big files may take a while
+        ch.sock.settimeout(60)
         to_peer, from_peer = self._session_keys(peer.key, n_init, n_resp)
         ch.secure(tx_key=from_peer, rx_key=to_peer)
         if msg.get("port"):

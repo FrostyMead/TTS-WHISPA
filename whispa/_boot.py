@@ -119,22 +119,36 @@ def _env_of(app_dir: str) -> str:
     return env
 
 
-def prune_envs() -> None:
-    """Remove package environments no kept version uses."""
+PRUNE_AFTER_S = 2 * 86400
+
+
+def prune_envs(now: float | None = None) -> None:
+    """Remove package environments no kept version uses. One changed in the last two days
+    is left alone: it may belong to an update that's being downloaded right now."""
     keep = {_env_of(d) for d in (CURRENT, PREVIOUS, NEXT) if os.path.isdir(d)}
     root = os.path.join(RUNTIME, "envs")
     if not os.path.isdir(root):
         return
+    now = now or time.time()
     for name in os.listdir(root):
-        if f"envs/{name}" not in keep:
-            shutil.rmtree(os.path.join(root, name), ignore_errors=True)
-            log(f"removed unused packages envs/{name}")
+        path = os.path.join(root, name)
+        if f"envs/{name}" in keep:
+            continue
+        try:
+            if now - os.path.getmtime(path) < PRUNE_AFTER_S:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        log(f"removed unused packages envs/{name}")
 
 
 def add_packages() -> None:
     venv = os.path.join(RUNTIME, _env_of(CURRENT))
     if not os.path.isdir(venv):
-        log(f"packages {venv} missing, using venv")
+        # Missing (deleted by hand?): the installer's packages are the best bet. If they
+        # don't fit, this version fails to start and the trial rolls it back.
+        log(f"WARNING: packages {venv} missing, using venv")
         venv = os.path.join(RUNTIME, "venv")
     candidates = [os.path.join(venv, "Lib", "site-packages")]
     candidates += glob.glob(os.path.join(venv, "lib", "python3*", "site-packages"))
