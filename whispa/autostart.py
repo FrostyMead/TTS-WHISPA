@@ -12,8 +12,11 @@ _LINUX_DESKTOP = Path.home() / ".config" / "autostart" / "whispa.desktop"
 
 
 def _command() -> list[str]:
-    from .shortcuts import launcher
+    from .shortcuts import MAC_APP, launcher
 
+    if sys.platform == "darwin" and MAC_APP.exists():
+        # Through the app bundle, so macOS privacy permissions belong to Whispa.app.
+        return ["/usr/bin/open", "-g", "-a", str(MAC_APP), "--args", "--background"]
     exe, args = launcher()  # pythonw.exe on Windows: no console window
     return [exe, *args, "--background"]
 

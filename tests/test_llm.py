@@ -69,7 +69,9 @@ def test_check_runs_in_background(fake_ollama):
     import time
 
     p = Polisher(LLMCleanup(base_url=fake_ollama["url"]))
-    assert p.active() is False  # unknown yet: don't wait
+    t = time.perf_counter()
+    p.active()  # unknown yet: starts a background check and returns straight away
+    assert time.perf_counter() - t < 0.2
     for _ in range(50):
         if p.available is not None:
             break

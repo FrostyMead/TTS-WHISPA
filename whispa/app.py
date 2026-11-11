@@ -46,7 +46,10 @@ class Bridge(QObject):
     show_card = Signal(str)
     learned = Signal(str)
     captured = Signal(str, object, object)  # kind, spec, error
+    update_notice = Signal(str)
+    update_restart = Signal()
     history_changed = Signal()
+    update_changed = Signal()
 
 
 class WhispaApp:
@@ -114,6 +117,24 @@ class WhispaApp:
         b.captured.connect(self._on_captured)
         b.history_changed.connect(lambda: self.window and self.window.history_changed())
         b.learned.connect(lambda words: self.overlay.flash(f"Learned: {words}", seconds=2.5))
+
+        from .updater import Updater
+
+        self.updater = Updater()
+        self._update_busy = ""
+        self._update_checked = False
+        b.update_changed.connect(self._on_update_changed)
+        b.update_notice.connect(lambda msg: self.tray.showMessage(
+            "Whispa update available", f"{msg}. Open Settings > Updates to install.", tray_icon(), 6000))
+        b.update_restart.connect(self.restart)
+        self.update_timer = QTimer()
+        self.update_timer.setInterval(24 * 3600 * 1000)
+        self.update_timer.timeout.connect(lambda: self.check_updates(quiet=True))
+        if self.updater.installed:
+            QTimer.singleShot(8000, self.updater.mark_healthy)  # we started: keep this version
+            if cfg.update_check:
+                QTimer.singleShot(90_000, lambda: self.check_updates(quiet=True))
+                self.update_timer.start()
 
         self.max_timer = QTimer()
         self.max_timer.setInterval(250)
@@ -371,6 +392,10 @@ class WhispaApp:
         self.recent_menu.aboutToShow.connect(self._fill_recent)
         menu.addSeparator()
         menu.addAction("Settings…", lambda: self.show_window(page=2))
+        self.update_action = QAction("Update Whispa…", menu)
+        self.update_action.triggered.connect(lambda: self.show_window(page=2))
+        self.update_action.setVisible(False)
+        menu.addAction(self.update_action)
         menu.addAction("Restart Whispa", self.restart)
         menu.addAction("Quit Whispa", self.quit)
         self._menu = menu
@@ -503,6 +528,11 @@ class WhispaApp:
         elif key == "save_training_audio":
             self.training = (TrainingStore(config_mod.config_dir() / "training", cfg.training_max_mb)
                              if value else None)
+        elif key == "update_check":
+            if value and self.updater.installed:
+                self.update_timer.start()
+            else:
+                self.update_timer.stop()
         elif key == "double_tap_to_lock":
             self.sm.double_tap = bool(value)
         if not hasattr(cfg, key):
@@ -534,6 +564,72 @@ class WhispaApp:
             self.history_path.write_text("\n".join(keep) + ("\n" if keep else ""), encoding="utf-8")
         except (OSError, json.JSONDecodeError) as exc:
             log.warning("Could not delete history entry: %s", exc)
+
+    # -- updates (Controller) -------------------------------------------------------
+    def update_state(self) -> dict:
+        u = self.updater
+        last = u.last
+        cur = u.current_version()
+        return {"installed": u.installed, "sha": cur.get("sha", ""), "date": cur.get("date", ""),
+                "available": bool(last and last.available), "changes": last.changes if last else [],
+                "error": last.error if last else "", "checked": self._update_checked,
+                "busy": self._update_busy, "has_previous": u.has_previous()}
+
+    def check_updates(self, quiet: bool = False) -> None:
+        if not self.updater.installed or self._update_busy:
+            return
+        self._update_busy = "Checking…"
+        self.bridge.update_changed.emit()
+
+        def work():
+            info = self.updater.check()
+            self._update_busy = ""
+            self._update_checked = True
+            self.bridge.update_changed.emit()
+            if info.available and quiet:
+                n = len(info.changes)
+                self.bridge.update_notice.emit(f"{n} update{'s' if n != 1 else ''} ready" if n
+                                               else "A new version is ready")
+
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+
+    def apply_update(self) -> None:
+        info = self.updater.last
+        if not info or not info.available or self._update_busy:
+            return
+
+        def progress(msg: str) -> None:
+            self._update_busy = msg
+            self.bridge.update_changed.emit()
+
+        def work():
+            try:
+                self.updater.stage(info, progress)
+                progress("Restarting…")
+                self.bridge.update_restart.emit()
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Update failed")
+                info.error = f"Update failed: {exc}"
+                self._update_busy = ""
+                self.bridge.update_changed.emit()
+
+        threading.Thread(target=work, name="update-apply", daemon=True).start()
+
+    def rollback_update(self) -> None:
+        try:
+            self.updater.request_rollback()
+        except RuntimeError as exc:
+            if self.updater.last:
+                self.updater.last.error = str(exc)
+            self.bridge.update_changed.emit()
+            return
+        self.restart()
+
+    def _on_update_changed(self) -> None:
+        last = self.updater.last
+        self.update_action.setVisible(bool(last and last.available))
+        if self.window is not None and self.window.isVisible():
+            self.window.settings.refresh_updates()
 
     def open_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_mod.config_dir())))

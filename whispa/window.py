@@ -699,6 +699,42 @@ class SettingsPage(QScrollArea):
         sec.addWidget(setting_row("Speech model runs on", "", self.device))
         sec.addWidget(self.device_note)
 
+        # Updates
+        sec = _section(lay, "Updates")
+        self.update_title = QLabel()
+        self.update_title.setStyleSheet("font-weight: 600;")
+        self.update_detail = QLabel()
+        self.update_detail.setObjectName("muted")
+        self.update_detail.setWordWrap(True)
+        self.update_changes = QLabel()
+        self.update_changes.setObjectName("muted")
+        self.update_changes.setWordWrap(True)
+        self.update_check_btn = QPushButton("Check for updates")
+        self.update_check_btn.clicked.connect(ctl.check_updates)
+        self.update_now_btn = QPushButton("Update now")
+        self.update_now_btn.setObjectName("primary")
+        self.update_now_btn.clicked.connect(ctl.apply_update)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 12, 0, 4)
+        texts = QVBoxLayout()
+        texts.setSpacing(2)
+        texts.addWidget(self.update_title)
+        texts.addWidget(self.update_detail)
+        head.addLayout(texts, 1)
+        head.addWidget(self.update_check_btn, 0, Qt.AlignmentFlag.AlignTop)
+        head.addWidget(self.update_now_btn, 0, Qt.AlignmentFlag.AlignTop)
+        sec.addLayout(head)
+        self.update_changes.setContentsMargins(0, 0, 0, 10)
+        sec.addWidget(self.update_changes)
+        self.update_auto = self._switch_row("update_check", "Check automatically",
+                                            "Once a day. Only public code is downloaded from "
+                                            "GitHub; nothing about you is sent.")
+        sec.addWidget(self.update_auto)
+        self.rollback_btn = QPushButton("Go back to the previous version")
+        self.rollback_btn.clicked.connect(ctl.rollback_update)
+        self.rollback_row = setting_row("Something wrong after an update?", "", self.rollback_btn)
+        sec.addWidget(self.rollback_row)
+
         about = QHBoxLayout()
         self.status = QLabel()
         self.status.setObjectName("faint")
@@ -800,6 +836,52 @@ class SettingsPage(QScrollArea):
         self.llm_row_desc.style().unpolish(self.llm_row_desc)
         self.llm_row_desc.style().polish(self.llm_row_desc)
         self.status.setText(f"Whispa {__version__} · {self.ctl.status_text()}")
+        self.refresh_updates()
+
+    def refresh_updates(self) -> None:
+        u = self.ctl.update_state()
+        if not u["installed"]:
+            self.update_title.setText(f"Whispa {__version__} · developer copy")
+            self.update_detail.setText("Running from a git checkout: update it with git pull. "
+                                       "Copies installed with the installer update here.")
+            for w in (self.update_check_btn, self.update_now_btn, self.update_auto, self.rollback_row,
+                      self.update_changes):
+                w.setVisible(False)
+            return
+        version = f"Whispa {__version__}"
+        if u["sha"]:
+            version += f" · {u['sha'][:7]}"
+        if u["date"]:
+            version += f" · {u['date'][:10]}"
+        self.update_title.setText(version)
+        busy = bool(u["busy"])
+        if u["busy"]:
+            detail = u["busy"]
+        elif u["error"]:
+            detail = u["error"]
+        elif u["available"]:
+            n = len(u["changes"])
+            detail = (f"{n} update{'s' if n != 1 else ''} available." if n else "An update is available.") + \
+                " Updating restarts Whispa (a few seconds)."
+        elif u["checked"]:
+            detail = "You're up to date."
+        else:
+            detail = "Updates come from GitHub, only versions that passed the tests."
+        self.update_detail.setText(detail)
+        self.update_detail.setObjectName("error" if u["error"] and not busy else "muted")
+        self.update_detail.style().unpolish(self.update_detail)
+        self.update_detail.style().polish(self.update_detail)
+        changes = u["changes"][:8]
+        self.update_changes.setText("\n".join(f"•  {c}" for c in changes)
+                                    + (f"\n…and {len(u['changes']) - 8} more" if len(u["changes"]) > 8 else ""))
+        self.update_changes.setVisible(bool(u["available"] and changes))
+        self.update_now_btn.setVisible(bool(u["available"]))
+        self.update_now_btn.setEnabled(not busy)
+        self.update_check_btn.setEnabled(not busy)
+        self.update_check_btn.setVisible(True)
+        self.update_auto.setVisible(True)
+        self.rollback_row.setVisible(bool(u["has_previous"]))
+        self.rollback_btn.setEnabled(not busy)
 
 
 # --------------------------------------------------------------------------- window

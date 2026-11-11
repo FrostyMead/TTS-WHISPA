@@ -94,6 +94,7 @@ class Config:
     show_idle_pill: bool = True
     pill_anchor: str = "bottom-center"  # where the pill snaps; drag it or pick in Settings
     save_history: bool = True
+    update_check: bool = True  # look for a new version on GitHub once a day (installed copies)
     config_version: int = CONFIG_VERSION
 
 

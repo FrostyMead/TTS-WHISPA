@@ -38,21 +38,46 @@ Measured on this dev box (RTX 3070 Ti / Ryzen 5 5600X), one 6.8 s sentence:
 
 ## Install
 
-**Windows** (auto-detects an NVIDIA GPU):
+No admin rights needed. The installer sets up its own Python (via [uv](https://docs.astral.sh/uv/)),
+picks GPU or CPU, downloads the speech model (~650 MB), adds Whispa to your apps, turns on
+launch at login and starts it.
+
+**Windows** (PowerShell):
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1        # or: -Runtime cpu | directml
-.venv\Scripts\whispa.exe
+irm https://raw.githubusercontent.com/FrostyMead/TTS-WHISPA/main/install.ps1 | iex
 ```
 
-**macOS / Linux**:
+**macOS** (Terminal), installs `~/Applications/Whispa.app`:
 ```bash
-./install.sh          # Linux with NVIDIA picks cuda automatically; macOS uses CPU (fast on Apple Silicon)
-.venv/bin/whispa
+curl -fsSL https://raw.githubusercontent.com/FrostyMead/TTS-WHISPA/main/install.sh | bash
 ```
+Then in System Settings: Keyboard → "Press 🌐 key to" → **Do Nothing**, and under Privacy &
+Security allow **Whispa** for Microphone, Input Monitoring and Accessibility. The permissions
+belong to Whispa.app (not Terminal) and survive updates.
 
-The first run downloads the model (~650 MB) into the Hugging Face cache. The Windows installer
-adds **Whispa** to the Start Menu and Desktop; it starts without a console window. To add the
-shortcuts by hand: `.venv\Scripts\python -m whispa --install-shortcuts`.
+**Linux**: the same `curl … | bash` line.
+
+Run the same command again to repair or reinstall; your settings, dictionary and history are kept.
+
+### Updates
+Settings → **Updates** checks GitHub once a day (or on demand) and shows what changed. **Update now**
+downloads the new version, installs new packages only if the dependency list changed, and restarts
+in a few seconds. You only get versions whose tests passed on Windows and macOS
+([CI](.github/workflows/ci.yml)). If an update doesn't start, the next launch goes back to the previous
+version automatically, and **Go back to the previous version** does it by hand. Only public code is
+downloaded; nothing about you is sent.
+
+Where things live:
+
+| | Windows | macOS |
+|---|---|---|
+| App (code + Python) | `%LOCALAPPDATA%\Whispa` | `~/Library/Application Support/Whispa/runtime`, `~/Applications/Whispa.app` |
+| Your settings, dictionary, history | `%APPDATA%\Whispa` | `~/Library/Application Support/Whispa` |
+
+### Developer setup
+Clone the repo and run `install.ps1` (Windows) or `./install.sh` (macOS/Linux) inside it: you get
+an editable install in `.venv` with shortcuts pointing at your checkout. Update it with `git pull`;
+the in-app updater leaves developer copies alone. `python -m pytest` runs the tests.
 
 ## The app
 
@@ -257,7 +282,9 @@ whispa/
   card.py      "no text field" copy card
   window.py    the app window: Home (history + stats), Dictionary, Settings
   widgets.py   switch, keycap shortcut recorder, stat cards;  theme.py: light/dark styles
-  icons.py     app + tray icons drawn in code;  shortcuts.py: Start Menu / Desktop entries
+  icons.py     app + tray icons drawn in code;  shortcuts.py: Start Menu / Desktop / Whispa.app
+  updater.py   GitHub updates (newest commit that passed CI), staged for the bootstrap
+  _boot.py     installed copies start here: applies a staged update, rolls back a bad one
 launcher.pyw   windowless start on Windows (base pythonw.exe + the venv's packages; some venv
                launcher stubs start console python.exe, which pops up a terminal)
   app.py       wiring, tray menu, history, single-instance lock
@@ -270,7 +297,6 @@ launcher.pyw   windowless start on Windows (base pythonw.exe + the venv's packag
 - MLX backend (`parakeet-mlx`) for Apple Silicon GPU
 - evdev hotkeys for Wayland, layer-shell overlay
 - Per-app styles (casual in Slack, formal in email) through the LLM pass
-- Packaged installers (PyInstaller / Briefcase)
 
 ## Tests
 

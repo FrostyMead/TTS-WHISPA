@@ -16,7 +16,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--background", action="store_true",
                         help="start in the tray without opening the window")
     parser.add_argument("--install-shortcuts", action="store_true",
-                        help="add Whispa to the Start Menu and Desktop")
+                        help="add Whispa to the Start Menu and Desktop (macOS: ~/Applications/Whispa.app)")
+    parser.add_argument("--download-model", action="store_true",
+                        help="download and test-load the speech model, then exit")
     args = parser.parse_args(argv)
 
     if args.config_path:
@@ -48,6 +50,15 @@ def main(argv: list[str] | None = None) -> int:
 
         for path in install():
             print(f"Created {path}")
+        return 0
+    if args.download_model:
+        from . import config
+        from .asr import Transcriber
+
+        cfg = config.load()
+        t = Transcriber(cfg.model, cfg.device, cfg.quantization)
+        t.load()
+        print(f"Speech model ready ({t.backend})")
         return 0
     if args.transcribe:
         return _transcribe(args.transcribe)
