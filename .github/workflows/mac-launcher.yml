@@ -1,6 +1,7 @@
 # Builds Murmr's small native macOS programs as universal binaries:
 #   mac/launcher.c     -> whispa/resources/MurmrLauncher   (Murmr.app's executable)
 #   mac/audiotap.swift -> whispa/resources/murmr-audiotap  (computer audio for meetings)
+#   mac/applellm.swift -> whispa/resources/murmr-applellm  (Apple's on-device AI model)
 # The results are committed, so installs don't need Xcode. Run it (Actions tab or
 # `gh workflow run mac-launcher.yml`) after changing the source, then commit the artifact.
 # Don't recommit an unchanged launcher: a new binary makes macOS forget Murmr's permissions.
@@ -64,3 +65,30 @@ jobs:
         with:
           name: murmr-audiotap
           path: murmr-audiotap
+
+  applellm:
+    # Apple's Foundation Models framework needs the macOS 26 SDK (Xcode 26).
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Apple AI helper
+        run: |
+          set -e
+          xcodebuild -version
+          xcrun --show-sdk-version
+          swiftc -O -target arm64-apple-macos13.0 -Xlinker -weak_framework -Xlinker FoundationModels             -o murmr-applellm mac/applellm.swift
+          codesign --force --sign - murmr-applellm
+          lipo -info murmr-applellm
+      - name: Smoke test
+        run: |
+          set -e
+          out=$(printf '{"id":1,"op":"availability"}
+{"id":2,"op":"generate","instructions":"Reply with one word.","prompt":"Say hello"}
+' | ./murmr-applellm)
+          echo "$out"
+          echo "$out" | grep -q '"id":1'
+          if echo "$out" | grep -q notBuilt; then echo "built without FoundationModels"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: murmr-applellm
+          path: murmr-applellm
