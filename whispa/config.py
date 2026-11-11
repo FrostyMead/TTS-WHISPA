@@ -91,6 +91,7 @@ class Config:
     max_duration_s: int = 600
     # Text
     remove_fillers: bool = True
+    smart_formatting: bool = True  # emails, websites, $, %, times written properly
     voice_commands: bool = True
     append_space: bool = True
     replacements: dict[str, str] = field(default_factory=dict)
@@ -115,7 +116,9 @@ class Config:
     # Read aloud (local Kokoro voice)
     read_voice: str = "af_heart"
     read_speed: float = 1.0
-    update_check: bool = True  # look for a new version on GitHub once a day (installed copies)
+    update_check: bool = True  # look for a new version on GitHub every few hours (installed copies)
+    auto_update: bool = True  # download it and restart when you're away (else: Settings > Updates)
+    last_seen_version: str = ""  # for the "What's new" note after an update
     config_version: int = CONFIG_VERSION
 
 

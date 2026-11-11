@@ -23,12 +23,18 @@ def remove_fillers(text: str) -> str:
     return _FILLER_RE.sub(repl, text)
 
 
+_BULLET_RE = re.compile(r"[ \t]*[,;]?[ \t]*\b(?:new |next )?bullet[ -]?points?\b[,.;:]?[ \t]*",
+                        re.IGNORECASE)
+
+
 def apply_voice_commands(text: str) -> str:
     def repl(m: re.Match) -> str:
         nl = "\n\n" if "para" in m.group(1).lower() else "\n"
         return nl + _CAP
 
-    return _NEWLINE_RE.sub(repl, text)
+    text = _NEWLINE_RE.sub(repl, text)
+    # "Groceries: bullet point milk, bullet point eggs." -> list items on their own lines
+    return _BULLET_RE.sub("\n- " + _CAP, text)
 
 
 _SCRATCH_RE = re.compile(r"\b(?:scratch that|delete that|strike that)\b[.,!?]*\s*", re.IGNORECASE)
@@ -163,13 +169,18 @@ def tidy(text: str) -> str:
 
 
 def process(text: str, *, fillers: bool = True, commands: bool = True,
-            replacements: dict[str, str] | None = None, terms: list[str] | None = None) -> str:
+            replacements: dict[str, str] | None = None, terms: list[str] | None = None,
+            smart: bool = False) -> str:
     text = text.strip()
     if fillers:
         text = remove_fillers(text)
     if commands:
         text = apply_scratch_that(text)
         text = apply_voice_commands(text)
+    if smart:
+        from .formatting import smart_format
+
+        text = smart_format(text)
     if replacements:
         text = apply_replacements(text, replacements)
     if terms:

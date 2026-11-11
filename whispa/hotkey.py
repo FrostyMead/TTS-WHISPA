@@ -285,6 +285,7 @@ class HotkeyService:
         self._capture: dict | None = None
         self._lock = threading.Lock()
         self._actions: dict[str, tuple[Hotkey, Callable[[], None]]] = {}
+        self.last_activity = time.monotonic()  # last key press anywhere (auto-update waits for a lull)
 
     def set_action(self, name: str, hotkey: Hotkey | None, callback: Callable[[], None]) -> None:
         """A shortcut that does something once when pressed (paste last, read aloud).
@@ -389,6 +390,7 @@ class HotkeyService:
         if cancelled is not None:
             cancelled["cb"](None, None)
             return
+        self.last_activity = time.monotonic()
         new = names - self.sm.held
         self.sm.press(names)
         self._fire_action(new)

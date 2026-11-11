@@ -206,6 +206,10 @@ class Speaker:
         self._system_proc = None
         self._last_used = 0.0
         self.speaking = False
+        self.paused = False
+        self.level = 0.0  # loudness of what's playing, for the pill
+        self.engine = ""  # "natural" | "system" while speaking
+        self._skip = False
         threading.Thread(target=self._unload_when_idle, name="tts-idle", daemon=True).start()
 
     # -- public ----------------------------------------------------------
@@ -217,16 +221,37 @@ class Speaker:
         with self._lock:
             self._gen += 1
             gen = self._gen
-        self.speaking = True
+        self.speaking, self.paused, self._skip = True, False, False
         threading.Thread(target=self._run, args=(text, gen), name="tts", daemon=True).start()
 
     def stop(self) -> None:
         with self._lock:
             self._gen += 1
         self._stop_system()
+        self.paused, self.level = False, 0.0
         if self.speaking:
             self.speaking = False
             self.on_state("idle")
+
+    def toggle_pause(self) -> None:
+        if not self.speaking:
+            return
+        self.paused = not self.paused
+        proc = self._system_proc
+        if proc is not None and proc.poll() is None:
+            _suspend(proc, self.paused)
+        self.on_state("paused" if self.paused else "resumed")
+
+    @property
+    def can_skip(self) -> bool:
+        return self.engine == "natural"
+
+    def skip(self) -> None:
+        """Jump to the next sentence (natural voice)."""
+        if self.speaking and self.can_skip:
+            self._skip = True
+            if self.paused:
+                self.toggle_pause()
 
     def unload(self) -> None:
         with self._lock:
@@ -268,6 +293,7 @@ class Speaker:
                 # First use: speak right away with the system voice while the natural one
                 # downloads, instead of making you wait in silence.
                 self.prepare()
+                self.engine = "system"
                 self.on_state("downloading")
                 log.info("Read aloud: system voice for now")
                 self._run_system(text, gen, announce=False)
@@ -297,6 +323,7 @@ class Speaker:
         with self._lock:
             k = self._kokoro
         if k is None:
+            self.engine = "natural"
             self.on_state("loading")
             k = Kokoro(self.device)
             with self._lock:
@@ -321,6 +348,7 @@ class Speaker:
             audio_q.put(None)
 
         threading.Thread(target=produce, name="tts-gen", daemon=True).start()
+        self.engine = "natural"
         self.on_state("speaking")
         log.info("Read aloud: playing %d piece(s) with %s", len(pieces), self.voice)
         with sd.OutputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32") as out:
@@ -330,15 +358,26 @@ class Speaker:
                     break
                 if isinstance(item, Exception):
                     raise item
-                for i in range(0, len(item), SAMPLE_RATE // 10):  # 100 ms: stop is quick
+                self._skip = False
+                block = SAMPLE_RATE // 20  # 50 ms: stop, pause and skip react quickly
+                for i in range(0, len(item), block):
+                    while self.paused and self._current(gen):
+                        self.level = 0.0
+                        time.sleep(0.05)
                     if not self._current(gen):
                         out.abort()
                         return
-                    out.write(item[i:i + SAMPLE_RATE // 10])
+                    if self._skip:
+                        break
+                    chunk = item[i:i + block]
+                    self.level = float(np.sqrt(np.mean(chunk * chunk))) if len(chunk) else 0.0
+                    out.write(chunk)
+                self.level = 0.0
                 self._last_used = time.monotonic()
         self._last_used = time.monotonic()
 
     def _run_system(self, text: str, gen: int, announce: bool = True) -> None:
+        self.engine = "system"
         if announce:
             self.on_state("speaking")
         rate = self.speed
@@ -362,11 +401,22 @@ class Speaker:
         if sys.platform == "win32":
             proc.stdin.write(text.encode("utf-8", "replace"))
         proc.stdin.close()
+        t = 0.0
         while proc.poll() is None and self._current(gen):
-            time.sleep(0.1)
+            time.sleep(0.05)
+            t += 0.05
+            # No audio to measure from another process: a gentle pulse for the pill.
+            self.level = 0.0 if self.paused else 0.03 + 0.02 * abs(np.sin(t * 6))
+        self.level = 0.0
         self._stop_system()
 
     def _stop_system(self) -> None:
+        proc = self._system_proc
+        if proc is not None and self.paused and proc.poll() is None:
+            _suspend(proc, False)  # a suspended process can't be killed cleanly everywhere
+        self._stop_system_proc()
+
+    def _stop_system_proc(self) -> None:
         proc, self._system_proc = self._system_proc, None
         if proc is not None and proc.poll() is None:
             proc.kill()
@@ -378,3 +428,19 @@ class Speaker:
                     and time.monotonic() - self._last_used > IDLE_UNLOAD_S):
                 log.info("Unloading the reading voice (idle)")
                 self.unload()
+
+
+def _suspend(proc, pause: bool) -> None:
+    """Pause or resume the system voice's process."""
+    try:
+        if sys.platform == "win32":
+            ntdll = ctypes.windll.ntdll
+            fn = ntdll.NtSuspendProcess if pause else ntdll.NtResumeProcess
+            fn.argtypes = [ctypes.c_void_p]
+            fn(ctypes.c_void_p(int(proc._handle)))
+        else:
+            import signal
+
+            os.kill(proc.pid, signal.SIGSTOP if pause else signal.SIGCONT)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Couldn't %s the system voice: %s", "pause" if pause else "resume", exc)

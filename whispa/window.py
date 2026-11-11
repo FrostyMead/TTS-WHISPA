@@ -663,6 +663,10 @@ class SettingsPage(QScrollArea):
                                        "Drops um, uh, hmm.", first=True))
         sec.addWidget(self._switch_row("voice_commands", "Voice commands",
                                        "Say “new line”, “new paragraph” or “scratch that”."))
+        sec.addWidget(self._switch_row("smart_formatting", "Smart formatting",
+                                       "“john at gmail dot com” → john@gmail.com, “20 dollars” → $20, "
+                                       "“50 percent” → 50%, “330 pm” → 3:30 pm. Say “bullet point” "
+                                       "to start a list item."))
         sec.addWidget(self._switch_row("append_space", "Add a space after each dictation", ""))
         self.no_field = QComboBox()
         self.no_field.addItem("Show a copy card", "popup")
@@ -818,9 +822,19 @@ class SettingsPage(QScrollArea):
         self.update_changes.setContentsMargins(0, 0, 0, 10)
         sec.addWidget(self.update_changes)
         self.update_auto = self._switch_row("update_check", "Check automatically",
-                                            "Once a day. Only public code is downloaded from "
+                                            "Every few hours. Only public code is downloaded from "
                                             "GitHub; nothing about you is sent.")
         sec.addWidget(self.update_auto)
+        self.update_install = self._switch_row(
+            "auto_update", "Install updates automatically",
+            "Downloads in the background and restarts Whispa when you've been away for 10 minutes "
+            "(takes a few seconds). Off: you choose when, here.")
+        sec.addWidget(self.update_install)
+        self.whats_new = QLabel()
+        self.whats_new.setObjectName("muted")
+        self.whats_new.setWordWrap(True)
+        self.whats_new.setContentsMargins(0, 4, 0, 10)
+        sec.addWidget(self.whats_new)
         self.rollback_btn = QPushButton("Go back to the previous version")
         self.rollback_btn.clicked.connect(ctl.rollback_update)
         self.rollback_row = setting_row("Something wrong after an update?", "", self.rollback_btn)
@@ -983,7 +997,7 @@ class SettingsPage(QScrollArea):
             self.update_detail.setText("Running from a git checkout: update it with git pull. "
                                        "Copies installed with the installer update here.")
             for w in (self.update_check_btn, self.update_now_btn, self.update_auto, self.rollback_row,
-                      self.update_changes):
+                      self.update_changes, self.update_install, self.whats_new):
                 w.setVisible(False)
             return
         version = f"Whispa {__version__}"
@@ -999,8 +1013,9 @@ class SettingsPage(QScrollArea):
             detail = u["error"]
         elif u["available"]:
             n = len(u["changes"])
-            detail = (f"{n} update{'s' if n != 1 else ''} available." if n else "An update is available.") + \
-                " Updating restarts Whispa (a few seconds)."
+            detail = (f"{n} update{'s' if n != 1 else ''} available." if n else "An update is available.")
+            detail += (" Downloaded: it installs when you're away, or now." if u.get("staged")
+                       else " Updating restarts Whispa (a few seconds).")
         elif u["checked"]:
             detail = "You're up to date."
         else:
@@ -1018,6 +1033,11 @@ class SettingsPage(QScrollArea):
         self.update_check_btn.setEnabled(not busy)
         self.update_check_btn.setVisible(True)
         self.update_auto.setVisible(True)
+        self.update_install.setVisible(True)
+        new = u.get("whats_new") or []
+        self.whats_new.setText("What's new in this version:\n" + "\n".join(f"•  {c}" for c in new[:10])
+                               if new else "")
+        self.whats_new.setVisible(bool(new))
         self.rollback_row.setVisible(bool(u["has_previous"]))
         self.rollback_btn.setEnabled(not busy)
 

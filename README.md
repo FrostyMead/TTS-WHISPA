@@ -60,9 +60,12 @@ belong to Whispa.app (not Terminal) and survive updates.
 Run the same command again to repair or reinstall; your settings, dictionary and history are kept.
 
 ### Updates
-Settings → **Updates** checks GitHub once a day (or on demand) and shows what changed. **Update now**
-downloads the new version, installs new packages only if the dependency list changed, and restarts
-in a few seconds. You only get versions whose tests passed on Windows and macOS
+Whispa checks GitHub every few hours, downloads a new version in the background and restarts
+into it when you've been away for 10 minutes (no typing, nothing being dictated or read, window
+closed); the restart takes a few seconds. Afterwards a notification lists **what's new**, also
+shown in Settings → Updates. Prefer to choose the moment? Switch off **Install updates
+automatically** and use **Update now**. New packages are installed only if the dependency list
+changed. You only get versions whose tests passed on Windows and macOS
 ([CI](.github/workflows/ci.yml)). If an update doesn't start, the next launch goes back to the previous
 version automatically, and **Go back to the previous version** does it by hand. Only public code is
 downloaded; nothing about you is sent.
@@ -213,8 +216,20 @@ Select text anywhere and press **Alt+Shift+R** (macOS: **⌃⌘R**) to hear it; 
 stop. The voice is [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), running locally:
 on an NVIDIA GPU the full model (310 MB, about 15× faster than real time), otherwise an int8
 model (88 MB) on a few CPU threads. Pronunciation comes from espeak-ng. It downloads on first
-use and unloads after 3 idle minutes so it doesn't keep memory. Pick a voice (American or
-British) and speed in Settings → Read aloud, or "System voice" for the OS voice (no download).
+use (the first time it reads with the system voice while that happens) and unloads after 3 idle
+minutes so it doesn't keep memory. Pick a voice (American or British) and speed in Settings →
+Read aloud, or "System voice" for the OS voice (no download).
+
+While it reads, the pill turns blue and shows **pause/play**, **skip to the next sentence** and
+**stop**. Starting a dictation stops the reading, so the mic doesn't hear it.
+
+### Smart formatting
+Spoken forms come out written, without the AI: "john dot smith at gmail dot com" →
+john.smith@gmail.com, "whispa dot io slash docs" → whispa.io/docs, "20 dollars" → $20,
+"10 euros and 50 cents" → €10.50, "50 percent" → 50%, "330 pm" → 3:30 pm. Say **"bullet
+point"** before each item to make a list. Each rule needs a clear shape (a real domain ending, a
+number next to the unit), so "the dot com bubble" or "lost 5 pounds" stay as they are. Settings →
+Writing → Smart formatting.
 
 ### Long dictations
 For dictations longer than about 20 s, Whispa transcribes while you're still talking: it cuts

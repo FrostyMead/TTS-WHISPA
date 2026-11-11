@@ -134,3 +134,35 @@ def test_drag_from_side_to_bottom_morphs_back(app):
     _settle(app, ov, 600)
     assert ov.anchor == "bottom-center" and ov._w > ov._h
     ov.close()
+
+
+@pytest.mark.parametrize("anchor", ["bottom-center", "middle-left"])
+def test_read_aloud_controls(app, anchor):
+    ov = Overlay(lambda: 0.0, "hint", anchor=anchor)
+    clicks = []
+    ov.speak_pause_clicked.connect(lambda: clicks.append("pause"))
+    ov.speak_skip_clicked.connect(lambda: clicks.append("skip"))
+    ov.speak_stop_clicked.connect(lambda: clicks.append("stop"))
+    ov.set_speaking(True, can_skip=True)
+    assert ov.state == "speaking"
+    for _ in range(80):
+        ov._tick()
+    rect = ov._pill_rect()
+    for r in (ov._speak_pause_rect(rect), ov._speak_skip_rect(rect), ov._stop_rect(rect)):
+        assert rect.contains(r.center())
+        ov._click(r.center())
+    assert clicks == ["pause", "skip", "stop"]
+    ov.set_speaking(True, can_skip=False)
+    ov._click(ov._speak_skip_rect(ov._pill_rect()).center())
+    assert clicks[-1] != "skip" or len(clicks) == 3
+    ov.set_speaking(False)
+    assert ov.state == "idle"
+
+
+def test_dictation_keeps_priority_over_read_aloud(app):
+    ov = Overlay(lambda: 0.0, "hint")
+    ov.set_state("listening")
+    ov.set_speaking(True)
+    assert ov.state == "listening"  # never replaces dictation
+    ov.set_speaking(False)
+    assert ov.state == "listening"

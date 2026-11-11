@@ -51,6 +51,7 @@ class Bridge(QObject):
     update_restart = Signal()
     history_changed = Signal()
     update_changed = Signal()
+    update_auto = Signal()  # an update is downloading for an automatic restart
     paste_last = Signal()
     read_aloud = Signal()
     speak_state = Signal(str)
@@ -111,6 +112,10 @@ class WhispaApp:
         self.overlay.idle_clicked.connect(self.sm.toggle_hands_free)
         self.overlay.stop_clicked.connect(self.sm.finish)
         self.overlay.cancel_clicked.connect(self.sm.cancel)
+        self.overlay.speak_level_fn = lambda: self._speaker.level if self._speaker else 0.0
+        self.overlay.speak_pause_clicked.connect(lambda: self._speaker and self._speaker.toggle_pause())
+        self.overlay.speak_skip_clicked.connect(lambda: self._speaker and self._speaker.skip())
+        self.overlay.speak_stop_clicked.connect(lambda: self._speaker and self._speaker.stop())
 
         b = self.bridge
         b.start.connect(self._on_start)
@@ -139,11 +144,17 @@ class WhispaApp:
         b.update_notice.connect(lambda msg: self.tray.showMessage(
             "Whispa update available", f"{msg}. Open Settings > Updates to install.", tray_icon(), 6000))
         b.update_restart.connect(self.restart)
+        b.update_auto.connect(lambda: self.auto_timer.isActive() or self.auto_timer.start())
         self.update_timer = QTimer()
-        self.update_timer.setInterval(24 * 3600 * 1000)
+        self.update_timer.setInterval(6 * 3600 * 1000)
         self.update_timer.timeout.connect(lambda: self.check_updates(quiet=True))
+        self.auto_timer = QTimer()  # a staged update waits for a quiet moment to restart
+        self.auto_timer.setInterval(60_000)
+        self.auto_timer.timeout.connect(self._maybe_auto_restart)
+        self._tray_click_page: int | None = None
         if self.updater.installed:
             QTimer.singleShot(8000, self.updater.mark_healthy)  # we started: keep this version
+            QTimer.singleShot(6000, self._announce_update)
             if cfg.update_check:
                 QTimer.singleShot(90_000, lambda: self.check_updates(quiet=True))
                 self.update_timer.start()
@@ -252,6 +263,8 @@ class WhispaApp:
         if self.recording:
             return
         self.watcher.finish()  # a new dictation ends the edit-watch of the previous one
+        if self._speaker is not None and self._speaker.speaking:
+            self._speaker.stop()  # don't dictate over Whispa reading aloud (the mic would hear it)
         if mode == "command" and not self.polisher.reachable():
             self.sm.reset()
             self.sounds.play("error")
@@ -405,7 +418,8 @@ class WhispaApp:
         replacements = {**corrections, **self.cfg.replacements}
         text = textproc.process(raw, fillers=self.cfg.remove_fillers,
                                 commands=self.cfg.voice_commands,
-                                replacements=replacements, terms=terms)
+                                replacements=replacements, terms=terms,
+                                smart=self.cfg.smart_formatting)
         if names:  # careful matching: only words heard as names, only real misspellings
             text = textproc.apply_terms(text, names, threshold=0.86, min_len=5, case_only=False)
         snippets = self.dictionary.snippets_snapshot()
@@ -505,6 +519,8 @@ class WhispaApp:
         self.tray.setContextMenu(menu)
         self.tray.setToolTip("Whispa")
         self.tray.activated.connect(self._tray_activated)
+        self.tray.messageClicked.connect(
+            lambda: self._tray_click_page is not None and self.show_window(page=self._tray_click_page))
         self.tray.show()
 
     def _tray_activated(self, reason) -> None:
@@ -608,24 +624,16 @@ class WhispaApp:
     def _on_speak_state(self, state: str) -> None:
         speaking = self._speaker is not None and self._speaker.speaking
         self.read_action.setText("Stop reading" if speaking else "Read selection aloud")
-        if state == "idle" and getattr(self, "_speak_state", "") == "loading":
-            self.overlay.flash("Stopped", seconds=0.8)  # replace the long "Loading…" message
-        self._speak_state = state
+        sp = self._speaker
+        self.overlay.set_speaking(speaking, paused=bool(sp and sp.paused), loading=state == "loading",
+                                  can_skip=bool(sp and sp.can_skip))
         if state == "loading":
-            self.overlay.flash("Loading the reading voice…", seconds=30)  # until speech starts
+            self.overlay.flash("Loading the reading voice…", seconds=2)
         elif state == "downloading":
             self.overlay.flash("Reading with the system voice · the natural voice is downloading",
                                seconds=4)
         elif state == "ready":
             self.overlay.flash("Natural reading voice ready", seconds=2.5)
-        elif state == "speaking":
-            hint = ""
-            if self.cfg.read_hotkey:
-                try:
-                    hint = f" · {Hotkey.parse(self.cfg.read_hotkey).label()} to stop"
-                except ValueError:
-                    pass
-            self.overlay.flash(f"Reading aloud{hint}", seconds=2.5)
         elif state.startswith("error:"):
             self.overlay.flash(state[6:][:60], error=True, seconds=4)
 
@@ -788,10 +796,64 @@ class WhispaApp:
         u = self.updater
         last = u.last
         cur = u.current_version()
+        staged = u.staged()
         return {"installed": u.installed, "sha": cur.get("sha", ""), "date": cur.get("date", ""),
                 "available": bool(last and last.available), "changes": last.changes if last else [],
                 "error": last.error if last else "", "checked": self._update_checked,
-                "busy": self._update_busy, "has_previous": u.has_previous()}
+                "busy": self._update_busy, "has_previous": u.has_previous(),
+                "whats_new": cur.get("changes", []),
+                "staged": bool(staged and last and staged.get("sha") == last.target_sha)}
+
+    def _announce_update(self) -> None:
+        """After an update: a "What's new" note (not on the first run after installing)."""
+        cur = self.updater.current_version()
+        sha = cur.get("sha", "")
+        if not sha or sha == self.cfg.last_seen_version:
+            return
+        first_run = not self.cfg.last_seen_version
+        self.cfg.last_seen_version = sha
+        config_mod.save(self.cfg)
+        changes = cur.get("changes") or []
+        if first_run or not changes:
+            return
+        lines = "\n".join(f"• {c}" for c in changes[:3]) + \
+            (f"\n…and {len(changes) - 3} more" if len(changes) > 3 else "")
+        self._tray_click_page = 2
+        self.tray.showMessage(f"Whispa updated · {len(changes)} change{'s' if len(changes) != 1 else ''}",
+                              lines, tray_icon(), 12000)
+        log.info("What's new shown for %s", sha[:7])
+
+    def _auto_stage(self, info) -> None:
+        """Download an update in the background; restart into it when you're away."""
+        def work():
+            try:
+                staged = self.updater.staged()
+                if not (staged and staged.get("sha") == info.target_sha):
+                    self.updater.stage(info)
+                log.info("Update %s ready; restarting when Whispa is idle", info.target_sha[:7])
+                self.bridge.update_changed.emit()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Background update failed (will retry later): %s", exc)
+
+        threading.Thread(target=work, name="update-stage", daemon=True).start()
+
+    def _quiet(self) -> bool:
+        """Nobody's using Whispa: safe to restart for an update."""
+        speaking = self._speaker is not None and self._speaker.speaking
+        window_open = self.window is not None and self.window.isVisible()
+        away = time.monotonic() - self.hotkeys.last_activity > 10 * 60
+        return away and not (self.recording or self.pending or speaking or window_open
+                             or self._update_busy)
+
+    def _maybe_auto_restart(self) -> None:
+        if not self.cfg.auto_update:
+            self.auto_timer.stop()
+            return
+        last = self.updater.last
+        staged = self.updater.staged()
+        if staged and last and staged.get("sha") == last.target_sha and self._quiet():
+            log.info("Restarting into update %s (idle)", last.target_sha[:7])
+            self.restart()
 
     def check_updates(self, quiet: bool = False) -> None:
         if not self.updater.installed or self._update_busy:
@@ -804,7 +866,10 @@ class WhispaApp:
             self._update_busy = ""
             self._update_checked = True
             self.bridge.update_changed.emit()
-            if info.available and quiet:
+            if info.available and quiet and self.cfg.auto_update:
+                self._auto_stage(info)
+                self.bridge.update_auto.emit()
+            elif info.available and quiet:
                 n = len(info.changes)
                 self.bridge.update_notice.emit(f"{n} update{'s' if n != 1 else ''} ready" if n
                                                else "A new version is ready")
@@ -822,7 +887,9 @@ class WhispaApp:
 
         def work():
             try:
-                self.updater.stage(info, progress)
+                staged = self.updater.staged()
+                if not (staged and staged.get("sha") == info.target_sha):  # not downloaded yet
+                    self.updater.stage(info, progress)
                 progress("Restarting…")
                 self.bridge.update_restart.emit()
             except Exception as exc:  # noqa: BLE001

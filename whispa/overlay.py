@@ -4,6 +4,7 @@ idle         a slim bar (hover: hint text, click: hands-free dictation, drag: mo
 listening    expands, white bars dance with your voice
 locked       hands-free: adds cancel (x) and stop buttons
 transcribing a shimmer wave while Parakeet runs
+speaking     read aloud: blue bars follow the voice; pause/play, skip sentence, stop
 
 On the left/right screen edge the pill stands upright; text (hints, messages)
 still reads horizontally and opens inward from the edge.
@@ -42,6 +43,8 @@ STOP_RED = QColor(255, 80, 80)
 ERROR_TEXT = QColor(255, 150, 150)
 COMMAND = QColor(196, 181, 253)  # violet: Command Mode (editing with your voice)
 COMMAND_BORDER = QColor(167, 139, 250, 150)
+SPEAK = QColor(125, 211, 252)  # sky blue: Whispa is reading to you
+SPEAK_BORDER = QColor(125, 211, 252, 130)
 
 
 def _level_to_unit(rms: float) -> float:
@@ -54,6 +57,9 @@ class Overlay(QWidget):
     stop_clicked = Signal()
     cancel_clicked = Signal()
     anchor_changed = Signal(str)
+    speak_pause_clicked = Signal()
+    speak_skip_clicked = Signal()
+    speak_stop_clicked = Signal()
 
     WIN_W, WIN_H = 360, 200
     MARGIN = 16  # gap between the pill and the screen edge
@@ -93,6 +99,10 @@ class Overlay(QWidget):
         self._mac_tweaked = False
         self.anchor = anchor if anchor in ANCHORS else "bottom-center"
         self.mode = "dictate"
+        self.speak_level_fn: Callable[[], float] = lambda: 0.0
+        self.speak_paused = False
+        self.speak_loading = False
+        self.speak_can_skip = True
         self._press_global: QPoint | None = None
         self._press_win = QPoint()
         self._press_local = QPointF()
@@ -126,6 +136,16 @@ class Overlay(QWidget):
         """'command' tints the pill violet so you can tell you're editing, not dictating."""
         self.mode = mode
         self.update()
+
+    def set_speaking(self, active: bool, *, paused: bool = False, loading: bool = False,
+                     can_skip: bool = True) -> None:
+        """Show (or hide) the read-aloud controls. Dictation takes priority over them."""
+        self.speak_paused, self.speak_loading, self.speak_can_skip = paused, loading, can_skip
+        if active and self.state == "idle":
+            self.set_state("speaking")
+        elif not active and self.state == "speaking":
+            self.set_state("idle")
+        self._ensure_running()
 
     def set_locked(self, locked: bool) -> None:
         self.locked = locked
@@ -216,6 +236,8 @@ class Overlay(QWidget):
             return (*self._shape(172 if self.locked else 116, 34), 1.0)
         if self.state == "transcribing":
             return (*self._shape(116, 34), 1.0)
+        if self.state == "speaking":
+            return (*self._shape(196 if self.speak_can_skip else 172, 34), 1.0)
         if self._hover:
             fm = QFontMetricsF(self._font)
             return min(self.WIN_W - 8, fm.horizontalAdvance(self.hint) + 32), 28, 1.0
@@ -257,7 +279,12 @@ class Overlay(QWidget):
         self._h += (th - self._h) * k
         self._alpha += (ta - self._alpha) * 0.22
 
-        raw = _level_to_unit(self.level_fn()) if self.state == "listening" else 0.0
+        if self.state == "listening":
+            raw = _level_to_unit(self.level_fn())
+        elif self.state == "speaking" and not self.speak_paused:
+            raw = _level_to_unit(self.speak_level_fn())
+        else:
+            raw = 0.0
         self._level = raw if raw > self._level else self._level * 0.86 + raw * 0.14
         t = now - self._t0
         for i in range(N_BARS):
@@ -288,8 +315,11 @@ class Overlay(QWidget):
         path = QPainterPath()
         path.addRoundedRect(rect, radius, radius)
         p.fillPath(path, BG)
-        command = self.mode == "command" and self.state != "idle"
-        p.setPen(QPen(COMMAND_BORDER if command else BORDER, 1.2 if command else 1))
+        command = self.mode == "command" and self.state not in ("idle", "speaking")
+        if self.state == "speaking":
+            p.setPen(QPen(SPEAK_BORDER, 1.2))
+        else:
+            p.setPen(QPen(COMMAND_BORDER if command else BORDER, 1.2 if command else 1))
         p.drawPath(path)
 
         tw, th, _ = self._target()
@@ -312,6 +342,21 @@ class Overlay(QWidget):
             self._draw_bars(p, inner)
         elif self.state == "transcribing":
             self._draw_shimmer(p, rect)
+        elif self.state == "speaking":
+            self._draw_round_button(p, self._speak_pause_rect(rect))
+            if self.speak_paused:
+                self._draw_play_icon(p, self._speak_pause_rect(rect))
+            else:
+                self._draw_pause_icon(p, self._speak_pause_rect(rect))
+            if self.speak_can_skip:
+                self._draw_round_button(p, self._speak_skip_rect(rect))
+                self._draw_skip_icon(p, self._speak_skip_rect(rect))
+            self._draw_stop(p, self._stop_rect(rect))
+            inner = self._speak_inner(rect)
+            if self.speak_loading:
+                self._draw_shimmer(p, inner, SPEAK)
+            else:
+                self._draw_bars(p, inner, SPEAK)
         elif self._hover:
             self._draw_text(p, rect, self.hint, QColor(255, 255, 255, 220))
 
@@ -326,19 +371,19 @@ class Overlay(QWidget):
         x = c.x() - total / 2 + i * (bw + gap)
         return QRectF(x, c.y() - size / 2, bw, size)
 
-    def _draw_bars(self, p: QPainter, rect: QRectF) -> None:
+    def _draw_bars(self, p: QPainter, rect: QRectF, color: QColor | None = None) -> None:
         span = (rect.width() if self.vertical else rect.height()) - 14
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(COMMAND if self.mode == "command" else FG)
+        p.setBrush(color or (COMMAND if self.mode == "command" else FG))
         for i, v in enumerate(self._bars):
             p.drawRoundedRect(self._bar(rect, i, 3 + v * (span - 3)), 1.5, 1.5)
 
-    def _draw_shimmer(self, p: QPainter, rect: QRectF) -> None:
+    def _draw_shimmer(self, p: QPainter, rect: QRectF, color: QColor | None = None) -> None:
         t = time.monotonic() - self._t0
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(N_BARS):
             wave = max(0.0, math.sin(t * 7 - i * 0.55)) ** 2
-            c = QColor(COMMAND if self.mode == "command" else FG)
+            c = QColor(color or (COMMAND if self.mode == "command" else FG))
             c.setAlphaF(0.35 + 0.65 * wave)
             p.setBrush(c)
             p.drawRoundedRect(self._bar(rect, i, 3 + 7 * wave), 1.5, 1.5)
@@ -357,6 +402,50 @@ class Overlay(QWidget):
         if self.vertical:  # bottom
             return QRectF(rect.center().x() - 11, rect.bottom() - 28, 22, 22)
         return QRectF(rect.right() - 28, rect.center().y() - 11, 22, 22)
+
+    # read-aloud controls: [pause] bars [skip] [stop]; upright on the side edges
+    def _speak_pause_rect(self, rect: QRectF) -> QRectF:
+        return self._cancel_rect(rect)  # the first slot
+
+    def _speak_skip_rect(self, rect: QRectF) -> QRectF:
+        stop = self._stop_rect(rect)
+        return stop.translated(0, -26) if self.vertical else stop.translated(-26, 0)
+
+    def _speak_inner(self, rect: QRectF) -> QRectF:
+        end = 60 if self.speak_can_skip else 34
+        return rect.adjusted(0, 34, 0, -end) if self.vertical else rect.adjusted(34, 0, -end, 0)
+
+    def _draw_round_button(self, p: QPainter, r: QRectF) -> None:
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 38))
+        p.drawEllipse(r)
+
+    def _draw_pause_icon(self, p: QPainter, r: QRectF) -> None:
+        p.setBrush(FG)
+        c = r.center()
+        p.drawRoundedRect(QRectF(c.x() - 4, c.y() - 4.5, 2.8, 9), 1, 1)
+        p.drawRoundedRect(QRectF(c.x() + 1.2, c.y() - 4.5, 2.8, 9), 1, 1)
+
+    def _draw_play_icon(self, p: QPainter, r: QRectF) -> None:
+        p.setBrush(FG)
+        c = r.center()
+        tri = QPainterPath()
+        tri.moveTo(c.x() - 3, c.y() - 5)
+        tri.lineTo(c.x() + 5, c.y())
+        tri.lineTo(c.x() - 3, c.y() + 5)
+        tri.closeSubpath()
+        p.fillPath(tri, FG)
+
+    def _draw_skip_icon(self, p: QPainter, r: QRectF) -> None:
+        c = r.center()
+        tri = QPainterPath()
+        tri.moveTo(c.x() - 4.5, c.y() - 4.5)
+        tri.lineTo(c.x() + 2, c.y())
+        tri.lineTo(c.x() - 4.5, c.y() + 4.5)
+        tri.closeSubpath()
+        p.fillPath(tri, FG)
+        p.setBrush(FG)
+        p.drawRoundedRect(QRectF(c.x() + 2.4, c.y() - 4.5, 2.2, 9), 1, 1)
 
     def _draw_cancel(self, p: QPainter, r: QRectF) -> None:
         p.setPen(Qt.PenStyle.NoPen)
@@ -430,6 +519,14 @@ class Overlay(QWidget):
                 self.cancel_clicked.emit()
             elif self._stop_rect(rect).adjusted(-4, -4, 4, 4).contains(pos):
                 self.stop_clicked.emit()
+        elif self.state == "speaking":
+            hit = lambda r: r.adjusted(-3, -3, 3, 3).contains(pos)  # noqa: E731
+            if hit(self._speak_pause_rect(rect)):
+                self.speak_pause_clicked.emit()
+            elif self.speak_can_skip and hit(self._speak_skip_rect(rect)):
+                self.speak_skip_clicked.emit()
+            elif hit(self._stop_rect(rect)):
+                self.speak_stop_clicked.emit()
 
     def _snap(self) -> None:
         """Slide to the nearest snap position on the screen the pill was dropped on."""
