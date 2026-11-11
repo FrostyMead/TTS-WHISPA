@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispa"
+version = "0.1.0"
+description = "Local, cross-platform push-to-talk dictation powered by NVIDIA Parakeet"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "onnx-asr[hub]>=0.12",
+  "numpy>=1.24",
+  "sounddevice>=0.4.6",
+  "pynput>=1.7.7",
+  "PySide6-Essentials>=6.6",
+  "pyperclip>=1.8",
+  "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+  "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
+  "pyobjc-framework-ApplicationServices>=10; sys_platform == 'darwin'",
+  "comtypes>=1.4; sys_platform == 'win32'",
+]
+
+# Pick exactly one ONNX Runtime flavour (they install the same module and conflict).
+[project.optional-dependencies]
+cpu = ["onnxruntime>=1.20"]
+cuda = ["onnxruntime-gpu[cuda,cudnn]>=1.21"]
+directml = ["onnxruntime-directml>=1.20"]
+dev = ["pytest>=8"]
+
+[project.gui-scripts]
+whispa = "whispa.__main__:main"
+
+[project.scripts]
+whispa-cli = "whispa.__main__:main"
+
+[tool.setuptools]
+packages = ["whispa"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
