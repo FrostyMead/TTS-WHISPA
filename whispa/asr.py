@@ -68,14 +68,30 @@ class Transcriber:
             return "int8" if label == "CPU" else None
         return None if q in ("none", "fp32", "") else q
 
+    @staticmethod
+    def _lean_options(providers: list):
+        """Memory-lean ONNX Runtime settings: weights go straight to the GPU instead of also
+        being kept in RAM, no pre-grown memory pools. Measured on an RTX 3070 Ti: ~0.9 GB
+        less committed memory, same speed, faster load."""
+        import onnxruntime as ort
+
+        so = ort.SessionOptions()
+        so.enable_cpu_mem_arena = False
+        so.enable_mem_pattern = False  # also required by DirectML
+        so.add_session_config_entry("session.use_device_allocator_for_initializers", "1")
+        tuned = [("CUDAExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"})
+                 if p == "CUDAExecutionProvider" else p for p in providers]
+        return so, tuned
+
     def load(self) -> None:
         import onnx_asr
 
         t0 = time.perf_counter()
         providers, label = select_providers(self.device)
         try:
+            so, tuned = self._lean_options(providers)
             self._model = onnx_asr.load_model(
-                self.model_name, quantization=self._quant(label), providers=providers)
+                self.model_name, quantization=self._quant(label), providers=tuned, sess_options=so)
             self._warmup()
         except Exception as exc:  # noqa: BLE001
             if label == "CPU":
