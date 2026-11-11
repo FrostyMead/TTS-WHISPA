@@ -113,6 +113,8 @@ class Config:
     voice_clone: bool = False  # "Create a voice that sounds like me" from Voice training reads
     training_excluded_apps: list[str] = field(default_factory=lambda: list(_EXCLUDED_APPS))
     training_max_mb: int = 2000
+    auto_tune: bool = False  # train overnight when enough new recordings have built up
+    last_tune_minutes: float = 0.0  # recognition minutes at the last tuning run
     # Output
     paste_method: str = "auto"  # auto | clipboard | type
     no_text_field: str = "popup"  # popup = show copy card | paste = paste anyway

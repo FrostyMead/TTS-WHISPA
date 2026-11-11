@@ -157,3 +157,20 @@ def test_dictation_clips_are_16k_only(tmp_path):
     store = TrainingStore(tmp_path)
     store.add(np.zeros(48000, np.float32), 48000, "hi")
     assert not list(tmp_path.glob(f"*{HQ_SUFFIX}"))
+
+
+def test_recorded_minutes_for_tuning(tmp_path):
+    import numpy as np
+
+    from whispa.learn import TrainingStore
+    from whispa.tuning import recorded_minutes
+
+    store = TrainingStore(tmp_path)
+    sr = 48000
+    store.add_read(np.zeros(sr * 30, np.float32) + 0.1, sr, "A sentence.", "a sentence")  # 30 s, HQ
+    store.add_read(np.zeros(16000 * 60, np.float32) + 0.1, 16000, "Another.", "another")  # 60 s, no HQ
+    sid = store.add(np.zeros(16000 * 90, np.float32), 16000, "a dictation")  # unknown: not counted
+    m = recorded_minutes(tmp_path)
+    assert abs(m["recognition"] - 1.5) < 0.01 and abs(m["voice"] - 0.5) < 0.01
+    store.record_review(sid, [])  # left as is: still not counted ("corrected" counts)
+    assert abs(recorded_minutes(tmp_path)["recognition"] - 1.5) < 0.01

@@ -114,6 +114,14 @@ class Transcriber:
                  if p == "CUDAExecutionProvider" else p for p in providers]
         return so, tuned
 
+    def switch_device(self, device: str) -> None:
+        """Reload on another device (e.g. the CPU while training uses the GPU). Blocking."""
+        with self._lock:
+            self.ready.clear()
+            self.device = device
+            self._model = None
+            self.load()
+
     def load(self) -> None:
         try:
             self._load_model()

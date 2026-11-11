@@ -57,6 +57,7 @@ class Bridge(QObject):
     speak_state = Signal(str)
     meeting_changed = Signal(str)  # meeting id (saved, summary progress or done)
     ai_setup = Signal(str, float)  # message, fraction (-1: unknown); "done:" / "error:" prefixes
+    tuning_changed = Signal(str)  # job kind
     notice = Signal(str, bool)  # message, is_error
 
 
@@ -144,6 +145,7 @@ class MurmrApp:
         b.speak_state.connect(self._on_speak_state)
         b.meeting_changed.connect(self._on_meeting_changed)
         b.ai_setup.connect(self._on_ai_setup)
+        b.tuning_changed.connect(self._on_tuning_changed)
         b.notice.connect(lambda msg, err: self.overlay.flash(msg, error=err, seconds=3))
 
         from .updater import Updater
@@ -173,6 +175,11 @@ class MurmrApp:
         self.max_timer = QTimer()
         self.max_timer.setInterval(250)
         self.max_timer.timeout.connect(self._check_max_duration)
+        self._tuning: dict = {}  # kind -> tuning.Job (training in WSL)
+        self.tune_timer = QTimer()  # overnight training check
+        self.tune_timer.setInterval(10 * 60 * 1000)
+        self.tune_timer.timeout.connect(self._maybe_auto_tune)
+        self.tune_timer.start()
         self._meeting = None  # the running MeetingSession (notes or captions-only)
         self._summary_state: dict[str, str] = {}
         self._captions = None
@@ -206,6 +213,129 @@ class MurmrApp:
         if not capabilities.local_ai_installed(cfg.llm_cleanup):
             return None
         return self._parse_command_hotkey(cfg.command_hotkey, dictate)
+
+    # -- tune to my voice (tuning.py) --------------------------------------
+    def tuning_active(self) -> bool:
+        return any(j.running for j in self._tuning.values())
+
+    def tuning_job(self, kind: str):
+        return self._tuning.get(kind)
+
+    def recorded_minutes(self) -> dict[str, float]:
+        from .tuning import recorded_minutes
+
+        return recorded_minutes(config_mod.config_dir() / "training")
+
+    def tuning_blocker(self) -> str:
+        """Why tuning can't start here, or ""."""
+        from . import capabilities
+        from .tuning import wsl_status
+
+        if not capabilities.can_train():
+            return "Tuning needs a Windows PC with an NVIDIA graphics card."
+        if not hasattr(self, "_wsl_status"):
+            self._wsl_status = wsl_status()
+        return self._wsl_status
+
+    def start_tuning(self, kind: str, hours: float = 4.0) -> str | None:
+        from .tuning import Job
+
+        if self.tuning_active():
+            return "Training is already running."
+        blocker = self.tuning_blocker()
+        if blocker:
+            return blocker
+        if kind == "voice" and not self.cfg.voice_clone:
+            return "Switch on Settings > Your voice > Create a voice that sounds like me first."
+        if kind == "recognition" and not self.cfg.save_training_audio:
+            return "Switch on Settings > Your voice > Improve recognition with my voice first."
+        self._free_gpu_for_training()
+        job = Job(kind, on_change=lambda j: self.bridge.tuning_changed.emit(j.kind), hours=hours)
+        self._tuning[kind] = job
+        self._models_before = {p.name for p in self._models_dir().iterdir()} \
+            if self._models_dir().exists() else set()
+        if kind == "recognition":
+            self.cfg.last_tune_minutes = self.recorded_minutes()["recognition"]
+            config_mod.save(self.cfg)
+        job.start()
+        log.info("Tuning started: %s", kind)
+        return None
+
+    def cancel_tuning(self, kind: str) -> None:
+        job = self._tuning.get(kind)
+        if job and job.running:
+            job.cancel()
+
+    @staticmethod
+    def _models_dir():
+        return config_mod.config_dir() / "models"
+
+    def _free_gpu_for_training(self) -> None:
+        """Training needs most of the GPU: the local AI and the reading voice unload, and
+        dictation moves to the CPU until it's done (slower, but it keeps working)."""
+        if self._speaker is not None:
+            self._speaker.unload()
+        try:
+            import urllib.request
+
+            body = json.dumps({"model": self.cfg.llm_cleanup.model, "keep_alive": 0}).encode()
+            urllib.request.urlopen(urllib.request.Request(
+                self.cfg.llm_cleanup.base_url.rstrip("/") + "/api/generate", data=body,
+                headers={"Content-Type": "application/json"}), timeout=5).close()
+        except Exception:  # noqa: BLE001 - not running: nothing to unload
+            pass
+        if self.transcriber.backend != "CPU":
+            self._status("Training on your voice · dictation on the CPU meanwhile")
+            threading.Thread(target=self.transcriber.switch_device, args=("cpu",),
+                             name="asr-to-cpu", daemon=True).start()
+
+    def _on_tuning_changed(self, kind: str) -> None:
+        job = self._tuning.get(kind)
+        if job is not None and not job.running:
+            if self.transcriber.device != self.cfg.device and not self.tuning_active():
+                def back():
+                    self.transcriber.switch_device(self.cfg.device)
+                    self.bridge.model_ready.emit(self.transcriber.backend)
+
+                threading.Thread(target=back, name="asr-back", daemon=True).start()
+            if job.ok:
+                new = ({p.name for p in self._models_dir().iterdir()} if self._models_dir().exists()
+                       else set()) - getattr(self, "_models_before", set())
+                if kind == "recognition":
+                    msg = ("Your tuned speech model is ready: open Voice training to use it."
+                           if new else "Tuning finished, but the result wasn't better than the "
+                           "standard model, so it wasn't installed.")
+                else:
+                    msg = "A new round of your voice is ready: try it in Settings > Read aloud."
+                self.tray.showMessage("Murmr training finished", msg, tray_icon(), 8000)
+        vt = getattr(self.window, "voice_training", None) if self.window is not None else None
+        if vt is not None and vt.tuning is not None:
+            vt.tuning.refresh()
+
+    def use_tuned_model(self, path: str) -> None:
+        self.cfg.model = path
+        config_mod.save(self.cfg)
+        log.info("Switching to tuned model %s", path)
+        self.restart()
+
+    def _maybe_auto_tune(self) -> None:
+        """Overnight training: between 1 and 6 am, when you've been away for 30 minutes."""
+        if not self.cfg.auto_tune or self.tuning_active() or self.tuning_blocker():
+            return
+        hour = time.localtime().tm_hour
+        away = time.monotonic() - self.hotkeys.last_activity > 30 * 60
+        if not (1 <= hour < 6 and away and not self.recording and not self.meeting_running()):
+            return
+        from .tuning import RECOGNITION_MIN, VOICE_MIN
+
+        mins = self.recorded_minutes()
+        if self.cfg.save_training_audio and mins["recognition"] >= max(RECOGNITION_MIN, 30) and \
+                mins["recognition"] - self.cfg.last_tune_minutes >= 15:
+            self.start_tuning("recognition")
+        elif self.cfg.voice_clone and mins["voice"] >= VOICE_MIN and \
+                getattr(self, "_voice_round_day", None) != time.strftime("%Y-%m-%d"):
+            self._voice_round_day = time.strftime("%Y-%m-%d")  # one round a night
+            self.start_tuning("voice", hours=4)
 
     # -- one-click local AI (ai_setup.py) -----------------------------------
     def setup_ai(self) -> None:
@@ -396,6 +526,10 @@ class MurmrApp:
         self.watcher.finish()  # a new dictation ends the edit-watch of the previous one
         if self._speaker is not None and self._speaker.speaking:
             self._speaker.stop()  # don't dictate over Murmr reading aloud (the mic would hear it)
+        if mode == "command" and self.tuning_active():
+            self.sm.reset()
+            self.overlay.flash("Command Mode is paused while Murmr trains on your voice", seconds=3)
+            return
         if mode == "command" and not self.polisher.reachable():
             self.sm.reset()
             self.sounds.play("error")
@@ -555,8 +689,8 @@ class MurmrApp:
             text = textproc.apply_terms(text, names, threshold=0.86, min_len=5, case_only=False)
         snippets = self.dictionary.snippets_snapshot()
         triggers = textproc.find_snippets(text, snippets)
-        if style == "exact":
-            polished = text  # code & terminals: your words, never reworded by the AI
+        if style == "exact" or self.tuning_active():
+            polished = text  # code & terminals: your words; while training: GPU is busy
         else:
             polished = self.polisher.polish(text, app=f.app, terms=terms + names[:40])
         if triggers and textproc.find_snippets(polished, snippets) != triggers:
@@ -1093,7 +1227,7 @@ class MurmrApp:
                     return "That's already your push-to-talk shortcut."
             setattr(cfg, key, value)
             self._apply_action_hotkeys()
-        elif key in ("meeting_mic", "meeting_system"):
+        elif key in ("meeting_mic", "meeting_system", "auto_tune"):
             pass  # used by the next meeting
         elif key in ("read_voice", "read_speed"):
             if self._speaker is not None:
@@ -1238,7 +1372,7 @@ class MurmrApp:
         window_open = self.window is not None and self.window.isVisible()
         away = time.monotonic() - self.hotkeys.last_activity > 10 * 60
         return away and not (self.recording or self.pending or speaking or window_open
-                             or self._update_busy)
+                             or self._update_busy or self.tuning_active() or self.meeting_running())
 
     def _maybe_auto_restart(self) -> None:
         if not self.cfg.auto_update:
@@ -1340,6 +1474,10 @@ class MurmrApp:
 
     def shutdown(self) -> None:
         import faulthandler
+
+        for job in self._tuning.values():  # training in WSL would otherwise keep running
+            if job.running:
+                job.cancel()
 
         if self._meeting is not None:  # save the notes taken so far
             session, self._meeting = self._meeting, None

@@ -314,6 +314,14 @@ class VoiceTrainingPage(QScrollArea):
         self.progress_note = _label("", "faint")
         lay.addWidget(self.progress_note)
 
+        # Tune / train with what you've recorded (Windows + WSL); hidden for test controllers
+        self.tuning = None
+        if hasattr(ctl, "recorded_minutes"):
+            from .tuning_ui import TuneSection
+
+            self.tuning = TuneSection(ctl)
+            lay.addWidget(self.tuning)
+
         # The sentence
         sec = _section(lay, "Read this sentence")
         sec.setContentsMargins(18, 16, 18, 16)
@@ -440,6 +448,8 @@ class VoiceTrainingPage(QScrollArea):
         return self.ctl.training_store()
 
     def refresh(self) -> None:
+        if self.tuning is not None:
+            self.tuning.refresh()
         if self._queue is None:
             done = self.store().read_prompts()
             words = dictionary_words(self.ctl.dictionary)
