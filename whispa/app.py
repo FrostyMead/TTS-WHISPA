@@ -448,6 +448,8 @@ class WhispaApp:
             self.bridge.show_card.emit(text)
             self._before = None  # nothing to watch for edits
             return
+        log.info("Pasting into %s (text field: %s)", f.app or "?",
+                 {True: "yes", False: "no", None: "can't tell"}[f.is_text])
         self._before = f.read_text() if self.cfg.learn_from_edits else None
         out = text + (" " if self.cfg.append_space else "")
         self.injector.inject(out)

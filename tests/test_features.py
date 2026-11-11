@@ -167,3 +167,16 @@ def test_disabled_action_does_nothing():
     for names, p in (({"alt"}, "alt_l"), ({"shift"}, "shift_l"), ({"r"}, "r")):
         svc._press(names, p)
     assert not fired
+
+
+# --------------------------------------------------------------------------- macOS focus
+def test_mac_classify_pastes_when_unsure():
+    from whispa.focus import mac_classify
+
+    assert mac_classify("AXTextArea", "", False, False, False, "Notes") is True
+    assert mac_classify("AXGroup", "", False, False, True, "Slack") is True  # has a caret
+    assert mac_classify("AXWebArea", "", False, False, False, "Google Chrome") is None  # paste
+    assert mac_classify("AXGroup", "", False, False, False, "Code") is None  # paste
+    assert mac_classify("AXButton", "", False, False, False, "Safari") is False  # copy card
+    assert mac_classify("AXList", "", False, False, False, "Finder") is False
+    assert mac_classify("AXScrollArea", "", False, False, False, "Finder") is False  # desktop

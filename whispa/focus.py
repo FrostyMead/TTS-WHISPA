@@ -252,34 +252,57 @@ def _win_inspect() -> Focus:
 
 # --------------------------------------------------------------------------- macOS
 _MAC_TEXT_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
+# Focus on these is definitely not somewhere to type (Finder icons, buttons, lists...).
+_MAC_NOT_TEXT = {"AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton",
+                 "AXImage", "AXList", "AXOutline", "AXRow", "AXCell", "AXTable", "AXBrowser",
+                 "AXMenu", "AXMenuItem", "AXMenuBar", "AXMenuBarItem", "AXSlider", "AXTabGroup",
+                 "AXToolbar", "AXDockItem", "AXDisclosureTriangle", "AXLink", "AXStaticText"}
+
+
+def mac_classify(role: str, subrole: str, value_settable: bool, editable: bool,
+                 has_caret: bool, app: str) -> bool | None:
+    """True = text field, False = surely not, None = can't tell (then we paste, like Windows)."""
+    if role in _MAC_TEXT_ROLES or value_settable or editable or has_caret:
+        return True
+    if role in _MAC_NOT_TEXT or (app == "Finder" and role in ("AXScrollArea", "AXGroup", "")):
+        return False
+    return None  # web areas, groups, custom views (Electron, Chrome, canvas apps): paste
 
 
 def _mac_inspect() -> Focus:
     from ApplicationServices import (AXIsProcessTrusted, AXUIElementCopyAttributeValue,
-                                     AXUIElementCreateSystemWide, AXUIElementIsAttributeSettable)
+                                     AXUIElementCreateApplication, AXUIElementCreateSystemWide,
+                                     AXUIElementIsAttributeSettable)
 
+    app, pid = "", None
+    try:
+        from AppKit import NSWorkspace
+
+        front = NSWorkspace.sharedWorkspace().frontmostApplication()
+        app, pid = front.localizedName() or "", front.processIdentifier()
+    except Exception:  # noqa: BLE001
+        pass
     if not AXIsProcessTrusted():
-        return Focus()  # no Accessibility permission: can't tell, just paste
-    system = AXUIElementCreateSystemWide()
-    err, el = AXUIElementCopyAttributeValue(system, "AXFocusedUIElement", None)
+        return Focus(app=app)  # no Accessibility permission: can't tell, just paste
+    err, el = AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), "AXFocusedUIElement", None)
+    if (err or el is None) and pid is not None:
+        # Electron and some other apps don't answer the system-wide query; ask the app itself.
+        err, el = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+                                                "AXFocusedUIElement", None)
     if err or el is None:
-        return Focus(is_text=False)
+        log.debug("No focused element (%s, AX error %s): pasting", app, err)
+        return Focus(app=app)
 
     def attr(name):
         e, v = AXUIElementCopyAttributeValue(el, name, None)
         return None if e else v
 
-    role = attr("AXRole") or ""
-    subrole = attr("AXSubrole") or ""
-    err, settable = AXUIElementIsAttributeSettable(el, "AXValue", None)
-    is_text = role in _MAC_TEXT_ROLES or bool(not err and settable) or bool(attr("AXEditable"))
-    app = ""
-    try:
-        from AppKit import NSWorkspace
-
-        app = NSWorkspace.sharedWorkspace().frontmostApplication().localizedName() or ""
-    except Exception:  # noqa: BLE001
-        pass
+    role = str(attr("AXRole") or "")
+    subrole = str(attr("AXSubrole") or "")
+    e, settable = AXUIElementIsAttributeSettable(el, "AXValue", None)
+    is_text = mac_classify(role, subrole, bool(not e and settable), bool(attr("AXEditable")),
+                           attr("AXSelectedTextRange") is not None, app)
+    log.debug("Focus: %s, role %s/%s -> text field %s", app, role, subrole, is_text)
 
     def read() -> str | None:
         v = attr("AXValue")
