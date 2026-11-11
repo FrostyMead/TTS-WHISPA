@@ -4,8 +4,9 @@ meeting summaries.
 * macOS: Ollama's command-line build (~180 MB) goes into Murmr's own folder; Murmr runs it.
   No installer, no admin password, nothing in /Applications.
 * Windows: Ollama's own installer, silently, for this user only.
-* Then the model is downloaded through Ollama: gemma3:4b (3.3 GB) with 16 GB of memory or
-  more, else the lighter gemma3:1b (0.8 GB).
+* Then the best model for this computer is downloaded through Ollama (ai_choice.py: by
+  chip, memory and graphics card), timed on a few real clean-ups, and swapped for a smaller
+  one if it's too slow here.
 
 Downloads are checked against the SHA-256 list published with each Ollama release.
 """
@@ -64,11 +65,15 @@ def memory_gb() -> float:
 
 
 def recommended_model() -> str:
-    return "gemma3:4b" if memory_gb() >= 15 else "gemma3:1b"
+    from .ai_choice import detect, recommend
+
+    return recommend(detect()).model
 
 
 def model_size_label(model: str) -> str:
-    return {"gemma3:4b": "3.3 GB", "gemma3:1b": "0.8 GB"}.get(model, "a few GB")
+    from .ai_choice import size_label
+
+    return size_label(model)
 
 
 def local_dir() -> Path:
@@ -219,19 +224,78 @@ def pull(base: str, model: str, progress, cancel: threading.Event) -> None:
             if msg.get("error"):
                 raise RuntimeError(msg["error"])
             total, done = msg.get("total"), msg.get("completed")
-            if total and done is not None:
+            if total and total > 2**20 and done is not None:  # (tiny parts: already here)
                 progress(f"Downloading {model}… {done / 2**30:.1f} of {total / 2**30:.1f} GB", done / total)
             elif msg.get("status"):
                 progress(msg["status"].capitalize() + "…", None)
 
 
+def remove_model(base: str, model: str) -> None:
+    """Delete a model Murmr installed earlier (frees its disk space)."""
+    try:
+        req = urllib.request.Request(base.rstrip("/") + "/api/delete", method="DELETE",
+                                     data=json.dumps({"model": model}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=30).close()
+        log.info("Removed the old AI model %s", model)
+    except Exception as exc:  # noqa: BLE001
+        log.info("Couldn't remove %s: %s", model, exc)
+
+
 def setup(llm_cfg, progress: Callable[[str, float | None], None], cancel: threading.Event) -> str:
-    """Install Ollama if needed, start it, download the model. Returns the model name."""
+    """Install Ollama if needed, start it, download the best model for this computer (or the
+    one you chose) and check it's quick enough here. Returns the model name; the measured
+    time goes to ``llm_cfg.measured_s``."""
+    from .ai_choice import KNOWN, SLOW_S, detect, recommend, smaller, speed_check
     from .llm import find_ollama
 
     exe = find_ollama() or install_ollama(progress, cancel)
     ensure_server(exe, llm_cfg.base_url, progress, cancel)
-    model = recommended_model() if llm_cfg.model in ("gemma3:4b", "gemma3:1b") else llm_cfg.model
-    pull(llm_cfg.base_url, model, progress, cancel)
-    progress("Local AI ready", 1.0)
-    return model
+    if not getattr(llm_cfg, "auto_model", True):
+        pull(llm_cfg.base_url, llm_cfg.model, progress, cancel)
+        progress("Local AI ready", 1.0)
+        return llm_cfg.model
+    hw = detect()
+    choice = recommend(hw)
+    log.info("AI model for %s: %s", hw.describe(), " > ".join(choice.models))
+    previous = llm_cfg.model
+    had = installed_models(llm_cfg.base_url)  # never remove a model that was already here
+    model: str | None = choice.model
+    last_error: Exception | None = None
+    while model:
+        if cancel.is_set():
+            raise Cancelled()
+        try:
+            pull(llm_cfg.base_url, model, progress, cancel)
+            progress(f"Checking how fast {model} is on this computer…", None)
+            took = speed_check(llm_cfg, model, cancel)
+        except Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - e.g. the MLX build can't run here
+            log.warning("AI model %s didn't work here: %s", model, exc)
+            last_error = exc
+            i = choice.models.index(model)
+            model = choice.models[i + 1] if i + 1 < len(choice.models) else None
+            continue
+        log.info("AI model %s: %.2f s per clean-up", model, took)
+        step = smaller(choice.models, model) if took > SLOW_S else None
+        if step is None:
+            llm_cfg.measured_s = round(took, 2)
+            if previous != model and previous in KNOWN:
+                remove_model(llm_cfg.base_url, previous)
+            for other in choice.models:  # one downloaded now, then dropped (too slow, broken)
+                if other not in (model, previous) and other not in had and                         other in installed_models(llm_cfg.base_url):
+                    remove_model(llm_cfg.base_url, other)
+            progress(f"Local AI ready: {model}, {took:.1f} s per clean-up", 1.0)
+            return model
+        progress(f"{model} takes {took:.1f} s here; trying the lighter {step}…", None)
+        model = step
+    raise RuntimeError(f"No AI model worked on this computer: {last_error}")
+
+
+def installed_models(base: str) -> set[str]:
+    try:
+        with _api(base, "/api/tags") as r:
+            return {m.get("name", "") for m in json.load(r).get("models", [])}
+    except Exception:  # noqa: BLE001
+        return set()

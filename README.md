@@ -380,7 +380,24 @@ between 1 and 6 am when there are enough new recordings.
 
 ### Local AI in one click
 No local AI yet? **Settings → Smart features → Local AI → Set up** installs Ollama for you (on
-a Mac inside Murmr's own folder, no admin needed) and the right model for your memory.
+a Mac inside Murmr's own folder, no admin needed) and the best model for your computer.
+
+Murmr picks the model from your hardware, then times a few real clean-ups and steps down to a
+smaller model if it's too slow there (`whispa/ai_choice.py`):
+
+| Computer | Model |
+|---|---|
+| Apple Silicon Mac, 16 GB+ | `qwen3.5:4b-mlx` (Apple Silicon build), else `qwen3.5:4b` |
+| Apple Silicon Mac, 8 GB; Intel Mac | `qwen3.5:2b` |
+| NVIDIA GPU with 6 GB+ | `gemma3:4b` |
+| Anything else | `qwen3.5:2b` |
+
+Chosen from a comparison on Murmr's own prompts (Nov 2026): the 4B models were equally good
+at clean-up, Command Mode and summaries; `qwen3.5:2b` was the only small model that never
+mangled text (`gemma3:1b` and `qwen3.5:0.8b` invented words or obeyed dictated text).
+**Settings → Smart features → AI model** shows the model, its measured speed, and **Switch**
+when a better one fits (the old model is removed). To use your own, set `llm_cleanup.model`
+and `"auto_model": false` in config.json.
 
 ## Platform notes
 

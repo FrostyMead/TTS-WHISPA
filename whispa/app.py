@@ -381,6 +381,19 @@ class MurmrApp:
 
         threading.Thread(target=work, name="ai-setup", daemon=True).start()
 
+    def ai_model_info(self) -> dict:
+        """The model in use, the best one for this computer, and why."""
+        from .ai_choice import detect, recommend, size_label
+
+        if getattr(self, "_hardware", None) is None:
+            self._hardware = detect()  # a sysctl / nvidia-smi call: once per run
+        choice = recommend(self._hardware)
+        lc = self.cfg.llm_cleanup
+        return {"model": lc.model, "measured_s": lc.measured_s, "auto": lc.auto_model,
+                "recommended": choice.model, "reason": choice.reason,
+                "size": size_label(choice.model),
+                "differs": lc.auto_model and lc.model not in choice.models}
+
     def cancel_ai_setup(self) -> None:
         if getattr(self, "_ai_cancel", None) is not None:
             self._ai_cancel.set()

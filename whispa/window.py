@@ -736,6 +736,17 @@ class SettingsPage(QScrollArea):
         llm_row.layout().itemAt(0).widget().layout().addWidget(self.llm_row_desc)
         self.llm_row = llm_row
         sec.addWidget(llm_row)
+        # The model: which one, how fast here, and the best one for this computer (ai_choice.py)
+        self.model_btn = QPushButton("Switch")
+        self.model_btn.clicked.connect(self._ai_setup_clicked)
+        self.model_desc = Label()
+        self.model_desc.setObjectName("faint")
+        self.model_desc.setWordWrap(True)
+        self.model_row = setting_row("AI model", "Murmr picks the best model for this computer "
+                                     "and checks it's quick enough here.", self.model_btn)
+        self.model_row.layout().itemAt(0).widget().layout().addWidget(self.model_desc)
+        self.model_row.setVisible(False)
+        sec.addWidget(self.model_row)
         # Without the local AI: one button to set it up (then the AI features appear)
         from . import ai_setup
 
@@ -993,32 +1004,39 @@ class SettingsPage(QScrollArea):
 
     # -- local AI setup ----------------------------------------------------
     def _ai_setup_clicked(self) -> None:
-        if self.ai_btn.text() == "Cancel":
+        btn = self.sender() if self.sender() in (self.ai_btn, self.model_btn) else self.ai_btn
+        if btn.text() == "Cancel":
             self.ctl.cancel_ai_setup()
             return
-        self.ai_btn.setText("Cancel")
-        self.ai_btn.setObjectName("")
-        self.ai_btn.style().unpolish(self.ai_btn)
-        self.ai_btn.style().polish(self.ai_btn)
-        self.ai_note.setText("Starting…")
+        self._ai_target = btn
+        self._ai_idle_text = btn.text()
+        btn.setText("Cancel")
+        btn.setObjectName("")
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+        (self.model_desc if btn is self.model_btn else self.ai_note).setText("Starting…")
         self.ctl.setup_ai()
 
     def ai_setup_progress(self, msg: str, frac: float) -> None:
+        btn = getattr(self, "_ai_target", self.ai_btn)
+        note = self.model_desc if btn is self.model_btn else self.ai_note
         done = msg.startswith(("done:", "error:"))
         text = msg.split(":", 1)[1] if done else msg
         if frac >= 0 and not done:
             text += f"  ({frac:.0%})"
-        self.ai_note.setText(text)
-        self.ai_note.setObjectName("error" if msg.startswith("error:") else
-                                   "ok" if msg.startswith("done:") else "faint")
-        self.ai_note.style().unpolish(self.ai_note)
-        self.ai_note.style().polish(self.ai_note)
+        note.setText(text)
+        note.setObjectName("error" if msg.startswith("error:") else
+                           "ok" if msg.startswith("done:") else "faint")
+        note.style().unpolish(note)
+        note.style().polish(note)
         if done:
-            self.ai_btn.setText("Set up")
-            self.ai_btn.setObjectName("primary")
-            self.ai_btn.style().unpolish(self.ai_btn)
-            self.ai_btn.style().polish(self.ai_btn)
+            btn.setText(getattr(self, "_ai_idle_text", "Set up"))
+            btn.setObjectName("primary" if btn is self.ai_btn else "")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            self._ai_target = self.ai_btn
             if msg.startswith("done:"):
+                self._model_note_hold = text  # keep "ready: ..., 0.3 s" until the next refresh
                 self.refresh()
 
     # -- jump links ------------------------------------------------------
@@ -1213,6 +1231,7 @@ class SettingsPage(QScrollArea):
         self.ai_row.setVisible(not ai or bool(self.ai_note.text()))
         if hasattr(self.ctl, "refresh_capabilities"):
             self.ctl.refresh_capabilities()
+        self._refresh_model(ai)
         ok, text = self.ctl.llm_status() if ai else (False, "")
         self.llm_row_desc.setText(text)
         self.llm_row_desc.setObjectName("ok" if ok else "faint")
@@ -1221,6 +1240,29 @@ class SettingsPage(QScrollArea):
         self.status.setText(f"Murmr {__version__} · {self.ctl.status_text()}")
         self.refresh_updates()
         self.refresh_permissions()
+
+    def _refresh_model(self, ai: bool) -> None:
+        info = self.ctl.ai_model_info() if ai and hasattr(self.ctl, "ai_model_info") else None
+        self.model_row.setVisible(bool(info))
+        if not info or self.model_btn.text() == "Cancel":
+            return
+        hold = getattr(self, "_model_note_hold", "")
+        self._model_note_hold = ""
+        speed = f", {info['measured_s']:.1f} s per clean-up here" if info["measured_s"] else ""
+        if info["differs"]:
+            text = (f"Using {info['model']}. Better for this computer: {info['recommended']} "
+                    f"({info['reason']}). Switching downloads {info['size']} and removes the old "
+                    "model.")
+        elif info["auto"]:
+            text = f"{info['model']}{speed}. Best for this computer ({info['reason']})."
+        else:
+            text = f"{info['model']}{speed}. Chosen in config.json."
+        self.model_desc.setText(hold or text)
+        self.model_desc.setObjectName("ok" if hold else "faint")
+        self.model_desc.style().unpolish(self.model_desc)
+        self.model_desc.style().polish(self.model_desc)
+        self.model_btn.setText("Switch" if info["differs"] else "Check again")
+        self.model_btn.setVisible(bool(info["auto"]))
 
     def refresh_updates(self) -> None:
         u = self.ctl.update_state()
