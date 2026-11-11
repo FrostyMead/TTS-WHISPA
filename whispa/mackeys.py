@@ -113,7 +113,7 @@ class KeyTap:
                 log.exception("key tap callback failed")
             return event
 
-        warned = False
+        warned = announced = False
         while not self._stopped:
             allowed = _listen_allowed()
             tap = Quartz.CGEventTapCreate(Quartz.kCGSessionEventTap, Quartz.kCGHeadInsertEventTap,
@@ -127,32 +127,38 @@ class KeyTap:
                 continue
             state["tap"] = tap
             self.active = True
-            log.info("Keyboard watching active (Input Monitoring allowed: %s)", allowed)
+            if not announced:  # once; the tap may be re-made every few seconds until keys arrive
+                log.info("Keyboard watching active (Input Monitoring allowed: %s)", allowed)
+                announced = True
             source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
             self._loop = Quartz.CFRunLoopGetCurrent()
             Quartz.CFRunLoopAddSource(self._loop, source, Quartz.kCFRunLoopCommonModes)
             Quartz.CGEventTapEnable(tap, True)
-            if allowed is False:
+            if not self._seen_key:
                 # macOS can hand out a tap that gets no key events until Input Monitoring is
-                # allowed, and a tap made before then stays deaf: make a new one once it is.
-                threading.Thread(target=self._restart_when_allowed, name="key-tap-watch",
-                                 daemon=True).start()
+                # allowed, and a tap made before then stays deaf. Its "allowed?" check can
+                # also keep its first answer until restart, so go by evidence: until a key
+                # event arrives, make a fresh tap every few seconds.
+                threading.Thread(target=self._refresh_until_events, args=(self._loop,),
+                                 name="key-tap-watch", daemon=True).start()
             Quartz.CFRunLoopRun()
             self.active = False
             Quartz.CGEventTapEnable(tap, False)
-            Quartz.CFRunLoopRemoveSource(self._loop, source, Quartz.kCFRunLoopCommonModes)
+            Quartz.CFMachPortInvalidate(tap)
             self._loop = None
-            if not self._stopped:
-                log.info("Input Monitoring is now allowed: watching the keyboard again")
 
-    def _restart_when_allowed(self) -> None:
+    def _refresh_until_events(self, loop) -> None:
         import Quartz
 
-        while not self._stopped and _listen_allowed() is False:
-            time.sleep(2)
-        loop = self._loop
-        if not self._stopped and loop is not None:
+        time.sleep(5)
+        if not self._stopped and not self._seen_key and self._loop is loop:
+            log.debug("No keyboard events yet; making a new event tap")
             Quartz.CFRunLoopStop(loop)
+
+    @property
+    def working(self) -> bool:
+        """Key events have arrived: Input Monitoring is definitely allowed."""
+        return self._seen_key
 
     def _handle(self, etype: int, code: int, flags: int) -> None:
         if not self._seen_key:

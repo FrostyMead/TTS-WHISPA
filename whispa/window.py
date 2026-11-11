@@ -857,9 +857,9 @@ class SettingsPage(QScrollArea):
             bl.addWidget(btn)
             sec.addWidget(setting_row(LABELS[kind], WHY[kind], box, first=i == 0))
             self.perm_rows[kind] = (state, btn)
-        note = QLabel("Allow opens System Settings: switch Whispa on there. If Whispa isn't in "
-                      "the list, click +, pick Whispa in your Applications folder, then restart "
-                      "Whispa.")
+        note = QLabel("Allow opens System Settings: switch Whispa on there, then restart Whispa "
+                      "(macOS often only applies it after a restart). Still not allowed? Select "
+                      "Whispa in that list, remove it with −, and restart Whispa so it asks again.")
         note.setObjectName("faint")
         note.setWordWrap(True)
         note.setContentsMargins(0, 0, 0, 10)

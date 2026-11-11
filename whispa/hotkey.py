@@ -322,6 +322,11 @@ class HotkeyService:
     def active(self) -> bool:
         return self._tap.active if self._tap is not None else self._listener is not None
 
+    @property
+    def keys_arriving(self) -> bool:
+        """macOS: key events have reached Whispa (so Input Monitoring works)."""
+        return self._tap is not None and self._tap.working
+
     @staticmethod
     def _guarded(fn):
         def run(names, primary):

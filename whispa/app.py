@@ -207,7 +207,10 @@ class WhispaApp:
     def permissions(self) -> dict[str, bool | None]:
         from . import macperms
 
-        return macperms.status()
+        st = macperms.status()
+        if self.hotkeys.keys_arriving:  # proof, whatever macOS's cached answer says
+            st["input"] = True
+        return st
 
     def allow_permission(self, kind: str) -> None:
         from . import macperms
