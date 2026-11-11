@@ -108,7 +108,8 @@ class Switch(QAbstractButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(40, 22)
         self._pos = 1.0 if checked else 0.0
-        self._anim = QPropertyAnimation(self, b"pos", self)
+        # Not "pos": that name is QWidget's position, so animating it moved the switch to (0, 0).
+        self._anim = QPropertyAnimation(self, b"knob", self)
         self._anim.setDuration(140)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.toggled.connect(self._animate)
@@ -125,7 +126,7 @@ class Switch(QAbstractButton):
         self._pos = v
         self.update()
 
-    pos = Property(float, _get_pos, _set_pos)
+    knob = Property(float, _get_pos, _set_pos)
 
     def sizeHint(self) -> QSize:
         return QSize(40, 22)
