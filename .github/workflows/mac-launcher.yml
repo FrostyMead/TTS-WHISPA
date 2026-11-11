@@ -44,6 +44,18 @@ jobs:
           out=$(./murmr-audiotap --check)
           echo "check: $out"
           echo "$out" | grep -Eq '^(granted|denied)$'
+      - name: Capture smoke test (informational)
+        continue-on-error: true
+        run: |
+          sleep 20 | ./murmr-audiotap > /tmp/out.raw 2> /tmp/err.txt &
+          sleep 4
+          for i in 1 2 3; do afplay /System/Library/Sounds/Ping.aiff || true; done
+          sleep 2
+          pkill -f murmr-audiotap || true
+          sleep 1
+          echo "stderr:"; cat /tmp/err.txt
+          ls -la /tmp/out.raw
+          python3 -c "import array,math; a=array.array('f'); a.frombytes(open('/tmp/out.raw','rb').read()[:(len(open('/tmp/out.raw','rb').read())//4)*4]); print(len(a)/48000,'s', 'peak', max(map(abs,a)) if a else 0)"
       - uses: actions/upload-artifact@v4
         with:
           name: MurmrLauncher
