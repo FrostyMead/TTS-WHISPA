@@ -757,9 +757,14 @@ def raise_priority() -> None:
     if sys.platform == "win32":
         try:
             import ctypes
+            from ctypes import wintypes
 
             k32 = ctypes.windll.kernel32
-            k32.SetPriorityClass(k32.GetCurrentProcess(), 0x00008000)  # ABOVE_NORMAL_PRIORITY_CLASS
+            # Declare the types: untyped, the 64-bit pseudo-handle is truncated and the call fails.
+            k32.GetCurrentProcess.restype = wintypes.HANDLE
+            k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            if not k32.SetPriorityClass(k32.GetCurrentProcess(), 0x00008000):  # ABOVE_NORMAL
+                log.warning("Couldn't raise process priority")
         except Exception:  # noqa: BLE001
             pass
 
