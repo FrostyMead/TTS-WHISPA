@@ -84,18 +84,23 @@ def stylesheet(p: Palette) -> str:
 * {{ font-size: 13px; color: {p.text}; {_font_family()} }}
 QWidget#root, QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget {{ background: {p.bg}; }}
 QWidget#sidebar {{ background: {p.sidebar}; border-right: 1px solid {p.border}; }}
-QLabel#brand {{ font-size: 17px; font-weight: 700; padding-left: 4px; }}
+QLabel#brand {{ font-size: 17px; font-weight: 700; padding-left: 2px; }}
 QLabel#version {{ color: {p.faint}; font-size: 11px; padding-left: 4px; }}
+QLabel#sideStatus {{ color: {p.muted}; font-size: 12px; padding-left: 4px; }}
 QPushButton#nav {{
-    text-align: left; padding: 8px 12px; border-radius: 8px; border: none;
-    background: transparent; color: {p.muted}; font-weight: 500;
+    text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid transparent;
+    background: transparent; color: {p.muted}; font-weight: 500; min-height: 18px;
 }}
 QPushButton#nav:hover {{ background: {p.surface_hover}; color: {p.text}; }}
 QPushButton#nav:checked {{ background: {p.surface}; color: {p.text}; font-weight: 600;
     border: 1px solid {p.border}; }}
+QPushButton#jump {{ background: transparent; border: 1px solid {p.border}; border-radius: 13px;
+    padding: 3px 11px; color: {p.muted}; font-weight: 500; font-size: 12px; }}
+QPushButton#jump:hover {{ background: {p.surface}; color: {p.text}; }}
 
-QLabel#h1 {{ font-size: 24px; font-weight: 700; }}
+QLabel#h1 {{ font-size: 26px; font-weight: 700; }}
 QLabel#h2 {{ font-size: 15px; font-weight: 650; }}
+QLabel#rowTitle {{ font-weight: 600; }}
 QLabel#sub, QLabel#muted {{ color: {p.muted}; }}
 QLabel#faint {{ color: {p.faint}; font-size: 12px; }}
 QLabel#day {{ color: {p.muted}; font-size: 12px; font-weight: 600; padding: 14px 4px 4px 4px; }}
@@ -104,14 +109,15 @@ QLabel#statLabel {{ color: {p.muted}; font-size: 12px; }}
 QLabel#error {{ color: {p.danger}; font-size: 12px; }}
 QLabel#ok {{ color: {p.success}; font-size: 12px; }}
 QLabel#time {{ color: {p.faint}; font-size: 12px; }}
-QLabel#app {{ color: {p.muted}; font-size: 11px; background: {p.surface_hover};
-    border: 1px solid {p.border}; border-radius: 6px; padding: 1px 6px; }}
+QLabel#app {{ color: {p.faint}; font-size: 12px; }}
 QLabel#entry {{ font-size: 14px; }}
 QLabel#command {{ color: #8b5cf6; font-size: 12px; font-weight: 600; }}
 QLabel#keycap {{ background: {p.keycap}; border: 1px solid {p.keycap_border};
     border-bottom-width: 2px; border-radius: 6px; padding: 3px 9px; font-weight: 600; font-size: 12px; }}
-QLabel#chip {{ background: {p.surface_hover}; border: 1px solid {p.border}; border-radius: 12px;
-    padding: 4px 4px 4px 10px; }}
+QFrame#chipFrame {{ background: {p.surface_hover}; border: 1px solid {p.border}; border-radius: 12px; }}
+QLabel#chip {{ background: transparent; padding: 3px 0 3px 11px; }}
+QFrame#chipFrame QPushButton#icon {{ padding: 2px 8px 2px 4px; font-size: 11px; border-radius: 10px; }}
+QLabel#arrow {{ color: {p.faint}; font-size: 15px; }}
 
 QFrame#card {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 12px; }}
 QFrame#row {{ background: transparent; border: none; border-top: 1px solid {p.border}; }}
@@ -120,7 +126,7 @@ QFrame#entryRow {{ background: transparent; border-radius: 10px; }}
 QFrame#entryRow:hover {{ background: {p.surface_hover}; }}
 
 QPushButton {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px;
-    padding: 6px 14px; font-weight: 600; }}
+    padding: 6px 14px; font-weight: 600; min-height: 18px; }}
 QPushButton:hover {{ background: {p.surface_hover}; }}
 QPushButton:disabled {{ color: {p.faint}; }}
 QPushButton#primary {{ background: {p.accent}; color: {p.accent_text}; border: 1px solid {p.accent}; }}
@@ -134,6 +140,7 @@ QPushButton#link {{ background: transparent; border: none; padding: 0; color: {p
 
 QLineEdit, QComboBox, QPlainTextEdit {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px;
     padding: 6px 10px; selection-background-color: {p.accent}; selection-color: {p.accent_text}; }}
+QLineEdit, QComboBox {{ min-height: 18px; }}
 QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {{ border-color: {p.muted}; }}
 QComboBox::drop-down {{ border: none; width: 26px; }}
 QComboBox::down-arrow {{ image: url("{_arrow(p.muted)}"); width: 10px; height: 10px; }}

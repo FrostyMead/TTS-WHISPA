@@ -24,7 +24,7 @@ from .config import Config
 from .hotkey import Hotkey
 from .icons import app_icon, app_pixmap
 from .learn import Dictionary
-from .widgets import HotkeyField, StatCard, Switch, card, setting_row
+from .widgets import HotkeyField, Label, StatCard, Switch, card, nav_icon, setting_row
 
 TYPING_WPM = 40  # average typing speed, for the "time saved" estimate
 
@@ -206,11 +206,11 @@ def _page(title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
     lay = QVBoxLayout(inner)
     lay.setContentsMargins(40, 32, 40, 32)
     lay.setSpacing(12)
-    h = QLabel(title)
+    h = Label(title)
     h.setObjectName("h1")
     lay.addWidget(h)
     if subtitle:
-        s = QLabel(subtitle)
+        s = Label(subtitle)
         s.setObjectName("sub")
         s.setWordWrap(True)
         lay.addWidget(s)
@@ -220,7 +220,7 @@ def _page(title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
 
 
 def _section(lay: QVBoxLayout, title: str) -> QVBoxLayout:
-    h = QLabel(title)
+    h = Label(title)
     h.setObjectName("h2")
     lay.addSpacing(10)
     lay.addWidget(h)
@@ -238,7 +238,7 @@ class EntryRow(QFrame):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 8, 6, 8)
         lay.setSpacing(14)
-        t = QLabel(_time_label(entry.get("t", 0)))
+        t = Label(_time_label(entry.get("t", 0)))
         t.setObjectName("time")
         t.setFixedWidth(62)
         t.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -246,18 +246,18 @@ class EntryRow(QFrame):
         body = QVBoxLayout()
         body.setSpacing(4)
         if entry.get("command"):
-            cmd = QLabel(f"✦ {entry['command']}")
+            cmd = Label(f"✦ {entry['command']}")
             cmd.setObjectName("command")
             cmd.setWordWrap(True)
             body.addWidget(cmd)
-        text = QLabel(entry["text"])
+        text = Label(entry["text"])
         text.setObjectName("entry")
         text.setWordWrap(True)
         text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         body.addWidget(text)
         if entry.get("app"):
-            app = QLabel(pretty_app(entry["app"]))
+            app = Label(pretty_app(entry["app"]))
             app.setObjectName("app")
             row = QHBoxLayout()
             row.addWidget(app)
@@ -311,22 +311,23 @@ class HomePage(QScrollArea):
         inner = area.takeWidget()
         self.setWidget(inner)
         self._title = inner.findChild(QLabel, "h1")
-        self.hint = QLabel()
+        self.hint = Label()
         self.hint.setObjectName("sub")
         lay.insertWidget(1, self.hint)
 
         stats = QHBoxLayout()
         stats.setSpacing(12)
         self.s_words = StatCard("words dictated")
-        self.s_wpm = StatCard("average speaking speed (wpm)")
-        self.s_saved = StatCard(f"time saved vs typing at {TYPING_WPM} wpm")
+        self.s_wpm = StatCard("words per minute")
+        self.s_saved = StatCard("saved vs typing")
+        self.s_saved.setToolTip(f"Compared with typing the same words at {TYPING_WPM} wpm")
         self.s_streak = StatCard("day streak")
         for s in (self.s_words, self.s_wpm, self.s_saved, self.s_streak):
-            stats.addWidget(s)
+            stats.addWidget(s, 1)
         lay.addLayout(stats)
 
         head = QHBoxLayout()
-        h = QLabel("Dictations")
+        h = Label("Dictations")
         h.setObjectName("h2")
         head.addWidget(h)
         head.addStretch(1)
@@ -377,7 +378,7 @@ class HomePage(QScrollArea):
         if q:
             rows = [r for r in rows if q in r["text"].lower() or q in r.get("app", "").lower()]
         if not rows:
-            empty = QLabel("No matches." if q else
+            empty = Label("No matches." if q else
                            "No dictations yet. Your transcripts will show up here.")
             empty.setObjectName("muted")
             empty.setContentsMargins(4, 16, 4, 16)
@@ -387,7 +388,7 @@ class HomePage(QScrollArea):
         for r in rows[: self.MAX_ROWS]:
             day = dt.date.fromtimestamp(r.get("t", 0))
             if day != last_day:
-                d = QLabel(_day_label(day))
+                d = Label(_day_label(day))
                 d.setObjectName("day")
                 self.list.addWidget(d)
                 last_day = day
@@ -411,7 +412,7 @@ class DictionaryPage(QScrollArea):
         self.setWidget(area.takeWidget())
 
         words = _section(lay, "Your words")
-        desc = QLabel("Names, products and jargon. Near-misses snap to your spelling.")
+        desc = Label("Names, products and jargon. Near-misses snap to your spelling.")
         desc.setObjectName("muted")
         desc.setContentsMargins(0, 12, 0, 8)
         words.addWidget(desc)
@@ -431,7 +432,7 @@ class DictionaryPage(QScrollArea):
         words.addWidget(self.chips_host)
 
         corr = _section(lay, "Corrections")
-        desc2 = QLabel("When Murmr hears the left side, it writes the right side.")
+        desc2 = Label("When Murmr hears the left side, it writes the right side.")
         desc2.setObjectName("muted")
         desc2.setContentsMargins(0, 12, 0, 8)
         corr.addWidget(desc2)
@@ -445,8 +446,8 @@ class DictionaryPage(QScrollArea):
         b2.setObjectName("primary")
         b2.clicked.connect(self._add_correction)
         add2.addWidget(self.heard_in, 1)
-        arrow = QLabel("→")
-        arrow.setObjectName("muted")
+        arrow = Label("→")
+        arrow.setObjectName("arrow")
         add2.addWidget(arrow)
         add2.addWidget(self.meant_in, 1)
         add2.addWidget(b2)
@@ -457,7 +458,7 @@ class DictionaryPage(QScrollArea):
         corr.addLayout(self.corr_list)
 
         snip = _section(lay, "Snippets")
-        desc3 = QLabel("Say the trigger phrase and Murmr types the saved text instead: an email "
+        desc3 = Label("Say the trigger phrase and Murmr types the saved text instead: an email "
                        "address, a link, an address, a sign-off. Pick phrases you wouldn't say by "
                        "accident, like “my calendly link”.")
         desc3.setObjectName("muted")
@@ -476,8 +477,9 @@ class DictionaryPage(QScrollArea):
         b3.setObjectName("primary")
         b3.clicked.connect(self._add_snippet)
         add3.addWidget(self.trigger_in, 2, Qt.AlignmentFlag.AlignTop)
-        arrow3 = QLabel("→")
-        arrow3.setObjectName("muted")
+        arrow3 = Label("→")
+        arrow3.setObjectName("arrow")
+        arrow3.setContentsMargins(0, 6, 0, 0)
         add3.addWidget(arrow3, 0, Qt.AlignmentFlag.AlignTop)
         add3.addWidget(self.expansion_in, 3)
         add3.addWidget(b3, 0, Qt.AlignmentFlag.AlignTop)
@@ -487,7 +489,7 @@ class DictionaryPage(QScrollArea):
         self.snip_list.setSpacing(0)
         snip.addLayout(self.snip_list)
 
-        self.pending = QLabel()
+        self.pending = Label()
         self.pending.setObjectName("faint")
         lay.addWidget(self.pending)
         lay.addStretch(1)
@@ -496,16 +498,17 @@ class DictionaryPage(QScrollArea):
         terms, corrections = self.ctl.dictionary.snapshot()
         clear_layout(self.chips)
         if not terms:
-            none = QLabel("No words yet.")
+            none = Label("No words yet.")
             none.setObjectName("faint")
             self.chips.addWidget(none)
         for term in terms:
             chip = QFrame()
             chip.setObjectName("chipFrame")
+            chip.setFixedHeight(26)  # the corner radius needs at least 2 x 12 px
             cl = QHBoxLayout(chip)
             cl.setContentsMargins(0, 0, 0, 0)
             cl.setSpacing(0)
-            lab = QLabel(term)
+            lab = Label(term)
             lab.setObjectName("chip")
             x = QPushButton("✕")
             x.setObjectName("icon")
@@ -519,7 +522,7 @@ class DictionaryPage(QScrollArea):
 
         clear_layout(self.corr_list)
         if not corrections:
-            none = QLabel("Nothing learned yet. Fix a misheard word after dictating and it appears here.")
+            none = Label("Nothing learned yet. Fix a misheard word after dictating and it appears here.")
             none.setObjectName("faint")
             none.setWordWrap(True)
             none.setContentsMargins(0, 8, 0, 8)
@@ -534,7 +537,7 @@ class DictionaryPage(QScrollArea):
         clear_layout(self.snip_list)
         snippets = self.ctl.dictionary.snippets_snapshot()
         if not snippets:
-            none = QLabel("No snippets yet.")
+            none = Label("No snippets yet.")
             none.setObjectName("faint")
             none.setContentsMargins(0, 8, 0, 8)
             self.snip_list.addWidget(none)
@@ -607,16 +610,15 @@ class SettingsPage(QScrollArea):
         self.hands.change_requested.connect(lambda: self._record("hands_free_key"))
         self.hands.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Hands-free lock",
-                                  "Tap this while holding the shortcut to keep listening without "
-                                  "holding. Press the shortcut again to finish.", self.hands))
+                                  "Tap while holding the shortcut to keep listening. Press the "
+                                  "shortcut again to finish.", self.hands))
         self.command = HotkeyField(hotkey_labels(cfg.command_hotkey) if cfg.command_hotkey else ["Off"])
         self.command.change_requested.connect(lambda: self._record("command_hotkey"))
         self.command.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Command Mode",
-                                  "Select text, hold this and say what to do: “make this more "
-                                  "formal”, “turn this into bullet points”, “translate to "
-                                  "Spanish”. With nothing selected, it writes what you ask for. "
-                                  "Uses the local AI.", self.command))
+                                  "Select text, hold this and say what to do (“make this more "
+                                  "formal”, “translate to Spanish”). With nothing selected, it "
+                                  "writes what you ask for.", self.command))
         self.paste_last = HotkeyField(hotkey_labels(cfg.paste_last_hotkey) if cfg.paste_last_hotkey
                                       else ["Off"])
         self.paste_last.change_requested.connect(lambda: self._record("paste_last_hotkey"))
@@ -630,7 +632,7 @@ class SettingsPage(QScrollArea):
                                   "Press it again to stop.", self.read_key))
         sec.addWidget(self._switch_row("double_tap_to_lock", "Double-tap for hands-free",
                                        "Double-tap the shortcut to start hands-free mode."))
-        self.hotkey_msg = QLabel("")
+        self.hotkey_msg = Label("")
         self.hotkey_msg.setObjectName("error")
         self.hotkey_msg.setWordWrap(True)
         self.hotkey_msg.setVisible(False)
@@ -680,7 +682,7 @@ class SettingsPage(QScrollArea):
         from .styles import CATEGORIES, CATEGORY_LABELS, STYLE_LABELS
 
         sec = _section(lay, "Style per app")
-        intro = QLabel("How your words come out depends on where you're typing. Exact skips the "
+        intro = Label("How your words come out depends on where you're typing. Exact skips the "
                        "AI clean-up, so prompts and commands are never reworded.")
         intro.setObjectName("muted")
         intro.setWordWrap(True)
@@ -709,14 +711,14 @@ class SettingsPage(QScrollArea):
         self.llm_mode.setCurrentIndex(self.llm_mode.findData(current))
         self.llm_mode.currentIndexChanged.connect(
             lambda: (self._set("llm_mode", self.llm_mode.currentData()), self.refresh()))
-        self.llm_row_desc = QLabel()
+        self.llm_row_desc = Label()
         self.llm_row_desc.setWordWrap(True)
         llm_row = setting_row(
             "AI clean-up",
             "Fixes self-corrections (“Tuesday, no wait, Wednesday”), stumbles, lists and grammar "
             "with a local AI model. “Only when needed” runs it just on dictations that look like "
             "they need it, so the rest stay instant.", self.llm_mode, first=True)
-        llm_row.layout().itemAt(0).layout().addWidget(self.llm_row_desc)
+        llm_row.layout().itemAt(0).widget().layout().addWidget(self.llm_row_desc)
         sec.addWidget(llm_row)
         sec.addWidget(self._switch_row("learn_from_edits", "Learn from my corrections",
                                        "After pasting, notice when you fix a word and remember it."))
@@ -725,7 +727,7 @@ class SettingsPage(QScrollArea):
                                        "window you're typing into (an email thread, a chat), so "
                                        "they come out spelled the same way. Read on this computer "
                                        "only, never saved."))
-        self.samples_info = QLabel()
+        self.samples_info = Label()
         self.samples_info.setObjectName("faint")
         self.samples_info.setWordWrap(True)
         self.samples_delete = QPushButton("Delete samples")
@@ -789,19 +791,19 @@ class SettingsPage(QScrollArea):
             self.device.addItem(label, value)
         self.device.setCurrentIndex(max(0, self.device.findData(cfg.device)))
         self.device.currentIndexChanged.connect(self._device_changed)
-        self.device_note = QLabel("")
+        self.device_note = Label("")
         self.device_note.setObjectName("faint")
         sec.addWidget(setting_row("Speech model runs on", "", self.device))
         sec.addWidget(self.device_note)
 
         # Updates
         sec = _section(lay, "Updates")
-        self.update_title = QLabel()
+        self.update_title = Label()
         self.update_title.setStyleSheet("font-weight: 600;")
-        self.update_detail = QLabel()
+        self.update_detail = Label()
         self.update_detail.setObjectName("muted")
         self.update_detail.setWordWrap(True)
-        self.update_changes = QLabel()
+        self.update_changes = Label()
         self.update_changes.setObjectName("muted")
         self.update_changes.setWordWrap(True)
         self.update_check_btn = QPushButton("Check for updates")
@@ -830,7 +832,7 @@ class SettingsPage(QScrollArea):
             "Downloads in the background and restarts Murmr when you've been away for 10 minutes "
             "(takes a few seconds). Off: you choose when, here.")
         sec.addWidget(self.update_install)
-        self.whats_new = QLabel()
+        self.whats_new = Label()
         self.whats_new.setObjectName("muted")
         self.whats_new.setWordWrap(True)
         self.whats_new.setContentsMargins(0, 4, 0, 10)
@@ -841,7 +843,7 @@ class SettingsPage(QScrollArea):
         sec.addWidget(self.rollback_row)
 
         about = QHBoxLayout()
-        self.status = QLabel()
+        self.status = Label()
         self.status.setObjectName("faint")
         about.addWidget(self.status, 1)
         folder = QPushButton("Open data folder")
@@ -853,6 +855,35 @@ class SettingsPage(QScrollArea):
         lay.addSpacing(14)
         lay.addLayout(about)
         lay.addStretch(1)
+        self._add_jump_links(lay)
+
+    # -- jump links ------------------------------------------------------
+    def _add_jump_links(self, lay: QVBoxLayout) -> None:
+        """A row of section links under the title: the page is long."""
+        inner = self.widget()
+        heads = [h for h in inner.findChildren(QLabel, "h2")]
+        heads.sort(key=lambda h: lay.indexOf(h) if lay.indexOf(h) >= 0 else 999)
+        host = QWidget()
+        flow = FlowLayout(host, spacing=6)
+        for h in heads:
+            b = QPushButton(h.text())
+            b.setObjectName("jump")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, w=h: self._scroll_to(w))
+            flow.addWidget(b)
+        lay.insertWidget(2, host)
+
+    def _scroll_to(self, w: QWidget) -> None:
+        from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+
+        bar = self.verticalScrollBar()
+        anim = QPropertyAnimation(bar, b"value", self)
+        anim.setDuration(260)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(bar.value())
+        anim.setEndValue(min(bar.maximum(), max(0, w.y() - 16)))
+        anim.start()
+        self._anim = anim
 
     # -- macOS permissions -----------------------------------------------
     def _permissions_section(self, lay: QVBoxLayout) -> None:
@@ -863,7 +894,7 @@ class SettingsPage(QScrollArea):
             box = QWidget()
             bl = QHBoxLayout(box)
             bl.setContentsMargins(0, 0, 0, 0)
-            state = QLabel()
+            state = Label()
             btn = QPushButton("Change…" if kind == "fn_key" else "Allow…")
             btn.setObjectName("primary")
             btn.clicked.connect(lambda _=False, k=kind: self.ctl.allow_permission(k))
@@ -871,7 +902,7 @@ class SettingsPage(QScrollArea):
             bl.addWidget(btn)
             sec.addWidget(setting_row(LABELS[kind], WHY[kind], box, first=i == 0))
             self.perm_rows[kind] = (state, btn)
-        note = QLabel("Allow opens System Settings: switch Murmr on there, then restart Murmr "
+        note = Label("Allow opens System Settings: switch Murmr on there, then restart Murmr "
                       "(macOS often only applies it after a restart). Still not allowed? Select "
                       "Murmr in that list, remove it with −, and restart Murmr so it asks again.")
         note.setObjectName("faint")
@@ -1064,11 +1095,11 @@ class MainWindow(QWidget):
         sl.setContentsMargins(14, 18, 14, 16)
         sl.setSpacing(4)
         brand = QHBoxLayout()
-        logo = QLabel()
+        logo = Label()
         logo.setPixmap(app_pixmap(56).scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatio,
                                              Qt.TransformationMode.SmoothTransformation))
         brand.addWidget(logo)
-        name = QLabel("Murmr")
+        name = Label("Murmr")
         name.setObjectName("brand")
         brand.addWidget(name)
         brand.addStretch(1)
@@ -1090,18 +1121,24 @@ class MainWindow(QWidget):
         for i, (label, page) in enumerate((("Home", self.home), ("Dictionary", self.dictionary),
                                            ("Settings", self.settings))):
             self.pages.addWidget(page)
-            b = QPushButton(label)
+            b = QPushButton(f"  {label}")
             b.setObjectName("nav")
+            b.setProperty("kind", label.lower())
+            b.setIconSize(QSize(18, 18))
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             self.nav.addButton(b, i)
             sl.addWidget(b)
         self.nav.idClicked.connect(self.show_page)
         sl.addStretch(1)
-        self.side_status = QLabel()
-        self.side_status.setObjectName("faint")
+        self.side_status = Label()
+        self.side_status.setObjectName("sideStatus")
         self.side_status.setWordWrap(True)
+        self.side_status.setTextFormat(Qt.TextFormat.RichText)
         sl.addWidget(self.side_status)
+        version = Label(f"Murmr {__version__}")
+        version.setObjectName("version")
+        sl.addWidget(version)
 
         root.addWidget(side)
         root.addWidget(self.pages, 1)
@@ -1113,15 +1150,39 @@ class MainWindow(QWidget):
         self.show_page(0)
 
     def apply_theme(self) -> None:
-        self.setStyleSheet(theme.stylesheet(theme.current()))
+        pal = theme.current()
+        self.setStyleSheet(theme.stylesheet(pal))
+        for b in self.nav.buttons():
+            b.setIcon(nav_icon(b.property("kind"), pal.muted, pal.text))
+        if hasattr(self, "side_status"):
+            self.refresh_status()
 
     def show_page(self, index: int) -> None:
         self.nav.button(index).setChecked(True)
         self.pages.setCurrentIndex(index)
-        self.pages.currentWidget().refresh()
+        page = self.pages.currentWidget()
+        page.refresh()
+        QTimer.singleShot(0, lambda: self._relayout(page))
+
+    @staticmethod
+    def _relayout(page) -> None:
+        """A page laid out while hidden guessed its text widths; redo it now it's visible."""
+        inner = page.widget()
+        for lab in inner.findChildren(Label):
+            if lab.wordWrap():
+                lab.updateGeometry()
+        inner.layout().invalidate()
+        inner.layout().activate()
+
+    def refresh_status(self) -> None:
+        pal = theme.current()
+        status = self.ctl.status_text()
+        ok = status.startswith("Ready")
+        color = pal.success if ok else (pal.danger if "fail" in status.lower() else pal.faint)
+        self.side_status.setText(f'<span style="color:{color}">●</span>&nbsp; {status}')
 
     def refresh(self) -> None:
-        self.side_status.setText("● " + self.ctl.status_text())
+        self.refresh_status()
         self.pages.currentWidget().refresh()
 
     def history_changed(self) -> None:

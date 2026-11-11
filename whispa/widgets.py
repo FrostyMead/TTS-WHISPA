@@ -2,12 +2,93 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import (Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt,
+                            Signal)
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QPushButton,
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from . import theme
+
+
+class Label(QLabel):
+    """QLabel whose wrapped text always gets its full height.
+
+    Qt sometimes sizes a word-wrapped label for the wrong width inside nested layouts,
+    which cuts off its last lines (or makes text overlap the next row). Each resize pins
+    the minimum height to what the text needs at the real width.
+    """
+
+    def setWordWrap(self, on: bool) -> None:
+        super().setWordWrap(on)
+        if on:  # extra height (if any) goes below the text, not between it and the title
+            self.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+    def sizeHint(self) -> QSize:
+        s = super().sizeHint()
+        if self.wordWrap() and self.width() > 0:
+            # Layouts ask for the height at the *preferred* width, which Qt guesses far
+            # narrower than the real one (too many lines, rows too tall): use the real width.
+            h = self.heightForWidth(self.width())
+            if h > 0:
+                return QSize(self.width(), h)
+        return s
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.wordWrap():
+            h = self.heightForWidth(self.width())
+            if h > 0 and h != self.minimumHeight():
+                self.setMinimumHeight(h)
+                self.updateGeometry()
+
+
+def wrapped(text: str = "", name: str = "") -> Label:
+    lab = Label(text)
+    lab.setWordWrap(True)
+    if name:
+        lab.setObjectName(name)
+    return lab
+
+
+def nav_icon(kind: str, off: str, on: str, size: int = 18) -> QIcon:
+    """Line icons for the sidebar (home, dictionary, settings), muted / highlighted."""
+    icon = QIcon()
+    for color, state in ((off, QIcon.State.Off), (on, QIcon.State.On)):
+        for scale in (1, 2):
+            pm = QPixmap(size * scale, size * scale)
+            pm.fill(Qt.GlobalColor.transparent)
+            pm.setDevicePixelRatio(scale)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            pen = QPen(QColor(color), 1.6)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            s = size
+            if kind == "home":
+                path = QPainterPath()
+                path.moveTo(s * 0.17, s * 0.45)
+                path.lineTo(s * 0.5, s * 0.17)
+                path.lineTo(s * 0.83, s * 0.45)
+                path.moveTo(s * 0.27, s * 0.38)
+                path.lineTo(s * 0.27, s * 0.83)
+                path.lineTo(s * 0.73, s * 0.83)
+                path.lineTo(s * 0.73, s * 0.38)
+                p.drawPath(path)
+            elif kind == "dictionary":
+                p.drawRoundedRect(QRectF(s * 0.22, s * 0.15, s * 0.56, s * 0.7), 2, 2)
+                p.drawLine(QPointF(s * 0.36, s * 0.36), QPointF(s * 0.64, s * 0.36))
+                p.drawLine(QPointF(s * 0.36, s * 0.52), QPointF(s * 0.58, s * 0.52))
+            elif kind == "settings":
+                for y, x in ((0.3, 0.62), (0.5, 0.38), (0.7, 0.58)):
+                    p.drawLine(QPointF(s * 0.17, s * y), QPointF(s * 0.83, s * y))
+                    p.setBrush(QColor(color))
+                    p.drawEllipse(QPointF(s * x, s * y), s * 0.07, s * 0.07)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+            p.end()
+            icon.addPixmap(pm, QIcon.Mode.Normal, state)
+    return icon
 
 
 class Switch(QAbstractButton):
@@ -79,17 +160,17 @@ def setting_row(title: str, description: str, control: QWidget | None, first: bo
     lay = QHBoxLayout(row)
     lay.setContentsMargins(0, 12, 0, 12)
     lay.setSpacing(16)
-    text = QVBoxLayout()
+    block = QWidget()  # title + help text stay together, centred against the control
+    block.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+    text = QVBoxLayout(block)
+    text.setContentsMargins(0, 0, 0, 0)
     text.setSpacing(2)
     t = QLabel(title)
-    t.setStyleSheet("font-weight: 600;")
+    t.setObjectName("rowTitle")
     text.addWidget(t)
     if description:
-        d = QLabel(description)
-        d.setObjectName("muted")
-        d.setWordWrap(True)
-        text.addWidget(d)
-    lay.addLayout(text, 1)
+        text.addWidget(wrapped(description, "muted"))
+    lay.addWidget(block, 1, Qt.AlignmentFlag.AlignVCenter)
     if control is not None:
         lay.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
     return row
@@ -154,6 +235,7 @@ class StatCard(QFrame):
         super().__init__()
         self.setObjectName("card")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(0)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
         lay.setSpacing(2)
