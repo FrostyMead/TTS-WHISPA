@@ -802,6 +802,14 @@ class SettingsPage(QScrollArea):
             self.speech_model = SpeechModelSection(ctl)  # (a tuned model copied here still shows)
             _section(lay, "Speech model").addWidget(self.speech_model)
 
+        # Sync with your other computers (sync_ui.py)
+        self.sync_section = None
+        if hasattr(ctl, "device_name"):
+            from .sync_ui import SyncSection
+
+            self.sync_section = SyncSection(ctl)
+            _section(lay, "Sync").addWidget(self.sync_section)
+
         # Read aloud
         from .speak import all_voices
 
@@ -911,6 +919,17 @@ class SettingsPage(QScrollArea):
         restart = QPushButton("Restart Murmr")
         restart.clicked.connect(ctl.restart)
         about.addWidget(folder)
+        if hasattr(ctl, "show_welcome"):
+            guide = QPushButton("Welcome guide")
+            guide.setToolTip("The first-run steps again: microphone, shortcut, permissions, extras.")
+            guide.clicked.connect(ctl.show_welcome)
+            about.addWidget(guide)
+        if hasattr(ctl, "report_problem"):
+            report = QPushButton("Report a problem…")
+            report.setToolTip("Saves a report file (logs and settings, nothing you said) to send "
+                              "to the developer.")
+            report.clicked.connect(ctl.report_problem)
+            about.addWidget(report)
         about.addWidget(restart)
         lay.addSpacing(14)
         lay.addLayout(about)

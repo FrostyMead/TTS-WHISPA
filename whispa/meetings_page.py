@@ -96,10 +96,13 @@ class MeetingsPage(QScrollArea):
                                   first=True))
         self.sys_sw = Switch(cfg.meeting_system and system_audio_supported())
         self.sys_sw.toggled.connect(lambda on: ctl.update_setting("meeting_system", on))
-        if system_audio_supported():  # Windows for now; elsewhere the mic hears everyone
-            sec.addWidget(setting_row(
-                "Computer audio", "The other people in your Teams, Zoom or Meet call (what your "
-                "speakers or headphones play), labelled “Others”.", self.sys_sw))
+        if system_audio_supported():  # Windows, macOS 13+; elsewhere the mic hears everyone
+            desc = ("The other people in your Teams, Zoom or Meet call (what your speakers or "
+                    "headphones play), labelled “Others”.")
+            if sys.platform == "darwin":
+                desc += (" macOS asks once for Screen & System Audio Recording: Murmr only uses "
+                         "the sound, never the screen.")
+            sec.addWidget(setting_row("Computer audio", desc, self.sys_sw))
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 12, 0, 6)
         self.start_btn = QPushButton("Start meeting notes")

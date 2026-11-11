@@ -59,6 +59,7 @@ class Bridge(QObject):
     ai_setup = Signal(str, float)  # message, fraction (-1: unknown); "done:" / "error:" prefixes
     tuning_changed = Signal(str)  # job kind
     notice = Signal(str, bool)  # message, is_error
+    sync_event = Signal(str, object)  # kind, info (sync.py)
 
 
 class MurmrApp:
@@ -147,6 +148,10 @@ class MurmrApp:
         b.ai_setup.connect(self._on_ai_setup)
         b.tuning_changed.connect(self._on_tuning_changed)
         b.notice.connect(lambda msg, err: self.overlay.flash(msg, error=err, seconds=3))
+        b.sync_event.connect(self._on_sync_event)
+        self.sync = None
+        if cfg.sync_enabled:
+            self._start_sync()
 
         from .updater import Updater
 
@@ -196,7 +201,10 @@ class MurmrApp:
         self._build_tray()
         self.hotkeys.start()
         threading.Thread(target=self._load_model, name="model-load", daemon=True).start()
-        if sys.platform == "darwin":
+        self._welcome = None
+        if not cfg.welcome_done:
+            QTimer.singleShot(900, self.show_welcome)  # it asks for the macOS permissions too
+        elif sys.platform == "darwin":
             QTimer.singleShot(1500, self._check_mac_permissions)
 
     def ai_available(self) -> bool:
@@ -382,6 +390,8 @@ class MurmrApp:
                                   "summaries are on.", tray_icon(), 6000)
         if self.window is not None:
             self.window.settings.ai_setup_progress(msg, frac)
+        if self._welcome is not None and self._welcome.isVisible():
+            self._welcome.ai_setup_progress(msg, frac)
 
     def refresh_capabilities(self) -> None:
         """Ollama installed (or removed) since start: switch Command Mode's shortcut to match."""
@@ -739,6 +749,8 @@ class MurmrApp:
             self.bridge.history_changed.emit()
 
     def _on_done(self, text: str) -> None:
+        if self._welcome is not None:
+            self._welcome.dictated(text)
         self.pending -= 1
         if not self.pending:
             self.overlay.set_mode("dictate")
@@ -787,6 +799,7 @@ class MurmrApp:
         self.update_action.triggered.connect(lambda: self.show_window(page=2))
         self.update_action.setVisible(False)
         menu.addAction(self.update_action)
+        menu.addAction("Report a problem…", self.report_problem)
         menu.addAction("Restart Murmr", self.restart)
         menu.addAction("Quit Murmr", self.quit)
         self._menu = menu
@@ -958,8 +971,23 @@ class MurmrApp:
             return f"Couldn't start: {exc}"
         self._meeting = session
         log.info("%s started (%s)", "Meeting notes" if keep else "Live captions",
-                 ", ".join(c.who for c in session.captures))
+                 ", ".join(c.capture.who for c in session.channels))
+        self._report_capture_problems(session)
         return None
+
+    def _report_capture_problems(self, session) -> None:
+        """A source that didn't start (macOS: computer-audio permission): say so, once."""
+        from .meetings import SystemAudioDenied, request_mac_system_audio
+
+        for who, exc in getattr(session, "problems", []):
+            if isinstance(exc, SystemAudioDenied):
+                if not getattr(self, "_asked_system_audio", False):
+                    self._asked_system_audio = True
+                    threading.Thread(target=request_mac_system_audio, daemon=True).start()
+                self.tray.showMessage("Meeting notes: only your microphone", str(exc), tray_icon(), 10000)
+            else:
+                what = "computer audio" if who == "Others" else "microphone"
+                self.tray.showMessage("Meeting notes", f"Couldn't use the {what}: {exc}", tray_icon(), 8000)
 
     def start_meeting(self) -> str | None:
         if self.meeting_running():
@@ -1163,6 +1191,9 @@ class MurmrApp:
         self.hotkeys.cancel_capture()
 
     def _on_captured(self, kind: str, spec, err) -> None:
+        if self._welcome is not None and self._welcome.isVisible():
+            self._welcome.capture_finished(kind, spec, err)
+            return
         if self.window is not None:
             self.window.settings.capture_finished(kind, spec, err)
 
@@ -1254,8 +1285,16 @@ class MurmrApp:
                     return "That's already your push-to-talk shortcut."
             setattr(cfg, key, value)
             self._apply_action_hotkeys()
-        elif key in ("meeting_mic", "meeting_system", "auto_tune"):
-            pass  # used by the next meeting
+        elif key == "sync_enabled":
+            if value:
+                err = self._start_sync()
+                if err:
+                    return err
+            else:
+                self._stop_sync()
+        elif key in ("meeting_mic", "meeting_system", "auto_tune", "sync_models", "sync_voices",
+                     "device_name"):
+            pass  # used by the next meeting / sync
         elif key in ("read_voice", "read_speed"):
             if self._speaker is not None:
                 setattr(self._speaker, key.removeprefix("read_"), value)
@@ -1472,6 +1511,92 @@ class MurmrApp:
         if self.window is not None and self.window.isVisible():
             self.window.settings.refresh_updates()
 
+    def show_welcome(self) -> None:
+        """The first-run guide (welcome.py); Settings can show it again."""
+        from .welcome import WelcomeDialog
+
+        if self._welcome is not None and self._welcome.isVisible():
+            self._welcome.raise_()
+            self._welcome.activateWindow()
+            return
+        self._welcome = WelcomeDialog(self)
+        self._welcome.finished.connect(self._welcome_closed)
+        if sys.platform == "darwin":
+            try:
+                from AppKit import NSApplication
+
+                NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            except Exception:  # noqa: BLE001
+                pass
+        self._welcome.show()
+        self._welcome.raise_()
+        self._welcome.activateWindow()
+        log.info("Welcome guide shown")
+
+    def _welcome_closed(self, _result=None) -> None:
+        self._welcome = None
+        if self.window is not None and self.window.isVisible():
+            self.window.refresh()
+
+    # -- sync with your other computers (sync.py) ------------------------------
+    def device_name(self) -> str:
+        import socket
+
+        name = self.cfg.device_name.strip() or socket.gethostname()
+        return name.removesuffix(".local")[:60]
+
+    def _sync_accepts(self) -> list[str]:
+        return [k for k, on in (("models", self.cfg.sync_models), ("voices", self.cfg.sync_voices)) if on]
+
+    def _start_sync(self) -> str | None:
+        from .sync import SyncService
+
+        if self.sync is not None:
+            return None
+        svc = SyncService(config_mod.config_dir(), self.dictionary, name=self.device_name,
+                          accepts=self._sync_accepts,
+                          on_event=lambda kind, info: self.bridge.sync_event.emit(kind, info))
+        try:
+            svc.start()
+        except OSError as exc:
+            log.warning("Sync couldn't start: %s", exc)
+            return f"Sync couldn't start: {exc}"
+        self.sync = svc
+        return None
+
+    def _stop_sync(self) -> None:
+        svc, self.sync = self.sync, None
+        if svc is not None:
+            threading.Thread(target=svc.stop, name="sync-stop", daemon=True).start()
+
+    def _on_sync_event(self, kind: str, info) -> None:
+        if kind == "received" and info.get("kind") == "models":
+            self._tray_click_page = 2
+            self.tray.showMessage("Speech model from " + info.get("from", "your other computer"),
+                                  "A model tuned to your voice arrived. Switch to it in Settings > "
+                                  "Speech model.", tray_icon(), 10000)
+            if self.window is not None and not self.window.isVisible() and                     getattr(self.window.settings, "speech_model", None) is None:
+                self.window.deleteLater()  # rebuilt with the Speech model section next time
+                self.window = None
+        elif kind == "paired":
+            self.tray.showMessage("Paired with " + info.get("name", "a computer"),
+                                  "Your Dictionary will stay in sync between them.", tray_icon(), 5000)
+        elif kind == "pair_failed":
+            self.tray.showMessage("Pairing stopped", info.get("why", ""), tray_icon(), 6000)
+        if self.window is not None and self.window.isVisible():
+            sec = getattr(self.window.settings, "sync_section", None)
+            if sec is not None:
+                sec.refresh()
+            if kind == "status" and self.window.pages.currentWidget() is self.window.dictionary:
+                self.window.dictionary.refresh()
+
+    def report_problem(self) -> None:
+        from . import report
+
+        if self.window is None or not self.window.isVisible():
+            self.show_window()
+        report.show_dialog(self, self.window)
+
     def open_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(config_mod.config_dir())))
 
@@ -1505,6 +1630,16 @@ class MurmrApp:
         for job in self._tuning.values():  # training in WSL would otherwise keep running
             if job.running:
                 job.cancel()
+
+        if getattr(self, "sync", None) is not None:  # free the network ports
+            svc, self.sync = self.sync, None
+            svc._stop.set()
+            for sock in (svc._tcp, svc._udp):
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
 
         if self._meeting is not None:  # save the notes taken so far
             session, self._meeting = self._meeting, None

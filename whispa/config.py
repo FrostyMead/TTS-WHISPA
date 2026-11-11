@@ -135,6 +135,12 @@ class Config:
     update_check: bool = True  # look for a new version on GitHub every few hours (installed copies)
     auto_update: bool = True  # download it and restart when you're away (else: Settings > Updates)
     last_seen_version: str = ""  # for the "What's new" note after an update
+    welcome_done: bool = False  # the first-run guide was shown (welcome.py)
+    # Sync with your other computers on the same network (sync.py). Off until you pair one.
+    sync_enabled: bool = False
+    sync_models: bool = True  # also copy speech models tuned to your voice
+    sync_voices: bool = False  # also copy read-aloud voices made from your recordings
+    device_name: str = ""  # how this computer appears to the others (empty: its host name)
     config_version: int = CONFIG_VERSION
 
 
@@ -164,6 +170,8 @@ def load(path: Path | None = None) -> Config:
         data.pop("llm_cleanup", None)  # v1 defaults pointed at a different API; reset
     if data.get("config_version", 1) < 3 and data.get("llm_cleanup", {}).get("keep_alive") == "30m":
         data["llm_cleanup"]["keep_alive"] = "10m"  # free GPU memory sooner for the speech model
+    if path.exists() and "welcome_done" not in data:
+        data["welcome_done"] = True  # set up before the guide existed: don't show it
     data["config_version"] = CONFIG_VERSION
     cfg = _from_dict(Config, data)
     for cat, style in _default_styles().items():  # categories added in later versions

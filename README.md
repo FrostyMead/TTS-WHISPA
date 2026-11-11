@@ -117,6 +117,24 @@ icon for hands-free dictation, recent transcripts, settings, restart and quit.
 
 Launch at login starts Murmr quietly in the tray (`--background`).
 
+The first time Murmr starts, a short **welcome guide** walks through permissions (macOS), the
+microphone, trying the shortcut, and optional extras (local AI, launch at login). Settings →
+**Welcome guide** shows it again.
+
+### Sync between your computers
+Settings → **Sync**: switch it on on both computers, click **Pair a computer** on each, show a
+code on one and type it on the other. From then on your Dictionary (words, corrections,
+snippets) stays the same on both, and a speech model tuned on the PC is copied to the Mac
+(optional; read-aloud voices made from your recordings too, off by default).
+
+- Direct and local: the computers find each other on your network (UDP 47811) and talk over
+  TCP 47812. No cloud, no account, nothing leaves your network. Windows asks once whether to
+  allow Murmr on private networks.
+- Encrypted: pairing agrees a key (X25519, confirmed by the 8-character code); every sync
+  proves both sides hold it and encrypts with ChaCha20-Poly1305.
+- Merging: an edit on either computer wins over the unchanged side, and deletions carry over.
+  It syncs every 10 minutes and shortly after you change the Dictionary, whenever both are on.
+
 ## Using it
 
 | Action | Default (Windows / Linux) | Default (macOS) |
@@ -268,8 +286,10 @@ a summary with decisions and a checklist of action items. Meetings are saved on 
   live text updates every ~1.5 s, slower when transcription is busy (CPU-only Macs).
 - **Echo:** if your mic picks up the other people through your speakers, those copies are
   dropped (headphones avoid it entirely).
-- **Computer audio** works on Windows (WASAPI loopback). On macOS, meeting notes use the
-  microphone for now.
+- **Computer audio** works on Windows (WASAPI loopback) and macOS 13+ (ScreenCaptureKit, via
+  the small `murmr-audiotap` helper built from `mac/audiotap.swift`). macOS asks once for
+  **Screen & System Audio Recording**: Murmr only takes the sound, never the screen, and its
+  own sounds (read aloud) are left out.
 - Summaries need the local AI (Ollama + gemma3:4b). Long meetings are summarized in parts.
 - Let everyone know you're taking notes: in some places transcribing a conversation needs
   everyone's consent.
@@ -392,6 +412,12 @@ murmr-cli --transcribe x.wav  # run Parakeet on a file (prints raw + cleaned)
 ```
 Logs: `whispa.log` next to the config (tray → Open log).
 
+**Report a problem** (tray menu, or the button at the bottom of Settings) saves one zip to
+your Desktop: what you describe, versions, OS, settings and logs. Learned words, meeting
+titles, replacements, API keys and your user name are taken out; audio, history, the
+Dictionary and meetings are never included. You choose whether to send it (it can open a
+pre-filled GitHub issue).
+
 ## Architecture
 
 ```
@@ -428,7 +454,6 @@ launcher.pyw   windowless start on Windows (base pythonw.exe + the venv's packag
 - Streaming partial results with Nemotron streaming models (once ONNX exports exist)
 - MLX backend (`parakeet-mlx`) for Apple Silicon GPU
 - evdev hotkeys for Wayland, layer-shell overlay
-- Sync dictionary and snippets between computers
 
 ## Tests
 

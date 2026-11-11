@@ -11,8 +11,9 @@
 * If your mic picks up the other people through your speakers, those echoed lines are
   dropped (they're already in "Others").
 
-Computer audio: Windows (WASAPI loopback, via the ``soundcard`` package). macOS needs
-Apple's screen-capture API and isn't supported yet; the mic works everywhere.
+Computer audio: Windows (WASAPI loopback, via the ``soundcard`` package) and macOS 13+
+(ScreenCaptureKit, via the small ``murmr-audiotap`` helper built from mac/audiotap.swift;
+macOS asks for "Screen & System Audio Recording" once). The mic works everywhere.
 """
 
 from __future__ import annotations
@@ -41,7 +42,21 @@ SILENT_RMS = 0.004  # quieter than this (90th percentile): nobody is talking
 ECHO_WINDOW_S = 15.0
 
 
+AUDIOTAP = Path(__file__).resolve().parent / "resources" / "murmr-audiotap"
+
+
+def _mac_version() -> tuple[int, ...]:
+    import platform
+
+    try:
+        return tuple(int(x) for x in platform.mac_ver()[0].split(".") if x)
+    except ValueError:
+        return ()
+
+
 def system_audio_supported() -> bool:
+    if sys.platform == "darwin":
+        return AUDIOTAP.exists() and _mac_version() >= (13,)
     if sys.platform != "win32":
         return False
     try:
@@ -49,6 +64,14 @@ def system_audio_supported() -> bool:
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+def SystemCapture() -> "Capture":  # noqa: N802 - picks the class for this OS
+    return MacSystemCapture() if sys.platform == "darwin" else WindowsSystemCapture()
+
+
+class SystemAudioDenied(RuntimeError):
+    """macOS hasn't allowed Murmr to record the computer's audio."""
 
 
 # --------------------------------------------------------------------------- audio sources
@@ -140,7 +163,7 @@ class MicCapture(Capture):
             self._stream = None
 
 
-class SystemCapture(Capture):
+class WindowsSystemCapture(Capture):
     """What the computer is playing (Windows WASAPI loopback of the default output)."""
 
     who = "Others"
@@ -179,6 +202,132 @@ class SystemCapture(Capture):
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2)
+
+
+class MacSystemCapture(Capture):
+    """What the Mac is playing, from the murmr-audiotap helper (float32 mono on stdout)."""
+
+    who = "Others"
+
+    def __init__(self, helper: Path | None = None, start_timeout: float = 8.0):
+        super().__init__()
+        self.helper = helper or AUDIOTAP
+        self.samplerate = 48000
+        self.start_timeout = start_timeout
+        self.error = ""
+        self._proc = None
+        self._threads: list[threading.Thread] = []
+
+    def _command(self) -> list[str]:
+        import os
+
+        return [str(self.helper), "--rate", str(self.samplerate), "--exclude-pid", str(os.getpid())]
+
+    def start(self) -> None:
+        import os
+        import subprocess
+
+        if not os.access(self.helper, os.X_OK):  # an update may not keep the executable bit
+            try:
+                os.chmod(self.helper, 0o755)
+            except OSError:
+                pass
+        self._proc = subprocess.Popen(self._command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, bufsize=0)
+        started = threading.Event()
+        state = {"line": "", "started": False}
+
+        def errors():
+            for raw in iter(self._proc.stderr.readline, b""):
+                line = raw.decode("utf-8", "replace").strip()
+                if line == "started":
+                    state["started"] = True
+                    started.set()
+                elif line.startswith("rate "):
+                    try:
+                        self.samplerate = int(line.split()[1])
+                    except ValueError:
+                        pass
+                elif line:
+                    state["line"] = line
+                    self.error = line.split(":", 1)[-1].strip()
+                    log.warning("Computer audio helper: %s", line)
+            started.set()  # it exited
+
+        def reader():
+            out = self._proc.stdout
+            pending = b""
+            while True:
+                chunk = out.read(19200)  # 0.1 s at 48 kHz
+                if not chunk:
+                    break
+                pending += chunk
+                usable = len(pending) - len(pending) % 4
+                if usable:
+                    self._feed(np.frombuffer(pending[:usable], np.float32).copy())
+                    pending = pending[usable:]
+
+        self._threads = [threading.Thread(target=errors, name="system-audio-log", daemon=True),
+                         threading.Thread(target=reader, name="system-audio", daemon=True)]
+        for t in self._threads:
+            t.start()
+        started.wait(self.start_timeout)
+        if not state["started"]:
+            import subprocess
+
+            try:
+                code = self._proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.stop()
+                raise RuntimeError("The computer audio didn't start (timed out)") from None
+            for t in self._threads:
+                t.join(timeout=1)
+            self._proc = None
+            if code == 2 or state["line"].startswith("denied"):
+                raise SystemAudioDenied(
+                    "Allow Murmr in System Settings > Privacy & Security > Screen & System Audio "
+                    "Recording, then restart Murmr. Only the sound is used, never the screen.")
+            raise RuntimeError(self.error or f"The computer audio helper stopped ({code})")
+
+    def stop(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        try:
+            proc.stdin.close()  # the helper exits when its stdin closes
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+        for t in self._threads:
+            t.join(timeout=1)
+
+
+def mac_system_audio_allowed() -> bool | None:
+    """Screen & System Audio Recording allowed for Murmr? None: can't tell."""
+    import subprocess
+
+    if sys.platform != "darwin" or not AUDIOTAP.exists():
+        return None
+    try:
+        r = subprocess.run([str(AUDIOTAP), "--check"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"granted": True, "denied": False}.get(r.stdout.strip())
+
+
+def request_mac_system_audio() -> None:
+    """macOS's prompt (once), then System Settings at the right list."""
+    import subprocess
+
+    try:
+        subprocess.run([str(AUDIOTAP), "--request"], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    subprocess.Popen(["/usr/bin/open", "x-apple.systempreferences:com.apple.preference.security?"
+                                       "Privacy_ScreenCapture"])
 
 
 # --------------------------------------------------------------------------- segmentation
@@ -251,18 +400,22 @@ class MeetingSession:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self.running = False
+        self.problems: list[tuple[str, Exception]] = []
 
     # -- control ---------------------------------------------------------
     def start(self) -> None:
         started = []
+        self.problems = []  # sources that couldn't start, to tell you why
         for c in self.captures:
             try:
                 c.start()
                 started.append(c)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Couldn't start %s audio: %s", c.who, exc)
+                self.problems.append((c.who, exc))
         if not started:
-            raise RuntimeError("No audio source could be started")
+            raise RuntimeError(str(self.problems[0][1]) if self.problems
+                               else "No audio source could be started")
         self.channels = [Channel(c) for c in started]
         self._setup_speakers()
         self.started = time.time()
