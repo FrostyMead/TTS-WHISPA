@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt
@@ -47,6 +48,8 @@ def app_icon() -> QIcon:
 
 
 def tray_icon(active: bool = False) -> QIcon:
+    if sys.platform == "darwin" and not active:
+        return _mac_template_icon()
     size = 64
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
@@ -59,6 +62,25 @@ def tray_icon(active: bool = False) -> QIcon:
     _draw_bars(p, QRectF(16, 19, 32, 26), QColor(255, 255, 255))
     p.end()
     return QIcon(pm)
+
+
+def _mac_template_icon() -> QIcon:
+    """A menu-bar "template" image: macOS draws it in the menu bar's own colour (black on a
+    light bar, white on a dark one). A coloured icon can vanish on a dark menu bar."""
+    size = 64
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(0, 0, 0))
+    p.drawRoundedRect(QRectF(2, 12, 60, 40), 20, 20)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+    _draw_bars(p, QRectF(16, 19, 32, 26), QColor(0, 0, 0))  # cut the bars out
+    p.end()
+    icon = QIcon(pm)
+    icon.setIsMask(True)
+    return icon
 
 
 def write_ico(path: Path) -> Path:

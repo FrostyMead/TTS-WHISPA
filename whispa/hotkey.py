@@ -1,8 +1,7 @@
 """Global push-to-talk hotkey.
 
 ``PTTStateMachine`` is pure logic (easy to test). ``HotkeyService`` feeds it
-key events from pynput and, on macOS, from a Quartz event tap that watches
-the fn/globe key (which pynput cannot see).
+key events from pynput (Windows, Linux) or a Quartz event tap (macOS, see mackeys.py).
 """
 
 from __future__ import annotations
@@ -282,28 +281,42 @@ class HotkeyService:
     def __init__(self, sm: PTTStateMachine):
         self.sm = sm
         self._listener = None
+        self._tap = None
         self._capture: dict | None = None
-        self._fn_tap_started = False
         self._lock = threading.Lock()
 
     def start(self) -> None:
+        if sys.platform == "darwin":
+            from .mackeys import KeyTap
+
+            self._tap = KeyTap(self._guarded(self._press), self._guarded(self._release))
+            self._tap.start()
+            return
         from pynput import keyboard
 
         self._kb = keyboard
         self._listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self._listener.daemon = True
         self._listener.start()
-        self.ensure_fn_tap()
 
-    def ensure_fn_tap(self) -> None:
-        """The macOS fn key needs its own event tap; start it when first needed."""
-        if sys.platform == "darwin" and not self._fn_tap_started:
-            self._fn_tap_started = True
-            threading.Thread(target=self._run_mac_fn_tap, name="fn-tap", daemon=True).start()
+    @property
+    def active(self) -> bool:
+        return self._tap.active if self._tap is not None else self._listener is not None
+
+    @staticmethod
+    def _guarded(fn):
+        def run(names, primary):
+            try:
+                fn(names, primary)
+            except Exception:  # noqa: BLE001
+                log.exception("hotkey handler failed")
+        return run
 
     def stop(self) -> None:
         if self._listener:
             self._listener.stop()
+        if self._tap:
+            self._tap.stop()
 
     def set_hotkey(self, hotkey: Hotkey, hands_free_key: str | None,
                    command_hotkey: Hotkey | None = ...) -> None:  # type: ignore[assignment]
@@ -386,8 +399,6 @@ class HotkeyService:
                 return names, "alt_r"
             return names, _SIDED.get(n, n) if n in ("ctrl", "alt", "shift", "cmd") else n
         vk = getattr(key, "vk", None)
-        if sys.platform == "darwin" and vk in (63, 179):
-            return set(), ""  # fn / globe: handled by the Quartz tap
         try:
             key = self._listener.canonical(key)
         except Exception:
@@ -419,37 +430,3 @@ class HotkeyService:
                 self._release(names, primary)
         except Exception:
             log.exception("hotkey release handler failed")
-
-    # -- macOS fn key ----------------------------------------------------
-    def _run_mac_fn_tap(self) -> None:
-        try:
-            import Quartz
-        except ImportError:
-            log.error("pyobjc-framework-Quartz is required for the fn hotkey on macOS")
-            return
-        fn_mask = Quartz.kCGEventFlagMaskSecondaryFn
-        state = {"down": False, "tap": None}
-
-        def callback(proxy, etype, event, refcon):
-            if etype in (Quartz.kCGEventTapDisabledByTimeout, Quartz.kCGEventTapDisabledByUserInput):
-                Quartz.CGEventTapEnable(state["tap"], True)
-                return event
-            down = bool(Quartz.CGEventGetFlags(event) & fn_mask)
-            if down != state["down"]:
-                state["down"] = down
-                (self._press if down else self._release)({"fn"}, "fn")
-            return event
-
-        tap = Quartz.CGEventTapCreate(
-            Quartz.kCGSessionEventTap, Quartz.kCGHeadInsertEventTap,
-            Quartz.kCGEventTapOptionListenOnly,
-            Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged), callback, None)
-        if tap is None:
-            log.error("Could not watch the fn key. Grant Whispa (or your terminal) "
-                      "Input Monitoring + Accessibility in System Settings > Privacy & Security.")
-            return
-        state["tap"] = tap
-        source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
-        Quartz.CFRunLoopAddSource(Quartz.CFRunLoopGetCurrent(), source, Quartz.kCFRunLoopCommonModes)
-        Quartz.CGEventTapEnable(tap, True)
-        Quartz.CFRunLoopRun()

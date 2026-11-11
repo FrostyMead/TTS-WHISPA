@@ -567,6 +567,10 @@ class SettingsPage(QScrollArea):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setWidget(area.takeWidget())
 
+        self.perm_rows: dict[str, tuple[QLabel, QPushButton]] = {}
+        if sys.platform == "darwin" and hasattr(ctl, "permissions"):
+            self._permissions_section(lay)
+
         # Shortcuts
         sec = _section(lay, "Shortcuts")
         self.hotkey = HotkeyField(hotkey_labels(cfg.hotkey))
@@ -749,6 +753,46 @@ class SettingsPage(QScrollArea):
         lay.addLayout(about)
         lay.addStretch(1)
 
+    # -- macOS permissions -----------------------------------------------
+    def _permissions_section(self, lay: QVBoxLayout) -> None:
+        from .macperms import KINDS, LABELS, WHY
+
+        sec = _section(lay, "Permissions")
+        for i, kind in enumerate(KINDS):
+            box = QWidget()
+            bl = QHBoxLayout(box)
+            bl.setContentsMargins(0, 0, 0, 0)
+            state = QLabel()
+            btn = QPushButton("Allow…")
+            btn.setObjectName("primary")
+            btn.clicked.connect(lambda _=False, k=kind: self.ctl.allow_permission(k))
+            bl.addWidget(state)
+            bl.addWidget(btn)
+            sec.addWidget(setting_row(LABELS[kind], WHY[kind], box, first=i == 0))
+            self.perm_rows[kind] = (state, btn)
+        note = QLabel("Allow opens System Settings: switch Whispa on there. If Whispa isn't in "
+                      "the list, click +, pick Whispa in your Applications folder, then restart "
+                      "Whispa.")
+        note.setObjectName("faint")
+        note.setWordWrap(True)
+        note.setContentsMargins(0, 0, 0, 10)
+        sec.addWidget(note)
+        self._perm_timer = QTimer(self)
+        self._perm_timer.setInterval(2000)  # pick up changes made in System Settings
+        self._perm_timer.timeout.connect(self.refresh_permissions)
+        self._perm_timer.start()
+
+    def refresh_permissions(self) -> None:
+        if not self.perm_rows or not self.isVisible():
+            return
+        for kind, ok in self.ctl.permissions().items():
+            state, btn = self.perm_rows[kind]
+            state.setText("Allowed" if ok else "Not allowed" if ok is False else "Unknown")
+            state.setObjectName("ok" if ok else "error")
+            state.style().unpolish(state)
+            state.style().polish(state)
+            btn.setVisible(not ok)
+
     # -- helpers ---------------------------------------------------------
     def _switch_row(self, key: str, title: str, desc: str, first: bool = False, value=None) -> QFrame:
         sw = Switch(bool(getattr(self.ctl.cfg, key)) if value is None else value)
@@ -837,6 +881,7 @@ class SettingsPage(QScrollArea):
         self.llm_row_desc.style().polish(self.llm_row_desc)
         self.status.setText(f"Whispa {__version__} · {self.ctl.status_text()}")
         self.refresh_updates()
+        self.refresh_permissions()
 
     def refresh_updates(self) -> None:
         u = self.ctl.update_state()

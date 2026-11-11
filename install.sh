@@ -127,10 +127,10 @@ if [[ "$(uname)" == "Darwin" ]]; then
   cat <<'EOF'
 
 Whispa is installed: ~/Applications/Whispa.app (menu-bar icon, starts at login).
-Before the first dictation, in System Settings:
-  • Keyboard > "Press 🌐 key to" > Do Nothing
-  • Privacy & Security > Microphone, Input Monitoring and Accessibility > allow Whispa
-    (macOS asks for some of these on first use; restart Whispa after granting.)
+Whispa's icon is in the menu bar (top right). Before the first dictation:
+  • Allow Whispa when macOS asks (Microphone, Input Monitoring, Accessibility),
+    or in Whispa's Settings > Permissions.
+  • System Settings > Keyboard > "Press 🌐 key to" > Do Nothing
 Settings > Updates keeps it current.
 EOF
 else

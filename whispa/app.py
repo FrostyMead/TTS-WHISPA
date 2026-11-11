@@ -143,6 +143,8 @@ class WhispaApp:
         self._build_tray()
         self.hotkeys.start()
         threading.Thread(target=self._load_model, name="model-load", daemon=True).start()
+        if sys.platform == "darwin":
+            QTimer.singleShot(1500, self._check_mac_permissions)
 
     @staticmethod
     def _parse_command_hotkey(spec: str, dictate: Hotkey) -> Hotkey | None:
@@ -162,6 +164,32 @@ class WhispaApp:
     @staticmethod
     def _hint(hotkey: Hotkey) -> str:
         return f"Click or hold {hotkey.label()} to dictate · drag to move"
+
+    # -- macOS permissions ------------------------------------------------
+    def _check_mac_permissions(self) -> None:
+        from . import macperms
+
+        missing = macperms.missing()
+        if not missing:
+            return
+        log.info("macOS permissions missing: %s", ", ".join(missing))
+        macperms.request(missing)  # macOS's prompts; they add Whispa to each list
+        names = ", ".join(macperms.LABELS[k] for k in missing)
+        self.tray.showMessage("Whispa needs your permission",
+                              f"Allow Whispa under {names} in System Settings > Privacy & Security.",
+                              tray_icon(), 10000)
+        self.show_window(page=2)
+
+    def permissions(self) -> dict[str, bool | None]:
+        from . import macperms
+
+        return macperms.status()
+
+    def allow_permission(self, kind: str) -> None:
+        from . import macperms
+
+        macperms.request([kind])
+        macperms.open_settings(kind)
 
     # -- model -----------------------------------------------------------
     def _load_model(self) -> None:
@@ -640,8 +668,15 @@ class WhispaApp:
 
         from .shortcuts import launcher
 
+        from .shortcuts import mac_app_usable, open_mac_app
+
         background = self.window is None or not self.window.isVisible()
         self.shutdown()
+        if mac_app_usable():  # through Whispa.app, so it keeps Whispa's permissions
+            self.instance.release()
+            if open_mac_app(background):
+                self.qapp.quit()
+                return
         exe, extra = launcher()  # same windowless launch as the Start Menu shortcut
         args = [exe, *extra]
         if background:
@@ -769,9 +804,24 @@ def raise_priority() -> None:
             pass
 
 
+def enable_crash_log() -> None:
+    """Python-level crash dumps (native faults included) go to crash.log."""
+    import faulthandler
+
+    if faulthandler.is_enabled():
+        return  # ensure_std_streams already sent them to stdio.log
+    try:
+        path = config_mod.config_dir() / "crash.log"
+        f = open(path, "a", encoding="utf-8")  # noqa: SIM115 - must stay open
+        faulthandler.enable(f)
+    except OSError:
+        pass
+
+
 def run(background: bool = False) -> int:
     ensure_std_streams()
     setup_logging()
+    enable_crash_log()
     raise_priority()
     if sys.platform == "win32":
         try:  # own taskbar identity/icon instead of python.exe's
@@ -787,6 +837,12 @@ def run(background: bool = False) -> int:
     qapp.setApplicationName("Whispa")
     qapp.setWindowIcon(app_icon())
     qapp.setQuitOnLastWindowClosed(False)
+
+    if sys.platform == "darwin":
+        from .shortcuts import relaunch_through_mac_app
+
+        if relaunch_through_mac_app(background):
+            return 0
 
     instance = SingleInstance()
     if instance.notify_running():

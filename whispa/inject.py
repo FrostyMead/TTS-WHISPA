@@ -100,6 +100,11 @@ class Injector:
 
     def _type(self, text: str) -> None:
         """Type text; line breaks use Shift+Enter so chat apps don't send the message."""
+        if sys.platform == "darwin":
+            from .mackeys import type_text
+
+            type_text(text)
+            return
         from pynput.keyboard import Key
 
         for i, line in enumerate(text.split("\n")):
@@ -130,6 +135,11 @@ class Injector:
                 pass
 
     def _send_shortcut(self, spec: str) -> None:
+        if sys.platform == "darwin":  # pynput's layout lookups crash off the main thread
+            from .mackeys import send_shortcut
+
+            send_shortcut(spec)
+            return
         from pynput.keyboard import Key
 
         from .hotkey import normalize

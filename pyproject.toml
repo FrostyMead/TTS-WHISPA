@@ -19,6 +19,7 @@ dependencies = [
   "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
   "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
   "pyobjc-framework-ApplicationServices>=10; sys_platform == 'darwin'",
+  "pyobjc-framework-AVFoundation>=10; sys_platform == 'darwin'",
   "comtypes>=1.4; sys_platform == 'win32'",
 ]
 
