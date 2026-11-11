@@ -65,7 +65,7 @@ class Config:
     command_hotkey: str = field(default_factory=default_command_hotkey)  # "" disables Command Mode
     double_tap_to_lock: bool = True
     # Speech recognition
-    model: str = "nemo-parakeet-tdt-0.6b-v3"
+    model: str = "nemo-parakeet-tdt-0.6b-v3"  # or a folder with an exported model (your tuned one)
     device: str = "auto"  # auto | cuda | directml | coreml | cpu
     quantization: str = "auto"  # auto (int8 on CPU, fp32 on GPU) | int8 | none
     # Audio

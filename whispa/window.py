@@ -670,6 +670,12 @@ class SettingsPage(QScrollArea):
         sec.addLayout(samples)
         sec.addSpacing(10)
 
+        # Speech model: base or tuned to your voice (speech_model.py)
+        from .speech_model import SpeechModelSection
+
+        self.speech_model = SpeechModelSection(ctl)
+        _section(lay, "Speech model").addWidget(self.speech_model)
+
         # App
         sec = _section(lay, "App")
         sec.addWidget(self._switch_row("launch_at_login", "Launch at login", "", first=True,
@@ -794,6 +800,7 @@ class SettingsPage(QScrollArea):
                 f"({self.ctl.cfg.training_max_mb / 1000:g} GB) is reached, the oldest uncorrected "
                 "clips are removed first.")
             self.samples_delete.setEnabled(st["clips"] > 0)
+        self.speech_model.refresh()
         ok, text = self.ctl.llm_status()
         self.llm_row_desc.setText(text)
         self.llm_row_desc.setObjectName("ok" if ok else "faint")
