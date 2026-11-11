@@ -67,5 +67,6 @@ def test_only_what_works_is_shown(monkeypatch, mac, ai):
     assert ("Speech model" in titles) == (not mac)
     assert ("Command Mode" in titles) == ai
     assert ("AI clean-up" in titles) == ai
+    assert ("Local AI" in titles) == (not ai)  # the one-click setup, only when missing
     assert "Read aloud" in titles and "Your voice" in titles  # these work everywhere
     w.close()

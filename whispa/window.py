@@ -723,6 +723,21 @@ class SettingsPage(QScrollArea):
         llm_row.layout().itemAt(0).widget().layout().addWidget(self.llm_row_desc)
         self.llm_row = llm_row
         sec.addWidget(llm_row)
+        # Without the local AI: one button to set it up (then the AI features appear)
+        from . import ai_setup
+
+        self.ai_btn = QPushButton("Set up")
+        self.ai_btn.setObjectName("primary")
+        self.ai_btn.clicked.connect(self._ai_setup_clicked)
+        self.ai_note = Label("")
+        self.ai_note.setObjectName("faint")
+        self.ai_note.setWordWrap(True)
+        self.ai_row = setting_row("Local AI", "Turns on Command Mode, AI clean-up and meeting "
+                                  "summaries. " + (ai_setup.plan() if ai_setup.supported() else
+                                  "Install Ollama from ollama.com."), self.ai_btn, first=True)
+        self.ai_row.layout().itemAt(0).widget().layout().addWidget(self.ai_note)
+        self.ai_btn.setVisible(ai_setup.supported())
+        sec.addWidget(self.ai_row)
         sec.addWidget(self._switch_row("learn_from_edits", "Learn from my corrections",
                                        "After pasting, notice when you fix a word and remember it."))
         sec.addWidget(self._switch_row("screen_context", "Spell names from the screen",
@@ -916,6 +931,36 @@ class SettingsPage(QScrollArea):
         self.voice.setCurrentIndex(max(0, self.voice.findData(self.ctl.cfg.read_voice)))
         self.voice.blockSignals(False)
 
+    # -- local AI setup ----------------------------------------------------
+    def _ai_setup_clicked(self) -> None:
+        if self.ai_btn.text() == "Cancel":
+            self.ctl.cancel_ai_setup()
+            return
+        self.ai_btn.setText("Cancel")
+        self.ai_btn.setObjectName("")
+        self.ai_btn.style().unpolish(self.ai_btn)
+        self.ai_btn.style().polish(self.ai_btn)
+        self.ai_note.setText("Starting…")
+        self.ctl.setup_ai()
+
+    def ai_setup_progress(self, msg: str, frac: float) -> None:
+        done = msg.startswith(("done:", "error:"))
+        text = msg.split(":", 1)[1] if done else msg
+        if frac >= 0 and not done:
+            text += f"  ({frac:.0%})"
+        self.ai_note.setText(text)
+        self.ai_note.setObjectName("error" if msg.startswith("error:") else
+                                   "ok" if msg.startswith("done:") else "faint")
+        self.ai_note.style().unpolish(self.ai_note)
+        self.ai_note.style().polish(self.ai_note)
+        if done:
+            self.ai_btn.setText("Set up")
+            self.ai_btn.setObjectName("primary")
+            self.ai_btn.style().unpolish(self.ai_btn)
+            self.ai_btn.style().polish(self.ai_btn)
+            if msg.startswith("done:"):
+                self.refresh()
+
     # -- jump links ------------------------------------------------------
     def _add_jump_links(self, lay: QVBoxLayout) -> None:
         """A row of section links under the title: the page is long."""
@@ -1088,6 +1133,7 @@ class SettingsPage(QScrollArea):
         ai = self.ctl.ai_available() if hasattr(self.ctl, "ai_available") else True
         self.command_row.setVisible(ai)  # Command Mode and AI clean-up need the local AI
         self.llm_row.setVisible(ai)
+        self.ai_row.setVisible(not ai or bool(self.ai_note.text()))
         if hasattr(self.ctl, "refresh_capabilities"):
             self.ctl.refresh_capabilities()
         ok, text = self.ctl.llm_status() if ai else (False, "")

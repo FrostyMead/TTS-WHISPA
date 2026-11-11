@@ -127,7 +127,18 @@ def find_ollama() -> str | None:
                        "/usr/local/bin/ollama", "/opt/homebrew/bin/ollama"]
     else:
         candidates += ["/usr/local/bin/ollama", "/usr/bin/ollama"]
-    return next((c for c in candidates if os.path.isfile(c)), None)
+    found = next((c for c in candidates if os.path.isfile(c)), None)
+    if found:
+        return found
+    # Murmr's own copy (Settings > Set up the local AI), e.g. on a Mac without admin rights
+    try:
+        from .ai_setup import local_dir
+
+        name = "ollama.exe" if sys.platform == "win32" else "ollama"
+        own = next((p for p in local_dir().rglob(name) if p.is_file()), None) if local_dir().exists() else None
+        return str(own) if own else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 _WORDS = re.compile(r"[a-z0-9]+")

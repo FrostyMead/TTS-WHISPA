@@ -56,6 +56,7 @@ class Bridge(QObject):
     read_aloud = Signal()
     speak_state = Signal(str)
     meeting_changed = Signal(str)  # meeting id (saved, summary progress or done)
+    ai_setup = Signal(str, float)  # message, fraction (-1: unknown); "done:" / "error:" prefixes
     notice = Signal(str, bool)  # message, is_error
 
 
@@ -142,6 +143,7 @@ class MurmrApp:
         b.read_aloud.connect(self.read_aloud)
         b.speak_state.connect(self._on_speak_state)
         b.meeting_changed.connect(self._on_meeting_changed)
+        b.ai_setup.connect(self._on_ai_setup)
         b.notice.connect(lambda msg, err: self.overlay.flash(msg, error=err, seconds=3))
 
         from .updater import Updater
@@ -204,6 +206,52 @@ class MurmrApp:
         if not capabilities.local_ai_installed(cfg.llm_cleanup):
             return None
         return self._parse_command_hotkey(cfg.command_hotkey, dictate)
+
+    # -- one-click local AI (ai_setup.py) -----------------------------------
+    def setup_ai(self) -> None:
+        if getattr(self, "_ai_cancel", None) is not None:
+            return  # already running
+        from . import ai_setup
+
+        self._ai_cancel = threading.Event()
+
+        def progress(msg: str, frac: float | None) -> None:
+            self.bridge.ai_setup.emit(msg, -1.0 if frac is None else frac)
+
+        def work():
+            try:
+                model = ai_setup.setup(self.cfg.llm_cleanup, progress, self._ai_cancel)
+                self.cfg.llm_cleanup.model = model
+                if self.cfg.llm_cleanup.enabled in (False, "off"):
+                    self.cfg.llm_cleanup.enabled = "auto"
+                config_mod.save(self.cfg)
+                self.polisher.available = None
+                log.info("Local AI set up: %s", model)
+                self.bridge.ai_setup.emit(f"done:Local AI ready ({model})", 1.0)
+            except ai_setup.Cancelled:
+                self.bridge.ai_setup.emit("error:Setup cancelled", -1.0)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Local AI setup failed")
+                self.bridge.ai_setup.emit(f"error:Setup failed: {exc}", -1.0)
+            finally:
+                self._ai_cancel = None
+
+        threading.Thread(target=work, name="ai-setup", daemon=True).start()
+
+    def cancel_ai_setup(self) -> None:
+        if getattr(self, "_ai_cancel", None) is not None:
+            self._ai_cancel.set()
+
+    def _on_ai_setup(self, msg: str, frac: float) -> None:
+        if msg.startswith("done:"):
+            from . import capabilities
+
+            capabilities._ai_cache = (0.0, False)  # look again now
+            self.refresh_capabilities()
+            self.tray.showMessage("Local AI ready", "Command Mode, AI clean-up and meeting "
+                                  "summaries are on.", tray_icon(), 6000)
+        if self.window is not None:
+            self.window.settings.ai_setup_progress(msg, frac)
 
     def refresh_capabilities(self) -> None:
         """Ollama installed (or removed) since start: switch Command Mode's shortcut to match."""
