@@ -15,6 +15,15 @@ from .meetings import fmt_time, system_audio_supported, to_markdown, transcript_
 from .widgets import Label, Switch, setting_row
 
 WHO_COLOR = {"You": "#10b981", "Others": "#0ea5e9"}
+PALETTE = ["#0ea5e9", "#f59e0b", "#a855f7", "#ef4444", "#14b8a6", "#ec4899", "#84cc16", "#6366f1"]
+
+
+def who_color(who: str, order: list[str]) -> str:
+    if who in WHO_COLOR:
+        return WHO_COLOR[who]
+    if who not in order:
+        order.append(who)
+    return PALETTE[order.index(who) % len(PALETTE)]
 
 
 def _browser(min_h: int = 120, fit: bool = False, max_h: int = 0) -> QTextBrowser:
@@ -41,16 +50,24 @@ def _browser(min_h: int = 120, fit: bool = False, max_h: int = 0) -> QTextBrowse
     return b
 
 
-def lines_html(lines, live=()) -> str:
-    rows = []
+def lines_html(lines, live=(), links: bool = False) -> str:
+    """The transcript. ``links``: speaker names are clickable (to rename them)."""
+    from urllib.parse import quote
+
+    rows, order = [], []
     for d in lines:
         d = d if isinstance(d, dict) else d.__dict__
-        rows.append(f'<p style="margin:0 0 6px 0"><span style="color:{WHO_COLOR.get(d["who"], "#888")};'
-                    f'font-weight:600">{d["who"]}</span> <span style="color:#999">{fmt_time(d["t"])}</span>'
+        color = who_color(d["who"], order)
+        name = html.escape(d["who"])
+        if links:
+            name = (f'<a href="speaker:{quote(d["who"])}" style="color:{color};text-decoration:none">'
+                    f'{name}</a>')
+        rows.append(f'<p style="margin:0 0 6px 0"><span style="color:{color};font-weight:600">{name}'
+                    f'</span> <span style="color:#999">{fmt_time(d["t"])}</span>'
                     f'<br>{html.escape(d["text"])}</p>')
     for who, text in live:
-        rows.append(f'<p style="margin:0 0 6px 0"><span style="color:{WHO_COLOR.get(who, "#888")};'
-                    f'font-weight:600">{who}</span> <span style="color:#999">now</span><br>'
+        rows.append(f'<p style="margin:0 0 6px 0"><span style="color:{who_color(who, order)};'
+                    f'font-weight:600">{html.escape(who)}</span> <span style="color:#999">now</span><br>'
                     f'<i style="color:#888">{html.escape(text)}</i></p>')
     return "".join(rows)
 
@@ -148,6 +165,13 @@ class MeetingsPage(QScrollArea):
         acts.addStretch(1)
         d.addLayout(acts)
         self.transcript_view = _browser(160, max_h=420)
+        self.transcript_view.setOpenLinks(False)
+        self.transcript_view.anchorClicked.connect(self._speaker_clicked)
+        self.rename_hint = Label("Click a speaker's name to name them; it changes everywhere in "
+                                 "these notes.")
+        self.rename_hint.setObjectName("faint")
+        self.rename_hint.setContentsMargins(4, 6, 0, 2)
+        d.addWidget(self.rename_hint)
         d.addWidget(self.transcript_view)
         lay.addSpacing(10)
         lay.addWidget(self.detail_card)
@@ -247,18 +271,35 @@ class MeetingsPage(QScrollArea):
             import re
 
             # Headings as bold labels: Qt draws Markdown headings very large.
-            md = re.sub(r"^#{1,6}\s*(.+)$", r"**\1**", m["summary"], flags=re.MULTILINE)
+            # (blank lines around them, or Markdown glues them onto the bullet before)
+            md = re.sub(r"^#{1,6}\s*(.+)$", lambda h: f"\n**{h.group(1)}**\n", m["summary"],
+                        flags=re.MULTILINE)
             self.summary_view.setMarkdown(md)
         else:
             self.summary_view.setPlainText(state or m.get("summary_error") or "No summary yet.")
         self.resum_btn.setEnabled(not state)
-        self.transcript_view.setHtml(lines_html(m.get("lines", [])))
+        self.transcript_view.setHtml(lines_html(m.get("lines", []), links=True))
         QTimer.singleShot(0, lambda: self.ensureWidgetVisible(self.detail_card, 0, 0))
 
     def show_summary_progress(self, meeting_id: str) -> None:
         if self._viewing == meeting_id:
             self.open_meeting(meeting_id)
         self._fill_list()
+
+    def _speaker_clicked(self, url) -> None:
+        from urllib.parse import unquote
+
+        from PySide6.QtWidgets import QInputDialog
+
+        if url.scheme() != "speaker" or not getattr(self, "_meeting", None):
+            return
+        old = unquote(url.path() or url.toString()[len("speaker:"):])
+        new, ok = QInputDialog.getText(self, "Name this speaker",
+                                       f"Who is “{old}”? (Same name as someone else merges them.)",
+                                       text="" if old.startswith(("Person ", "Others")) else old)
+        if ok and new.strip():
+            self.ctl.rename_speaker(self._meeting["id"], old, new.strip())
+            self.open_meeting(self._meeting["id"])
 
     def _copy_summary(self) -> None:
         m = self._meeting

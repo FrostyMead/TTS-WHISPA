@@ -1,7 +1,9 @@
 """Meeting notes and live captions: transcribe your mic and the computer's audio as it happens.
 
 * Each source is its own channel: your microphone is "You", the computer's audio (the
-  people in your Teams / Zoom / Meet call) is "Others". No speaker guessing needed.
+  people in your Teams / Zoom / Meet call) is "Others". Within the computer's audio (or the
+  mic, when it's the only source and picks up a whole room) voices are told apart:
+  Person 1, Person 2, ... (speakers.py), which you can rename afterwards.
 * Every ~1.5 s the not-yet-final audio of each channel is transcribed and shown as a live
   line. At a pause the line becomes final and its audio is dropped, so memory stays small
   however long the meeting is. No audio is saved, only the text.
@@ -223,9 +225,10 @@ class Channel:
 @dataclass
 class Line:
     t: float  # seconds from the start
-    who: str
+    who: str  # the speaker: "You", "Person 2", or the name you gave them
     text: str
     end: float = 0.0
+    channel: str = ""  # the source: "You" (mic) or "Others" (computer audio)
 
 
 @dataclass
@@ -236,11 +239,14 @@ class MeetingSession:
     transcribe: Callable[[np.ndarray, int], str]
     on_update: Callable[[], None] = lambda: None
     keep: bool = True
+    embedder: Callable[[np.ndarray, int], np.ndarray | None] | None = None  # voiceprints
+    profile_dir: Path | None = None  # your recordings, to recognise your voice (mic-only)
     lines: list[Line] = field(default_factory=list)
     started: float = field(default_factory=time.time)
 
     def __post_init__(self):
         self.channels = [Channel(c) for c in self.captures]
+        self._trackers: dict = {}  # channel -> speakers.Tracker (set up at start)
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -258,6 +264,7 @@ class MeetingSession:
         if not started:
             raise RuntimeError("No audio source could be started")
         self.channels = [Channel(c) for c in started]
+        self._setup_speakers()
         self.started = time.time()
         self.running = True
         self._thread = threading.Thread(target=self._run, name="meeting", daemon=True)
@@ -282,7 +289,44 @@ class MeetingSession:
 
     def live(self) -> list[tuple[str, str]]:
         """(who, text) of the lines still being spoken."""
-        return [(ch.capture.who, ch.partial) for ch in self.channels if ch.partial]
+        return [(self._trackers.get(ch.capture.who).last if self._trackers.get(ch.capture.who) and
+                 self._trackers[ch.capture.who].last else ch.capture.who, ch.partial)
+                for ch in self.channels if ch.partial]
+
+    # -- who's talking -----------------------------------------------------
+    def _setup_speakers(self) -> None:
+        """Tell voices apart in the computer's audio, and in the mic when it's the only
+        source (a room). Your own voice is recognised there from your recordings."""
+        from .speakers import Tracker
+
+        self._trackers: dict = {}
+        if self.embedder is None:
+            return
+        whos = [ch.capture.who for ch in self.channels]
+        if "Others" in whos:
+            self._trackers["Others"] = Tracker("Person")
+        if whos == ["You"]:
+            known = {}
+            if self.profile_dir is not None:
+                from .speakers import voice_profile
+
+                try:
+                    me = voice_profile(self.embedder, self.profile_dir)
+                    if me is not None:
+                        known["You"] = me
+                except Exception:  # noqa: BLE001
+                    log.debug("No voice profile", exc_info=True)
+            self._trackers["You"] = Tracker("Person", known=known)
+
+    def _speaker(self, ch: Channel, audio: np.ndarray) -> str:
+        tracker = self._trackers.get(ch.capture.who) if hasattr(self, "_trackers") else None
+        if tracker is None:
+            return ch.capture.who
+        try:
+            emb = self.embedder(audio, ch.capture.samplerate)
+        except Exception:  # noqa: BLE001
+            emb = None
+        return tracker.assign(emb, "You" if ch.capture.who == "You" and tracker.known else ch.capture.who)
 
     # -- work ------------------------------------------------------------
     def _run(self) -> None:
@@ -323,7 +367,7 @@ class MeetingSession:
             cut = find_cut(audio, sr, force=True)
         if cut:
             text = self.transcribe(audio[:cut], sr).strip()
-            self._add(ch, ch.committed, text, cut)
+            self._add(ch, ch.committed, text, cut, self._speaker(ch, audio[:cut]) if text else "")
             ch.partial = ""
             self._commit(ch, cut)
             return True
@@ -338,7 +382,8 @@ class MeetingSession:
         audio = ch.capture.buffer.take(ch.committed)
         if len(audio) >= 0.4 * sr and not is_silent(audio, sr):
             try:
-                self._add(ch, ch.committed, self.transcribe(audio, sr).strip(), len(audio))
+                self._add(ch, ch.committed, self.transcribe(audio, sr).strip(), len(audio),
+                          self._speaker(ch, audio))
             except Exception:  # noqa: BLE001
                 log.exception("Last meeting line failed")
         elif ch.partial:
@@ -349,17 +394,20 @@ class MeetingSession:
         ch.committed += n
         ch.capture.buffer.drop_before(ch.committed)
 
-    def _add(self, ch: Channel, start_sample: int, text: str, length: int = 0) -> None:
+    def _add(self, ch: Channel, start_sample: int, text: str, length: int = 0, speaker: str = "") -> None:
         if not text:
             return
         sr = ch.capture.samplerate
         t, end = start_sample / sr, (start_sample + length) / sr
-        who = ch.capture.who
+        channel = ch.capture.who
+        who = speaker or channel
         with self._lock:
-            if self._is_echo(who, t, text):
+            if self._is_echo(channel, t, text):
                 log.debug("Dropped echoed line: %s", text)
                 return
-            last = next((line for line in reversed(self.lines) if line.who == who), None)
+            last = next((line for line in reversed(self.lines) if (line.channel or line.who) == channel), None)
+            if last is not None and last.who != who:
+                last = None  # a different person: a new line
             if (last is not None and last is self.lines[-1] and t - last.end <= JOIN_GAP_S
                     and not last.text.rstrip().endswith((".", "?", "!"))):
                 # The same sentence, split at a short pause: continue the line.
@@ -371,19 +419,19 @@ class MeetingSession:
                 last.text = last.text.rstrip()[:-1] + " " + text  # "ship on the 20th." + "if ..."
                 last.end = round(end, 1)
                 return
-            self.lines.append(Line(round(t, 1), who, text, round(end, 1)))
+            self.lines.append(Line(round(t, 1), who, text, round(end, 1), channel))
             self.lines.sort(key=lambda line: line.t)
 
     def _is_echo(self, who: str, t: float, text: str) -> bool:
         """Your mic picking up the other people: drop that copy (or replace a mic copy that
-        arrived first with the computer-audio original)."""
+        arrived first with the computer-audio original). ``who`` is the channel."""
         if len({c.capture.who for c in self.channels}) < 2:
             return False
         key = text.lower()
         for line in reversed(self.lines):
             if abs(line.t - t) > ECHO_WINDOW_S:
                 continue
-            if line.who == who:
+            if (line.channel or line.who) == who:
                 continue
             if difflib.SequenceMatcher(None, key, line.text.lower()).ratio() >= 0.6:
                 if who == "You":

@@ -402,8 +402,8 @@ class Polisher:
 # --------------------------------------------------------------------------- meeting notes
 MEETING_CHUNK_PROMPT = (
     "You are taking notes on part of a meeting transcript. Each line is '[time] Speaker: "
-    "text'. 'You' is the person who recorded the meeting; 'Others' are the other people on the "
-    "call. Write concise bullet-point notes of everything substantive: topics, facts and "
+    "text'. 'You' is the person who recorded the meeting; the other people are 'Others', "
+    "'Person 1', 'Person 2'... or their names. Write concise bullet-point notes of everything substantive: topics, facts and "
     "numbers, decisions, commitments (say who will do what), and open questions. Only use what "
     "is in the transcript. No preamble, no headings, just bullets.")
 MEETING_SUMMARY_PROMPT = (
@@ -414,8 +414,9 @@ MEETING_SUMMARY_PROMPT = (
     "## Decisions\n<bullets, or 'None.'>\n"
     "## Action items\n<'- [ ] Who: task (when, if said)' per item, or 'None.'>\n"
     "## Open questions\n<bullets, or 'None.'>\n"
-    "'You' is the person who recorded the meeting and 'Others' are the other people; use real "
-    "names only if they appear in the material. Never invent names, dates, numbers or tasks.")
+    "'You' is the person who recorded the meeting; other people appear as 'Others', 'Person 1', "
+    "'Person 2'... or by name: use those labels as they are, and real names only if they appear "
+    "in the material. Never invent names, dates, numbers or tasks.")
 CHUNK_CHARS = 6000
 
 
@@ -445,9 +446,10 @@ def parse_summary(reply: str) -> tuple[str, str]:
         if line.lstrip().startswith("#"):
             section = line.strip("# ").lower()
         line = re.sub(r"^\s*[*•]\s+", "- ", line)  # one bullet style
-        if section.startswith("action") and line.startswith("- ") and not line.startswith("- ["):
-            item = line[2:].strip()
-            if re.fullmatch(r"(?:\w+:\s*)?none\.?", item, re.IGNORECASE):
+        if section.startswith("action") and line.startswith("- "):
+            # one checkbox, however the model wrote it ("- [ ] - [ ] x", "- [x] x", "- x")
+            item = re.sub(r"^(?:\s*(?:[-*•]|\[[ xX]?\])\s*)+", "", line).strip()
+            if not item or re.fullmatch(r"(?:\w+:\s*)?none\.?", item, re.IGNORECASE):
                 continue  # "Others: None."
             line = "- [ ] " + item
         body.append(line)

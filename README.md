@@ -257,6 +257,11 @@ Teams, Zoom or Meet) as **Others**, live, then **Stop and summarize** has the lo
 a summary with decisions and a checklist of action items. Meetings are saved on this computer
 (text only; no audio is kept) and can be copied or exported as Markdown.
 
+- **Who's talking:** voices on the call (or in the room, with only a mic) are told apart
+  as Person 1, Person 2, ..., with WeSpeaker voiceprints (a 26 MB local model). Click a name
+  in the transcript to name that person; it changes in every line and in the summary, and
+  giving two labels the same name merges them. With only a mic, your own voice is recognised
+  as "You" from your recordings. Voiceprints exist only during the meeting and are never saved.
 - **Live captions:** a floating bar with what's being said right now, for any audio. On its
   own it saves nothing; during meeting notes it shows the meeting.
 - **Light on the computer:** lines become final at pauses and their audio is dropped; the
@@ -344,6 +349,18 @@ Using LM Studio instead of Ollama:
 ```json
 "llm_cleanup": { "enabled": "auto", "provider": "openai", "base_url": "http://127.0.0.1:1234/v1", "model": "your-model" }
 ```
+
+### Tune to my voice (Windows)
+On the **Voice training** page, **Use your recordings** shows the minutes you've recorded,
+**Tune now** fine-tunes speech recognition on them (from 10 minutes, best from 30; about
+30-60 minutes on an NVIDIA GPU in WSL2), and **Train a round** trains your read-aloud voice.
+While it runs, dictation moves to the CPU and keeps working. When the comparison says the
+tuned model is better, **Use it** switches to it. **Train overnight automatically** runs it
+between 1 and 6 am when there are enough new recordings.
+
+### Local AI in one click
+No local AI yet? **Settings → Smart features → Local AI → Set up** installs Ollama for you (on
+a Mac inside Murmr's own folder, no admin needed) and the right model for your memory.
 
 ## Platform notes
 

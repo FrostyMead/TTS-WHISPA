@@ -945,7 +945,12 @@ class MurmrApp:
         caps = self._captures()
         if not caps:
             return "Turn on the microphone or computer audio first."
-        session = MeetingSession(caps, self.transcriber.transcribe, keep=keep)
+        if getattr(self, "_embedder", None) is None:
+            from .speakers import Embedder
+
+            self._embedder = Embedder()
+        session = MeetingSession(caps, self.transcriber.transcribe, keep=keep, embedder=self._embedder,
+                                 profile_dir=config_mod.config_dir() / "training")
         try:
             session.start()
         except Exception as exc:  # noqa: BLE001
@@ -1043,6 +1048,28 @@ class MurmrApp:
 
     def delete_meeting(self, meeting_id: str) -> None:
         self.meeting_store().delete(meeting_id)
+
+    def rename_speaker(self, meeting_id: str, old: str, new: str) -> None:
+        """Name a speaker: every line of theirs, and the summary, use the new name. Giving
+        two labels the same name merges them (one person heard as two)."""
+        import re
+
+        new = " ".join(new.split())
+        store = self.meeting_store()
+        m = store.load(meeting_id)
+        if m is None or not new or new == old:
+            return
+        for line in m.get("lines", []):
+            if line.get("who") == old:
+                line["who"] = new
+        pattern = re.compile(rf"(?<![\w]){re.escape(old)}(?![\w])")
+        for key in ("summary", "title"):
+            if m.get(key):
+                m[key] = pattern.sub(new, m[key])
+        names = m.setdefault("speakers", {})
+        names[old] = new
+        store.save(m)
+        log.info("Meeting %s: renamed a speaker", meeting_id)
 
     def _on_meeting_changed(self, mid: str) -> None:
         if self.window is not None and hasattr(self.window, "meetings"):

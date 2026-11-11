@@ -124,3 +124,67 @@ def test_a_sentence_split_at_a_short_pause_is_one_line():
     s._add(ch, int(20 * SR), "much later", 1 * SR)  # long gap: a new line
     assert [line.text for line in s.lines] == [
         "I think we can ship on the 20th if the testing goes well.", "Next topic.", "much later"]
+
+
+# --------------------------------------------------------------------------- speakers
+def voice(seconds, level, seed=0):
+    rng = np.random.default_rng(seed)
+    return (rng.standard_normal(int(seconds * SR)) * level).astype(np.float32)
+
+
+def fake_embedder(audio, sr):
+    """Two 'voices' told apart by loudness (stand-in for real voiceprints)."""
+    if len(audio) < 1.2 * sr:
+        return None
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    v = np.array([1.0, 0.0]) if rms > 0.15 else np.array([0.0, 1.0])
+    return v
+
+
+def test_people_on_the_call_are_told_apart():
+    others = FakeCapture("Others")
+    s, _ = make([others])
+    s.embedder = fake_embedder
+    s._setup_speakers()
+    gap = silence(1.0)
+    feed(s, others, np.concatenate([voice(3, 0.2), gap, voice(3, 0.08, 1), gap, voice(3, 0.2, 2), gap,
+                                    silence(1.5)]))
+    assert [line.who for line in s.lines] == ["Person 1", "Person 2", "Person 1"]
+    assert all(line.channel == "Others" for line in s.lines)
+
+
+def test_mic_only_meeting_recognises_you(tmp_path):
+    you = FakeCapture("You")
+    s, _ = make([you])
+    s.embedder = fake_embedder
+    s._setup_speakers()
+    s._trackers["You"].known["You"] = np.array([1.0, 0.0])  # your voice profile
+    gap = silence(1.0)
+    feed(s, you, np.concatenate([voice(3, 0.2), gap, voice(3, 0.08, 1), gap, silence(1.5)]))
+    assert [line.who for line in s.lines] == ["You", "Person 1"]
+
+
+def test_rename_speaker_everywhere(tmp_path, monkeypatch):
+    from whispa import app as appmod
+
+    store = MeetingStore(tmp_path)
+    mid = store.save({"started": 1.0, "duration": 10, "title": "Plan with Person 2",
+                      "summary": "- Person 2 will send the deck. Person 12 is someone else.",
+                      "lines": [{"t": 0, "who": "Person 2", "text": "I'll send it."},
+                                {"t": 5, "who": "Person 3", "text": "Thanks."}]})
+    fake = type("A", (), {"meeting_store": lambda self: store})()
+    appmod.MurmrApp.rename_speaker(fake, mid, "Person 2", "Sarah")
+    m = store.load(mid)
+    assert [line["who"] for line in m["lines"]] == ["Sarah", "Person 3"]
+    assert m["summary"] == "- Sarah will send the deck. Person 12 is someone else."
+    assert m["title"] == "Plan with Sarah"
+    appmod.MurmrApp.rename_speaker(fake, mid, "Person 3", "Sarah")  # one person heard as two: merge
+    assert {line["who"] for line in store.load(mid)["lines"]} == {"Sarah"}
+
+
+def test_action_items_get_exactly_one_checkbox():
+    _, body = parse_summary("Title: x\n## Action items\n- [ ] - [ ] Person 1: Book the review.\n"
+                            "* [x] You: send notes\n- Sarah: call the vendor\n- Others: None.\n## Open questions\nNone.")
+    items = [line for line in body.splitlines() if line.startswith("- [")]
+    assert items == ["- [ ] Person 1: Book the review.", "- [ ] You: send notes",
+                     "- [ ] Sarah: call the vendor"]
