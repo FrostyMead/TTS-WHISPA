@@ -34,7 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/pyproject.toml" && -z "${WHISPA_USER_INSTALL:-}" ]]; then
   cd "$SCRIPT_DIR"
   step "Developer setup in $SCRIPT_DIR ($RUNTIME)"
-  [[ -d .venv ]] || "$UV" venv .venv --python 3.13
+  [[ -d .venv ]] || "$UV" venv .venv --python 3.13 --python-preference only-managed
   "$UV" pip install --python .venv -e ".[$RUNTIME,dev]"
   .venv/bin/python -m whispa --download-model
   .venv/bin/python -m whispa --install-shortcuts || true
@@ -58,7 +58,7 @@ mkdir -p "$APP"
 pkill -f "$ROOT/boot.py" 2>/dev/null || true
 
 step "Setting up Python (first time: a minute)"
-[[ -x "$VENV/bin/python" ]] || "$UV" venv "$VENV" --python 3.13
+[[ -x "$VENV/bin/python" ]] || "$UV" venv "$VENV" --python 3.13 --python-preference only-managed
 PY="$VENV/bin/python"
 
 # Newest commit whose tests passed on GitHub (falls back to the branch head); download it.

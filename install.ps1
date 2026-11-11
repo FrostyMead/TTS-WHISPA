@@ -18,6 +18,16 @@ $ProgressPreference = "SilentlyContinue"  # makes Invoke-WebRequest much faster
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 
+# Run a program; fail only on a non-zero exit code. (Windows PowerShell can turn a tool's
+# ordinary progress messages on stderr into errors, which would stop the install.)
+function Run {
+    $exe, $rest = $args
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $exe @rest 2>&1 | ForEach-Object { Write-Host "    $_" } } finally { $ErrorActionPreference = $old }
+    if ($LASTEXITCODE) { throw "$(Split-Path $exe -Leaf) failed (exit code $LASTEXITCODE)" }
+}
+
 if ($Runtime -eq "auto") {
     $Runtime = "cpu"
     if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { $Runtime = "cuda" }
@@ -38,10 +48,10 @@ if (-not $uv) {
 if ($checkout -and -not $User) {
     Set-Location $PSScriptRoot
     Step "Developer setup in $PSScriptRoot ($Runtime)"
-    if (-not (Test-Path .venv)) { & $uv venv .venv --python 3.13 }
-    & $uv pip install --python .venv -e ".[$Runtime,dev]"
-    .venv\Scripts\python.exe -m whispa --download-model
-    .venv\Scripts\python.exe -m whispa --install-shortcuts
+    if (-not (Test-Path .venv)) { Run $uv venv .venv --python 3.13 --python-preference only-managed }
+    Run $uv pip install --python .venv -e ".[$Runtime,dev]"
+    Run .venv\Scripts\python.exe -m whispa --download-model
+    Run .venv\Scripts\python.exe -m whispa --install-shortcuts
     Write-Host "`nDone. Start Whispa from the Start Menu. (Developer copy: update it with git.)"
     return
 }
@@ -91,25 +101,27 @@ Remove-Item -Recurse -Force (Join-Path $App "next") -ErrorAction SilentlyContinu
 Remove-Item -Force (Join-Path $Root "trial") -ErrorAction SilentlyContinue
 
 Step "Setting up Python and packages (first time: a few minutes)"
-if (-not (Test-Path (Join-Path $Venv "Scripts\python.exe"))) { & $uv venv $Venv --python 3.13 }
-& $uv pip install --python (Join-Path $Venv "Scripts\python.exe") -r (Join-Path $current "pyproject.toml") --extra $Runtime
-if ($LASTEXITCODE) { throw "Installing packages failed" }
+if (-not (Test-Path (Join-Path $Venv "Scripts\python.exe"))) {
+    # uv's own Python, so removing or upgrading a system Python can't break Whispa.
+    Run $uv venv $Venv --python 3.13 --python-preference only-managed
+}
+Run $uv pip install --python (Join-Path $Venv "Scripts\python.exe") -r (Join-Path $current "pyproject.toml") --extra $Runtime
 
 Copy-Item (Join-Path $current "whispa\_boot.py") (Join-Path $Root "boot.py") -Force
 @{ repo = $Repo; branch = $Branch; runtime = $Runtime; uv = $uv; installed = (Get-Date -Format o) } |
     ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $Root "install.json")
 
 # The base interpreter's pythonw.exe: virtual-env launcher stubs can open a console window.
-$base = & (Join-Path $Venv "Scripts\python.exe") -c "import sys; print(sys.base_prefix)"
+$base = (& (Join-Path $Venv "Scripts\python.exe") -c "import sys; print(sys.base_prefix)").Trim()
 $python = Join-Path $base "python.exe"
 $pythonw = Join-Path $base "pythonw.exe"
 $boot = Join-Path $Root "boot.py"
 
 Step "Downloading the speech model (first time: ~650 MB)"
-& $python -I -S $boot --download-model
+Run $python -I -S $boot --download-model
 Step "Adding Whispa to the Start Menu and Desktop"
-& $python -I -S $boot --install-shortcuts
-& $python -I -S $boot --autostart on | Out-Null
+Run $python -I -S $boot --install-shortcuts
+Run $python -I -S $boot --autostart on
 
 Start-Process $pythonw -ArgumentList "-I", "-S", "`"$boot`""
 Write-Host "`nWhispa is installed and running (tray icon). It starts at login; Settings > Updates keeps it current." -ForegroundColor Green
