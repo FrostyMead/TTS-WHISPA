@@ -14,7 +14,7 @@ from typing import Protocol
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QLayout,
+from PySide6.QtWidgets import (QGridLayout, QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QLayout,
                                QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
                                QStackedWidget,
                                QVBoxLayout, QWidget)
@@ -298,18 +298,19 @@ class HomePage(QScrollArea):
         self._title = inner.findChild(QLabel, "h1")
         self.hint = Label()
         self.hint.setObjectName("sub")
+        self.hint.setWordWrap(True)
         lay.insertWidget(1, self.hint)
 
-        stats = QHBoxLayout()
-        stats.setSpacing(12)
+        self.stats = QGridLayout()
+        self.stats.setSpacing(12)
         self.s_words = StatCard("words dictated")
         self.s_wpm = StatCard("words per minute")
         self.s_saved = StatCard("saved vs typing")
         self.s_saved.setToolTip(f"Compared with typing the same words at {TYPING_WPM} wpm")
         self.s_streak = StatCard("day streak")
-        for s in (self.s_words, self.s_wpm, self.s_saved, self.s_streak):
-            stats.addWidget(s, 1)
-        lay.addLayout(stats)
+        self._stat_cols = 0
+        self._place_stats(4)
+        lay.addLayout(self.stats)
 
         head = QHBoxLayout()
         h = Label("Dictations")
@@ -319,7 +320,9 @@ class HomePage(QScrollArea):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search")
         self.search.setClearButtonEnabled(True)
-        self.search.setFixedWidth(240)
+        self.search.setMinimumWidth(120)
+        self.search.setMaximumWidth(240)
+        self.search.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         head.addWidget(self.search)
         lay.addSpacing(12)
         lay.addLayout(head)
@@ -334,6 +337,28 @@ class HomePage(QScrollArea):
         self._debounce.setInterval(150)
         self._debounce.timeout.connect(self.refresh)
         self.search.textChanged.connect(lambda: self._debounce.start())
+
+    def _place_stats(self, cols: int) -> None:
+        """Four cards in a row, or two rows of two when the window is narrow."""
+        if cols == self._stat_cols:
+            return
+        self._stat_cols = cols
+        cards = (self.s_words, self.s_wpm, self.s_saved, self.s_streak)
+        for c in cards:
+            self.stats.removeWidget(c)
+        for i, c in enumerate(cards):
+            self.stats.addWidget(c, i // cols, i % cols)
+        for col in range(4):
+            self.stats.setColumnStretch(col, 1 if col < cols else 0)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        cards = (self.s_words, self.s_wpm, self.s_saved, self.s_streak)
+        card = max(c.minimumSizeHint().width() for c in cards)
+        m = self.widget().layout().contentsMargins()
+        room = self.viewport().width() - m.left() - m.right()
+        gap = self.stats.spacing()
+        self._place_stats(next((n for n in (4, 2) if n * card + (n - 1) * gap <= room), 1))
 
     @staticmethod
     def _greeting() -> str:
@@ -367,6 +392,7 @@ class HomePage(QScrollArea):
             empty = Label("No matches." if q else
                            "No dictations yet. Your transcripts will show up here.")
             empty.setObjectName("muted")
+            empty.setWordWrap(True)
             empty.setContentsMargins(4, 16, 4, 16)
             self.list.addWidget(empty)
             return
@@ -401,6 +427,7 @@ class DictionaryPage(QScrollArea):
         desc = Label("Names, products and jargon. Near-misses snap to your spelling.")
         desc.setObjectName("muted")
         desc.setContentsMargins(0, 12, 0, 8)
+        desc.setWordWrap(True)
         words.addWidget(desc)
         add = QHBoxLayout()
         self.term_in = QLineEdit()
@@ -421,6 +448,7 @@ class DictionaryPage(QScrollArea):
         desc2 = Label("When Murmr hears the left side, it writes the right side.")
         desc2.setObjectName("muted")
         desc2.setContentsMargins(0, 12, 0, 8)
+        desc2.setWordWrap(True)
         corr.addWidget(desc2)
         add2 = QHBoxLayout()
         self.heard_in = QLineEdit()
@@ -791,16 +819,18 @@ class SettingsPage(QScrollArea):
         self.samples_info = Label()
         self.samples_info.setObjectName("faint")
         self.samples_info.setWordWrap(True)
-        self.samples_delete = QPushButton("Delete everything about my voice")
+        self.samples_delete = QPushButton("Delete all my voice data")
         self.samples_delete.clicked.connect(self._delete_samples)
         folder_btn = QPushButton("Open folder")
         folder_btn.clicked.connect(ctl.open_folder)
-        samples = QHBoxLayout()
-        samples.setContentsMargins(0, 10, 0, 12)
-        samples.addWidget(self.samples_info, 1)
-        samples.addWidget(folder_btn, 0, Qt.AlignmentFlag.AlignTop)
-        samples.addWidget(self.samples_delete, 0, Qt.AlignmentFlag.AlignTop)
-        sec.addLayout(samples)
+        self.samples_info.setContentsMargins(0, 10, 0, 4)
+        sec.addWidget(self.samples_info)
+        samples_host = QWidget()
+        samples = FlowLayout(samples_host, spacing=8)  # wraps in a narrow window
+        samples.addWidget(folder_btn)
+        samples.addWidget(self.samples_delete)
+        samples_host.setContentsMargins(0, 0, 0, 12)
+        sec.addWidget(samples_host)
 
         # Speech model: base or tuned to your voice (speech_model.py)
         from .speech_model import SpeechModelSection
@@ -919,10 +949,11 @@ class SettingsPage(QScrollArea):
         self.rollback_row = setting_row("Something wrong after an update?", "", self.rollback_btn)
         sec.addWidget(self.rollback_row)
 
-        about = QHBoxLayout()
         self.status = Label()
         self.status.setObjectName("faint")
-        about.addWidget(self.status, 1)
+        self.status.setWordWrap(True)
+        about_host = QWidget()
+        about = FlowLayout(about_host, spacing=8)  # wraps onto more lines in a narrow window
         folder = QPushButton("Open data folder")
         folder.clicked.connect(ctl.open_folder)
         restart = QPushButton("Restart Murmr")
@@ -941,7 +972,8 @@ class SettingsPage(QScrollArea):
             about.addWidget(report)
         about.addWidget(restart)
         lay.addSpacing(14)
-        lay.addLayout(about)
+        lay.addWidget(self.status)
+        lay.addWidget(about_host)
         lay.addStretch(1)
         self._add_jump_links(lay)
 
@@ -1004,6 +1036,12 @@ class SettingsPage(QScrollArea):
             b.clicked.connect(lambda _=False, w=h: self._scroll_to(w))
             flow.addWidget(b)
         lay.insertWidget(2, host)
+
+    def show_section(self, title: str) -> None:
+        """Scroll to a section ("Updates", "Speech model"...), once the page is laid out."""
+        heads = [h for h in self.widget().findChildren(QLabel, "h2") if h.text() == title]
+        if heads:
+            QTimer.singleShot(120, lambda: self._scroll_to(heads[0]))
 
     def _scroll_to(self, w: QWidget) -> None:
         from PySide6.QtCore import QEasingCurve, QPropertyAnimation
@@ -1245,7 +1283,7 @@ class MainWindow(QWidget):
         self.setWindowTitle("Murmr")
         self.setWindowIcon(app_icon())
         self.resize(980, 680)
-        self.setMinimumSize(820, 540)
+        self.setMinimumSize(520, 420)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1254,6 +1292,8 @@ class MainWindow(QWidget):
         side = QWidget()
         side.setObjectName("sidebar")
         side.setFixedWidth(210)
+        self.side = side
+        self._compact = False
         sl = QVBoxLayout(side)
         sl.setContentsMargins(14, 18, 14, 16)
         sl.setSpacing(4)
@@ -1265,6 +1305,7 @@ class MainWindow(QWidget):
         name = Label("Murmr")
         name.setObjectName("brand")
         brand.addWidget(name)
+        self.brand_name = name
         brand.addStretch(1)
         sl.addLayout(brand)
         sl.addSpacing(18)
@@ -1307,6 +1348,8 @@ class MainWindow(QWidget):
         version = Label(f"Murmr {__version__}")
         version.setObjectName("version")
         sl.addWidget(version)
+        self.version_label = version
+        self.side_layout = sl
 
         root.addWidget(side)
         root.addWidget(self.pages, 1)
@@ -1346,6 +1389,34 @@ class MainWindow(QWidget):
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         self.nav.addButton(b, index)
         sidebar.insertWidget(sidebar.indexOf(self.nav.button(self.pages.indexOf(self.settings))), b)
+
+    COMPACT_BELOW = 760  # window width: the sidebar shows only icons
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._set_compact(event.size().width() < self.COMPACT_BELOW)
+
+    def _set_compact(self, compact: bool) -> None:
+        if compact == self._compact:
+            return
+        self._compact = compact
+        self.side.setFixedWidth(64 if compact else 210)
+        self.side_layout.setContentsMargins(10 if compact else 14, 18, 10 if compact else 14, 16)
+        for w in (self.brand_name, self.side_status, self.version_label):
+            w.setVisible(not compact)
+        side = 20 if compact else 40  # page margins: more room for the content
+        for i in range(self.pages.count()):
+            page = self.pages.widget(i)
+            inner = page.widget() if isinstance(page, QScrollArea) else None
+            lay = inner.layout() if inner is not None else None
+            if lay is not None and lay.contentsMargins().left() in (20, 40):
+                m = lay.contentsMargins()
+                lay.setContentsMargins(side, m.top(), side, m.bottom())
+        for b in self.nav.buttons():
+            if b.property("label") is None:
+                b.setProperty("label", b.text())
+            b.setText("" if compact else b.property("label"))
+            b.setToolTip(b.property("label").strip() if compact else "")
 
     def apply_theme(self) -> None:
         pal = theme.current()

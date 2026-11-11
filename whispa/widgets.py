@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import (Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt,
+from PySide6.QtCore import (QTimer, Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt,
                             Signal)
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QPushButton,
+from PySide6.QtWidgets import (QBoxLayout, QAbstractButton, QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from . import theme
@@ -34,13 +34,36 @@ class Label(QLabel):
                 return QSize(self.width(), h)
         return s
 
+    _resizing = False
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if self.wordWrap():
+        if not self.wordWrap():
+            return
+        if self._resizing:
+            # Resized again while fitting (a scroll bar appeared, the width changed): fit
+            # once more just after, instead of recursing or keeping a stale height.
+            QTimer.singleShot(0, self._fit_height)
+            return
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        old = self.minimumHeight()
+        self._resizing = True
+        try:
+            # Qt's heightForWidth never answers less than the current minimum height, so a
+            # label that was once narrow (tall) would stay tall: measure without it.
+            self.setMinimumHeight(0)
             h = self.heightForWidth(self.width())
-            if h > 0 and h != self.minimumHeight():
+            if h <= 0:
+                self.setMinimumHeight(old)
+            elif h != old:
                 self.setMinimumHeight(h)
                 self.updateGeometry()
+            else:
+                self.setMinimumHeight(old)
+        finally:
+            self._resizing = False
 
 
 def wrapped(text: str = "", name: str = "") -> Label:
@@ -168,28 +191,83 @@ def card() -> tuple[QFrame, QVBoxLayout]:
     return frame, lay
 
 
+TEXT_MIN = 220  # below this much room beside the control, the control goes underneath
+
+
+class SettingRow(QFrame):
+    """A settings line: title + help text on the left, the control on the right. In a
+    narrow window the control moves under the text instead of being cut off."""
+
+    def __init__(self, title: str, description: str, control: QWidget | None, first: bool = False):
+        super().__init__()
+        self.setObjectName("row")
+        self.setProperty("first", "true" if first else "false")
+        self.control = control
+        self.stacked = False
+        self.box = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self.box.setContentsMargins(0, 12, 0, 12)
+        self.box.setSpacing(16)
+        block = QWidget()  # title + help text stay together, centred against the control
+        block.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        text = QVBoxLayout(block)
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(2)
+        t = wrapped(title, "rowTitle")
+        text.addWidget(t)
+        if description:
+            text.addWidget(wrapped(description, "muted"))
+        self.box.addWidget(block, 1, Qt.AlignmentFlag.AlignVCenter)
+        if control is not None:
+            if isinstance(control, QComboBox) and control.minimumWidth() == 0:
+                # Full width when there's room; in a narrow window it shrinks (long choices
+                # are shortened with "…") instead of pushing the page wider than the window.
+                control.setMinimumWidth(150)
+            self.box.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def _control_width(self, preferred: bool = False) -> int:
+        c = self.control
+        if c is None:
+            return 0
+        if preferred:
+            return max(c.sizeHint().width(), c.minimumWidth())
+        # Layouts honour an explicit minimum width over the widget's own hint.
+        return c.minimumWidth() or c.minimumSizeHint().width()
+
+    def minimumSizeHint(self) -> QSize:
+        s = super().minimumSizeHint()
+        if self.control is None:
+            return s
+        # Never ask for more than the control itself: the text can always go above it.
+        return QSize(min(s.width(), self._control_width()), s.height())
+
+    _pending = False
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.control is not None and not self._pending:
+            # Re-arranging inside a resize makes Qt resize again at once (and again...):
+            # do it just after, once things have settled.
+            self._pending = True
+            QTimer.singleShot(0, self._arrange)
+
+    def _arrange(self) -> None:
+        self._pending = False
+        need = self._control_width(preferred=True) + TEXT_MIN + 16
+        width = self.width()
+        # A little slack either way, so a width right at the edge doesn't flip back and forth.
+        stack = width < need if not self.stacked else width < need + 24
+        if stack == self.stacked:
+            return
+        self.stacked = stack
+        self.box.setDirection(QBoxLayout.Direction.TopToBottom if stack
+                              else QBoxLayout.Direction.LeftToRight)
+        self.box.setSpacing(8 if stack else 16)
+        align = Qt.AlignmentFlag.AlignLeft if stack else Qt.AlignmentFlag.AlignVCenter
+        self.box.setAlignment(self.control, align)
+
+
 def setting_row(title: str, description: str, control: QWidget | None, first: bool = False) -> QFrame:
-    """A settings line: title + help text on the left, the control on the right."""
-    row = QFrame()
-    row.setObjectName("row")
-    row.setProperty("first", "true" if first else "false")
-    lay = QHBoxLayout(row)
-    lay.setContentsMargins(0, 12, 0, 12)
-    lay.setSpacing(16)
-    block = QWidget()  # title + help text stay together, centred against the control
-    block.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-    text = QVBoxLayout(block)
-    text.setContentsMargins(0, 0, 0, 0)
-    text.setSpacing(2)
-    t = QLabel(title)
-    t.setObjectName("rowTitle")
-    text.addWidget(t)
-    if description:
-        text.addWidget(wrapped(description, "muted"))
-    lay.addWidget(block, 1, Qt.AlignmentFlag.AlignVCenter)
-    if control is not None:
-        lay.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
-    return row
+    return SettingRow(title, description, control, first)
 
 
 def keycaps(labels: list[str]) -> QWidget:

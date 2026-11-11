@@ -160,8 +160,7 @@ class MurmrApp:
         self._update_busy = ""
         self._update_checked = False
         b.update_changed.connect(self._on_update_changed)
-        b.update_notice.connect(lambda msg: self.tray.showMessage(
-            "Murmr update available", f"{msg}. Open Settings > Updates to install.", tray_icon(), 6000))
+        b.update_notice.connect(self._notify_update)
         b.update_restart.connect(self.restart)
         b.update_auto.connect(lambda: self.auto_timer.isActive() or self.auto_timer.start())
         self.update_timer = QTimer()
@@ -170,7 +169,7 @@ class MurmrApp:
         self.auto_timer = QTimer()  # a staged update waits for a quiet moment to restart
         self.auto_timer.setInterval(60_000)
         self.auto_timer.timeout.connect(self._maybe_auto_restart)
-        self._tray_click_page: int | None = None
+        self._tray_click: tuple[int, str] | None = None  # where clicking a notification goes
         if self.updater.installed:
             QTimer.singleShot(8000, self.updater.mark_healthy)  # we started: keep this version
             QTimer.singleShot(6000, self._announce_update)
@@ -803,7 +802,7 @@ class MurmrApp:
         menu.addSeparator()
         menu.addAction("Settings…", lambda: self.show_window(page=2))
         self.update_action = QAction("Update Murmr…", menu)
-        self.update_action.triggered.connect(lambda: self.show_window(page=2))
+        self.update_action.triggered.connect(lambda: self.show_window(page=2, section="Updates"))
         self.update_action.setVisible(False)
         menu.addAction(self.update_action)
         menu.addAction("Report a problem…", self.report_problem)
@@ -814,7 +813,7 @@ class MurmrApp:
         self.tray.setToolTip("Murmr")
         self.tray.activated.connect(self._tray_activated)
         self.tray.messageClicked.connect(
-            lambda: self._tray_click_page is not None and self.show_window(page=self._tray_click_page))
+            lambda: self._tray_click is not None and self.show_window(*self._tray_click))
         self.tray.show()
 
     def _tray_activated(self, reason) -> None:
@@ -1138,7 +1137,7 @@ class MurmrApp:
             if m and m.get("summary"):
                 self.tray.showMessage("Meeting notes ready", m.get("title") or "Your summary is ready",
                                       tray_icon(), 6000)
-                self._tray_click_page = None
+                self._tray_click = None
 
     def _toggle_meeting_from_tray(self) -> None:
         if self.meeting_running():
@@ -1187,7 +1186,8 @@ class MurmrApp:
         self._captions.set_lines(shown)
 
     # -- window ----------------------------------------------------------
-    def show_window(self, page: int | None = None) -> None:
+    def show_window(self, page: int | None = None, section: str | None = None) -> None:
+        """Open the window, optionally at a page and (Settings) a section such as "Updates"."""
         if self.window is None:
             from .window import MainWindow
 
@@ -1195,6 +1195,13 @@ class MurmrApp:
         if page is not None:
             self.window.show_page(page)
         self.window.bring_to_front()
+        if section and page == 2:
+            self.window.settings.show_section(section)
+
+    def _notify_update(self, msg: str) -> None:
+        self._tray_click = (2, "Updates")
+        self.tray.showMessage("Murmr update available", f"{msg}. Click to see what's new and install.",
+                              tray_icon(), 6000)
 
     # Controller interface used by the window --------------------------------
     def status_text(self) -> str:
@@ -1445,7 +1452,7 @@ class MurmrApp:
             return
         lines = "\n".join(f"• {c}" for c in changes[:3]) + \
             (f"\n…and {len(changes) - 3} more" if len(changes) > 3 else "")
-        self._tray_click_page = 2
+        self._tray_click = (2, "Updates")
         self.tray.showMessage(f"Murmr updated · {len(changes)} change{'s' if len(changes) != 1 else ''}",
                               lines, tray_icon(), 12000)
         log.info("What's new shown for %s", sha[:7])
@@ -1603,11 +1610,12 @@ class MurmrApp:
 
     def _on_sync_event(self, kind: str, info) -> None:
         if kind == "received" and info.get("kind") == "models":
-            self._tray_click_page = 2
+            self._tray_click = (2, "Speech model")
             self.tray.showMessage("Speech model from " + info.get("from", "your other computer"),
                                   "A model tuned to your voice arrived. Switch to it in Settings > "
                                   "Speech model.", tray_icon(), 10000)
-            if self.window is not None and not self.window.isVisible() and                     getattr(self.window.settings, "speech_model", None) is None:
+            if self.window is not None and not self.window.isVisible() and \
+                    getattr(self.window.settings, "speech_model", None) is None:
                 self.window.deleteLater()  # rebuilt with the Speech model section next time
                 self.window = None
         elif kind == "paired":

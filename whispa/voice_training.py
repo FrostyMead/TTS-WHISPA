@@ -303,10 +303,9 @@ class VoiceTrainingPage(QScrollArea):
 
         # Progress
         top = QHBoxLayout()
-        self.minutes = _label("", "statValue", wrap=False)
-        top.addWidget(self.minutes)
-        top.addStretch(1)
-        self.session_info = _label("", "faint", wrap=False)
+        self.minutes = _label("", "statValue")
+        top.addWidget(self.minutes, 1)
+        self.session_info = _label("", "faint")
         top.addWidget(self.session_info, 0, Qt.AlignmentFlag.AlignBottom)
         lay.addLayout(top)
         self.progress = Bar(8)

@@ -115,6 +115,7 @@ class MeetingsPage(QScrollArea):
         self.captions_btn.clicked.connect(lambda on: ctl.set_captions(on))
         self.status = Label("")
         self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
         buttons.addWidget(self.start_btn)
         buttons.addWidget(self.captions_btn)
         buttons.addSpacing(8)
@@ -244,6 +245,7 @@ class MeetingsPage(QScrollArea):
         if not meetings:
             none = Label("No meetings yet. Start notes when a call begins.")
             none.setObjectName("faint")
+            none.setWordWrap(True)
             none.setContentsMargins(0, 8, 0, 8)
             self.list.addWidget(none)
             return
