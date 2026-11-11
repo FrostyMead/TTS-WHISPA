@@ -85,8 +85,8 @@ Whispa lives in the system tray. **Click the tray icon** (or launch Whispa again
 Menu) to open the window; closing the window keeps it running in the tray. Right-click the tray
 icon for hands-free dictation, recent transcripts, settings, restart and quit.
 
-- **Home**: your dictations grouped by day (search, copy, delete), plus words dictated, speaking
-  speed and time saved compared with typing.
+- **Home**: your dictations grouped by day (search, paste again, copy, delete), plus words
+  dictated, speaking speed, time saved compared with typing, and your day streak.
 - **Dictionary**: your words and learned corrections. Add or remove entries.
 - **Settings** (changes apply immediately): record a new push-to-talk shortcut or hands-free key
   by pressing it, pick a microphone, filler removal / voice commands, what happens with no text
@@ -103,6 +103,8 @@ Launch at login starts Whispa quietly in the tray (`--background`).
 | Hands-free | while holding, tap **Space**, or **double-tap** the hotkey. Press the hotkey again to finish | same |
 | Cancel | **Esc** | **Esc** |
 | Command Mode | select text, hold **Ctrl+Alt+Win** and say what to do | hold **fn+⌃** |
+| Paste last dictation | **Alt+Shift+Z** | **⌃⌘V** |
+| Read selection aloud (again to stop) | **Alt+Shift+R** | **⌃⌘R** |
 | Mouse | click the idle pill to start hands-free. In hands-free, ✕ cancels and ■ finishes | same |
 | Move the pill | drag it anywhere; it snaps to the nearest corner or edge centre and remembers the spot (also in Settings → Pill position). On the left/right edge it stands upright | same |
 
@@ -181,6 +183,44 @@ the text to insert, which can be several lines. Say the trigger alone or inside 
 it to my email") and Whispa inserts the saved text. The AI clean-up never sees or changes
 snippet text. Pick phrases you wouldn't say by accident.
 
+### Style per app
+Settings → Style per app. Whispa sees which app you're typing into and adjusts:
+
+| Where | Default | What it does |
+|---|---|---|
+| Chats (Slack, Teams, WhatsApp, Discord, Messages…) | Casual | no full stop at the end of a message |
+| Email (Outlook, Mail, Gmail in a browser…) | Formal | proper sentences |
+| Code & terminals (VS Code, Cursor, JetBrains, Terminal, Claude Code…) | Exact | your words, the AI clean-up never rewrites them |
+| Everything else | Formal | |
+
+"Very casual" also drops capitals at the start of sentences (names, "I" and acronyms stay).
+Browser tabs are recognised by their title (Gmail, Slack, WhatsApp Web…).
+
+### Names from the screen
+When you start talking, Whispa reads the names in the window you're dictating into (people in
+an email thread or chat, code identifiers in an editor) and uses them to spell what you say:
+"Kowalcyk" becomes "Kowalczyk" if that's on screen. It's careful: only words the speech model
+heard as a name, never a change of case or an ordinary word. It takes at most 0.4 s in the
+background while you speak, the text never leaves this computer and isn't saved. In browsers
+it only uses the tab title (walking a web page makes the browser do extra work).
+
+### Paste again
+Press **Alt+Shift+Z** (macOS: **⌃⌘V**) to paste your last dictation again, or hover a dictation
+on Home and click **Paste** to put it into the app you were using.
+
+### Read aloud
+Select text anywhere and press **Alt+Shift+R** (macOS: **⌃⌘R**) to hear it; press it again to
+stop. The voice is [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), running locally:
+on an NVIDIA GPU the full model (310 MB, about 15× faster than real time), otherwise an int8
+model (88 MB) on a few CPU threads. Pronunciation comes from espeak-ng. It downloads on first
+use and unloads after 3 idle minutes so it doesn't keep memory. Pick a voice (American or
+British) and speed in Settings → Read aloud, or "System voice" for the OS voice (no download).
+
+### Long dictations
+For dictations longer than about 20 s, Whispa transcribes while you're still talking: it cuts
+the audio at a pause and works on that piece in the background, so letting go only waits for
+the last few seconds.
+
 ### Personalization: it learns from your fixes
 After pasting, Whispa watches that text field for up to 45 s (until you send, switch fields, or
 start a new dictation). If you fix a misheard word, it learns the fix and the pill shows
@@ -244,8 +284,12 @@ Using LM Studio instead of Ollama:
 
 **macOS**
 - System Settings → Keyboard → "Press 🌐 key to" → **Do Nothing**, so fn doesn't open the emoji picker.
-- Grant **Microphone**, **Input Monitoring** and **Accessibility** to the app you launch Whispa from
-  (Terminal, iTerm, or the Python binary). The fn key and paste need the last two.
+- Whispa asks for **Microphone**, **Input Monitoring** and **Accessibility** on first start;
+  Settings → Permissions shows each one and opens the right page in System Settings. They're
+  granted to **Whispa** itself: Whispa.app's executable is a small native launcher
+  (`mac/launcher.c`) that stays the parent of Python, so macOS treats Whispa.app as the
+  responsible app (a script that `exec`s Python would make macOS ask for Python instead).
+- Keys are read with a Quartz event tap and pasted with CGEvents (no pynput on macOS).
 
 **Windows**
 - The physical Fn key is handled inside the keyboard and is invisible to Windows, so the default is Ctrl+Win (same as Wispr Flow on Windows).
@@ -270,7 +314,11 @@ Logs: `whispa.log` next to the config (tray → Open log).
 
 ```
 whispa/
-  hotkey.py    PTTStateMachine (pure logic, unit-tested) + pynput hooks + macOS Quartz fn tap
+  hotkey.py    PTTStateMachine (pure logic, unit-tested), action shortcuts, pynput hooks
+  mackeys.py   macOS: Quartz event tap for keys, CGEvent paste/typing;  macperms.py: permissions
+  styles.py    per-app styles (chat / email / code / other)
+  streaming.py transcribe long dictations in pieces while you talk
+  speak.py     read aloud: Kokoro-82M (ONNX) + espeak-ng via ctypes, or the system voice
   audio.py     sounddevice capture at 16 kHz, live RMS level, mic fallback
   asr.py       onnx-asr Parakeet, provider auto-select (CUDA > DirectML > CPU), VAD chunking for >60 s
   textproc.py  fillers, voice commands, "scratch that", dictionary replacements + fuzzy terms
@@ -296,7 +344,7 @@ launcher.pyw   windowless start on Windows (base pythonw.exe + the venv's packag
 - Streaming partial results with Nemotron streaming models (once ONNX exports exist)
 - MLX backend (`parakeet-mlx`) for Apple Silicon GPU
 - evdev hotkeys for Wayland, layer-shell overlay
-- Per-app styles (casual in Slack, formal in email) through the LLM pass
+- Sync dictionary and snippets between computers
 
 ## Tests
 

@@ -36,6 +36,20 @@ def default_command_hotkey() -> str:
     return "fn+ctrl" if sys.platform == "darwin" else "ctrl+alt+cmd"
 
 
+def default_paste_last_hotkey() -> str:
+    return "ctrl+cmd+v" if sys.platform == "darwin" else "alt+shift+z"
+
+
+def default_read_hotkey() -> str:
+    return "ctrl+cmd+r" if sys.platform == "darwin" else "alt+shift+r"
+
+
+def _default_styles() -> dict[str, str]:
+    from .styles import DEFAULTS
+
+    return dict(DEFAULTS)
+
+
 def default_hotkey() -> str:
     # macOS exposes the fn/globe key to apps; Windows and Linux keyboards
     # handle fn in firmware, so the OS never sees it.
@@ -64,6 +78,8 @@ class Config:
     hands_free_key: str = "space"
     command_hotkey: str = field(default_factory=default_command_hotkey)  # "" disables Command Mode
     double_tap_to_lock: bool = True
+    paste_last_hotkey: str = field(default_factory=default_paste_last_hotkey)  # "" = off
+    read_hotkey: str = field(default_factory=default_read_hotkey)  # read the selection aloud
     # Speech recognition
     model: str = "nemo-parakeet-tdt-0.6b-v3"
     device: str = "auto"  # auto | cuda | directml | coreml | cpu
@@ -78,6 +94,8 @@ class Config:
     voice_commands: bool = True
     append_space: bool = True
     replacements: dict[str, str] = field(default_factory=dict)
+    styles: dict[str, str] = field(default_factory=_default_styles)  # chat/email/code/other
+    screen_context: bool = True  # spell names the way they appear in the window you dictate into
     llm_cleanup: LLMCleanup = field(default_factory=LLMCleanup)
     # Learning
     learn_from_edits: bool = True
@@ -94,6 +112,9 @@ class Config:
     show_idle_pill: bool = True
     pill_anchor: str = "bottom-center"  # where the pill snaps; drag it or pick in Settings
     save_history: bool = True
+    # Read aloud (local Kokoro voice)
+    read_voice: str = "af_heart"
+    read_speed: float = 1.0
     update_check: bool = True  # look for a new version on GitHub once a day (installed copies)
     config_version: int = CONFIG_VERSION
 
@@ -126,6 +147,8 @@ def load(path: Path | None = None) -> Config:
         data["llm_cleanup"]["keep_alive"] = "10m"  # free GPU memory sooner for the speech model
     data["config_version"] = CONFIG_VERSION
     cfg = _from_dict(Config, data)
+    for cat, style in _default_styles().items():  # categories added in later versions
+        cfg.styles.setdefault(cat, style)
     # Write back so every option is visible and editable in the file.
     full = asdict(cfg)
     if full != data:

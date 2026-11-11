@@ -45,14 +45,20 @@ def apply_scratch_that(text: str) -> str:
     return text
 
 
-def apply_terms(text: str, terms: list[str], threshold: float = 0.84) -> str:
-    """Snap near-misses to your dictionary spelling ("Kubernetis" -> "Kubernetes")."""
+def apply_terms(text: str, terms: list[str], threshold: float = 0.84, min_len: int = 4,
+                case_only: bool = True) -> str:
+    """Snap near-misses to your dictionary spelling ("Kubernetis" -> "Kubernetes").
+
+    ``case_only=False`` is the careful mode for names seen on screen: only words the
+    speech model already capitalised as a name are changed, never just their case
+    ("Will" on screen doesn't touch "will"), and never a mere suffix ("Gather"/"gathers").
+    """
     import difflib
 
     for term in sorted(terms, key=len, reverse=True):
         n = len(term.split())
         key = re.sub(r"\W", "", term.lower())
-        if len(key) < 4:
+        if len(key) < min_len:
             continue
         words = list(re.finditer(r"[\w'’-]+", text))
         for size in {max(1, n - 1), n, n + 1}:
@@ -62,11 +68,47 @@ def apply_terms(text: str, terms: list[str], threshold: float = 0.84) -> str:
                 ckey = re.sub(r"\W", "", cand.lower())
                 if cand == term or not ckey or ckey[0] != key[0]:
                     continue
+                if not case_only and (ckey == key or not cand[:1].isupper()
+                                      or ckey.startswith(key) or key.startswith(ckey)):
+                    continue  # same word, not heard as a name, or just "Gather"/"gathers"
                 if difflib.SequenceMatcher(None, ckey, key).ratio() >= threshold:
                     text = text[:span[0].start()] + term + text[span[-1].end():]
                     words = list(re.finditer(r"[\w'’-]+", text))
                     break
     return text
+
+
+_NAME_STOP = {
+    "i", "i'm", "i'll", "i've", "i'd", "the", "a", "an", "and", "or", "but", "if", "in", "on",
+    "at", "to", "for", "of", "it", "is", "this", "that", "we", "you", "he", "she", "they", "my",
+    "your", "our", "new", "file", "edit", "view", "help", "home", "search", "settings", "share",
+    "save", "open", "close", "reply", "forward", "send", "delete", "copy", "paste", "insert",
+    "format", "tools", "window", "draft", "inbox", "sent", "today", "yesterday", "tomorrow",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+    "february", "march", "april", "may", "june", "july", "august", "september", "october",
+    "november", "december", "ok", "yes", "no", "hi", "hello", "thanks", "dear", "regards",
+}
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9'’_-]*[A-Za-z0-9]")
+
+
+def candidate_names(text: str, limit: int = 80) -> list[str]:
+    """Words in on-screen text that look like names: capitalised mid-sentence (Siobhan,
+    Kubernetes), camelCase or with digits (useEffect, GPT4o). Most frequent first."""
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    for line in text.splitlines():
+        for sentence in re.split(r"(?<=[.!?:])\s+", line):
+            for i, m in enumerate(_TOKEN_RE.finditer(sentence)):
+                w = m.group().strip("'’-_")
+                if len(w) < 4 or w.lower() in _NAME_STOP:
+                    continue
+                inner_caps = any(c.isupper() for c in w[1:]) and any(c.islower() for c in w)
+                has_digit = any(c.isdigit() for c in w) and any(c.isalpha() for c in w)
+                named = w[0].isupper() and w[1:].islower() and i > 0
+                if inner_caps or has_digit or named:
+                    counts[w] += 1
+    return [w for w, _ in counts.most_common(limit)]
 
 
 def _snippet_pattern(trigger: str) -> re.Pattern:

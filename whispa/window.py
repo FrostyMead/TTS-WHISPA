@@ -42,6 +42,8 @@ class Controller(Protocol):
     def restart(self) -> None: ...
     def open_folder(self) -> None: ...
     def delete_history(self, t: float) -> None: ...
+    def paste_text(self, text: str) -> None: ...
+    def speak_sample(self) -> None: ...
 
 
 # --------------------------------------------------------------------------- helpers
@@ -87,6 +89,17 @@ def _time_label(t: float) -> str:
 
 def _fmt_int(n: float) -> str:
     return f"{int(round(n)):,}"
+
+
+def day_streak(days: set[dt.date], today: dt.date | None = None) -> int:
+    """Days in a row with a dictation, up to today (or yesterday, if not yet today)."""
+    today = today or dt.date.today()
+    day = today if today in days else today - dt.timedelta(days=1)
+    n = 0
+    while day in days:
+        n += 1
+        day -= dt.timedelta(days=1)
+    return n
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -218,7 +231,7 @@ def _section(lay: QVBoxLayout, title: str) -> QVBoxLayout:
 
 # --------------------------------------------------------------------------- Home
 class EntryRow(QFrame):
-    def __init__(self, entry: dict, on_delete):
+    def __init__(self, entry: dict, on_delete, on_paste=None):
         super().__init__()
         self.setObjectName("entryRow")
         self.entry = entry
@@ -251,6 +264,11 @@ class EntryRow(QFrame):
             row.addStretch(1)
             body.addLayout(row)
         lay.addLayout(body, 1)
+        self.paste = QPushButton("Paste")
+        self.paste.setObjectName("icon")
+        self.paste.setToolTip("Paste into the app you were just using")
+        self.paste.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.paste.clicked.connect(lambda: on_paste and on_paste(self.entry["text"]))
         self.copy = QPushButton("Copy")
         self.copy.setObjectName("icon")
         self.copy.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -260,7 +278,8 @@ class EntryRow(QFrame):
         self.delete.setToolTip("Delete from history")
         self.delete.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete.clicked.connect(lambda: on_delete(self))
-        for b in (self.copy, self.delete):
+        self.buttons = [b for b in (self.paste if on_paste else None, self.copy, self.delete) if b]
+        for b in self.buttons:
             b.setVisible(False)
             lay.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
 
@@ -270,13 +289,13 @@ class EntryRow(QFrame):
         QTimer.singleShot(1200, lambda: self.copy.setText("Copy"))
 
     def enterEvent(self, e):
-        self.copy.setVisible(True)
-        self.delete.setVisible(True)
+        for b in self.buttons:
+            b.setVisible(True)
         super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self.copy.setVisible(False)
-        self.delete.setVisible(False)
+        for b in self.buttons:
+            b.setVisible(False)
         super().leaveEvent(e)
 
 
@@ -301,7 +320,8 @@ class HomePage(QScrollArea):
         self.s_words = StatCard("words dictated")
         self.s_wpm = StatCard("average speaking speed (wpm)")
         self.s_saved = StatCard(f"time saved vs typing at {TYPING_WPM} wpm")
-        for s in (self.s_words, self.s_wpm, self.s_saved):
+        self.s_streak = StatCard("day streak")
+        for s in (self.s_words, self.s_wpm, self.s_saved, self.s_streak):
             stats.addWidget(s)
         lay.addLayout(stats)
 
@@ -346,6 +366,11 @@ class HomePage(QScrollArea):
         self.s_wpm.set(_fmt_int(words / seconds * 60) if seconds > 5 else "–")
         saved = max(0.0, words / TYPING_WPM * 60 - seconds)
         self.s_saved.set(_fmt_duration(saved) if rows else "–")
+        streak = day_streak({dt.date.fromtimestamp(r.get("t", 0)) for r in rows})
+        week_ago = dt.datetime.now().timestamp() - 7 * 86400
+        week = sum(len(r["text"].split()) for r in dictated if r.get("t", 0) >= week_ago)
+        self.s_streak.set(str(streak) if streak else "–")
+        self.s_words.setToolTip(f"{_fmt_int(week)} in the last 7 days")
 
         clear_layout(self.list)
         q = self.search.text().strip().lower()
@@ -366,7 +391,7 @@ class HomePage(QScrollArea):
                 d.setObjectName("day")
                 self.list.addWidget(d)
                 last_day = day
-            self.list.addWidget(EntryRow(r, self._delete))
+            self.list.addWidget(EntryRow(r, self._delete, getattr(self.ctl, "paste_text", None)))
 
     def _delete(self, row: EntryRow) -> None:
         self.ctl.delete_history(row.entry.get("t", 0))
@@ -592,6 +617,17 @@ class SettingsPage(QScrollArea):
                                   "formal”, “turn this into bullet points”, “translate to "
                                   "Spanish”. With nothing selected, it writes what you ask for. "
                                   "Uses the local AI.", self.command))
+        self.paste_last = HotkeyField(hotkey_labels(cfg.paste_last_hotkey) if cfg.paste_last_hotkey
+                                      else ["Off"])
+        self.paste_last.change_requested.connect(lambda: self._record("paste_last_hotkey"))
+        self.paste_last.cancel_requested.connect(self._cancel_record)
+        sec.addWidget(setting_row("Paste last dictation", "Pastes your last dictation again, "
+                                  "wherever the cursor is.", self.paste_last))
+        self.read_key = HotkeyField(hotkey_labels(cfg.read_hotkey) if cfg.read_hotkey else ["Off"])
+        self.read_key.change_requested.connect(lambda: self._record("read_hotkey"))
+        self.read_key.cancel_requested.connect(self._cancel_record)
+        sec.addWidget(setting_row("Read aloud", "Select text anywhere and press this to hear it. "
+                                  "Press it again to stop.", self.read_key))
         sec.addWidget(self._switch_row("double_tap_to_lock", "Double-tap for hands-free",
                                        "Double-tap the shortcut to start hands-free mode."))
         self.hotkey_msg = QLabel("")
@@ -636,6 +672,28 @@ class SettingsPage(QScrollArea):
             lambda: self._set("no_text_field", self.no_field.currentData()))
         sec.addWidget(setting_row("When no text field is selected", "", self.no_field))
 
+        # Styles
+        from .styles import CATEGORIES, CATEGORY_LABELS, STYLE_LABELS
+
+        sec = _section(lay, "Style per app")
+        intro = QLabel("How your words come out depends on where you're typing. Exact skips the "
+                       "AI clean-up, so prompts and commands are never reworded.")
+        intro.setObjectName("muted")
+        intro.setWordWrap(True)
+        intro.setContentsMargins(0, 12, 0, 4)
+        sec.addWidget(intro)
+        self.style_boxes: dict[str, QComboBox] = {}
+        for cat in CATEGORIES:
+            box = QComboBox()
+            for style, label in STYLE_LABELS.items():
+                box.addItem(label, style)
+            box.setCurrentIndex(max(0, box.findData(cfg.styles.get(cat))))
+            box.currentIndexChanged.connect(
+                lambda _i, c=cat, b=box: self._set("styles", {c: b.currentData()}))
+            title, desc = CATEGORY_LABELS[cat]
+            sec.addWidget(setting_row(title, desc, box))
+            self.style_boxes[cat] = box
+
         # Smart features
         sec = _section(lay, "Smart features")
         self.llm_mode = QComboBox()
@@ -658,6 +716,11 @@ class SettingsPage(QScrollArea):
         sec.addWidget(llm_row)
         sec.addWidget(self._switch_row("learn_from_edits", "Learn from my corrections",
                                        "After pasting, notice when you fix a word and remember it."))
+        sec.addWidget(self._switch_row("screen_context", "Spell names from the screen",
+                                       "When you start talking, Whispa looks at the names in the "
+                                       "window you're typing into (an email thread, a chat), so "
+                                       "they come out spelled the same way. Read on this computer "
+                                       "only, never saved."))
         self.samples_info = QLabel()
         self.samples_info.setObjectName("faint")
         self.samples_info.setWordWrap(True)
@@ -673,6 +736,30 @@ class SettingsPage(QScrollArea):
         samples.addWidget(self.samples_delete)
         sec.addLayout(samples)
         sec.addSpacing(10)
+
+        # Read aloud
+        from .speak import VOICES
+
+        sec = _section(lay, "Read aloud")
+        self.voice = QComboBox()
+        for vid, label in VOICES:
+            self.voice.addItem(label, vid)
+        self.voice.setCurrentIndex(max(0, self.voice.findData(cfg.read_voice)))
+        self.voice.currentIndexChanged.connect(
+            lambda: (self._set("read_voice", self.voice.currentData()), ctl.speak_sample()))
+        sec.addWidget(setting_row("Voice", "A natural voice that runs on this computer. The "
+                                  "first time, it downloads (90–310 MB).", self.voice, first=True))
+        self.speed = QComboBox()
+        for v in (0.8, 0.9, 1.0, 1.1, 1.25, 1.4, 1.6):
+            self.speed.addItem(f"{v:g}×", v)
+        idx = self.speed.findData(cfg.read_speed)
+        self.speed.setCurrentIndex(idx if idx >= 0 else 2)
+        self.speed.currentIndexChanged.connect(
+            lambda: (self._set("read_speed", self.speed.currentData()), ctl.speak_sample()))
+        sec.addWidget(setting_row("Speed", "", self.speed))
+        sample = QPushButton("Play a sample")
+        sample.clicked.connect(ctl.speak_sample)
+        sec.addWidget(setting_row("Try it", "", sample))
 
         # App
         sec = _section(lay, "App")
@@ -825,11 +912,12 @@ class SettingsPage(QScrollArea):
 
     def _cancel_record(self) -> None:
         self.ctl.cancel_capture()
-        for field in (self.hotkey, self.hands, self.command):
+        for field in (self.hotkey, self.hands, self.command, self.paste_last, self.read_key):
             field.set_recording(False)
 
     def _field(self, kind: str) -> HotkeyField:
-        return {"hotkey": self.hotkey, "hands_free_key": self.hands, "command_hotkey": self.command}[kind]
+        return {"hotkey": self.hotkey, "hands_free_key": self.hands, "command_hotkey": self.command,
+                "paste_last_hotkey": self.paste_last, "read_hotkey": self.read_key}[kind]
 
     def sync_pill_anchor(self, anchor: str) -> None:
         """The pill was dragged: show its new spot without re-triggering a move."""

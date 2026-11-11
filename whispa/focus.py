@@ -38,6 +38,7 @@ def _call(fn, *args, timeout: float = 5.0):
 class Focus:
     is_text: bool | None = None
     app: str = ""
+    title: str = ""  # the window's title (tells Gmail in a browser from other sites)
     is_password: bool = False
     is_terminal: bool = False
     _read: Callable[[], str | None] | None = field(default=None, repr=False)
@@ -156,6 +157,15 @@ def _process_name(pid: int) -> str:
     return ""
 
 
+def _win_title() -> str:
+    import ctypes
+
+    u32 = ctypes.windll.user32
+    hwnd = u32.GetForegroundWindow()
+    buf = ctypes.create_unicode_buffer(512)
+    return buf.value if hwnd and u32.GetWindowTextW(hwnd, buf, 512) else ""
+
+
 def _win_caret_visible() -> bool:
     """Classic Win32 apps own a system caret while a text field has focus."""
     import ctypes
@@ -207,6 +217,7 @@ def _win_inspect() -> Focus:
     if el is None:
         return Focus(is_text=False)
     app = _process_name(el.CurrentProcessId)
+    title = _win_title()
     is_text = _win_classify(el, U)
     is_password = bool(el.CurrentIsPassword)
 
@@ -233,7 +244,7 @@ def _win_inspect() -> Focus:
         parts = [ranges.GetElement(i).GetText(MAX_READ + 1) for i in range(ranges.Length)]
         return "\n".join(p for p in parts if p) or None
 
-    return Focus(is_text=is_text, app=app, is_password=is_password,
+    return Focus(is_text=is_text, app=app, title=title, is_password=is_password,
                  is_terminal=(el.CurrentClassName or "") in _TERMINAL_CLASSES,
                  _read=read if is_text is not False else None, _selection=selection,
                  _same=same, _handle=el)
@@ -281,5 +292,95 @@ def _mac_inspect() -> Focus:
         v = attr("AXSelectedText")
         return str(v) if v else None
 
-    return Focus(is_text=is_text, app=app, is_password=subrole == "AXSecureTextField",
+    title = ""
+    window = attr("AXWindow")
+    if window is not None:
+        e, t = AXUIElementCopyAttributeValue(window, "AXTitle", None)
+        title = str(t) if not e and t else ""
+    return Focus(is_text=is_text, app=app, title=title, is_password=subrole == "AXSecureTextField",
                  _read=read if is_text else None, _selection=selection, _same=same, _handle=el)
+
+
+# --------------------------------------------------------------------------- screen text
+_BROWSERS = {"chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "arc", "safari",
+             "google chrome", "microsoft edge", "zen", "chromium"}
+_ctx_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="screen")
+
+
+def screen_text(focus: Focus, budget_s: float = 0.4, max_chars: int = 30_000) -> str:
+    """Text in the focused window, to spot names you might say. Bounded in time and size.
+
+    Browsers only give their title: walking a web page's accessibility tree makes the
+    browser build it in full, which costs it CPU and memory for the rest of the session.
+    """
+    parts = [focus.title]
+    if (focus.app or "").lower() in _BROWSERS or focus.is_password:
+        return focus.title
+    try:
+        if sys.platform == "win32":
+            parts.append(_ctx_executor.submit(_win_screen_text, budget_s, max_chars).result(budget_s + 1))
+        elif sys.platform == "darwin":
+            parts.append(_ctx_executor.submit(_mac_screen_text, budget_s, max_chars).result(budget_s + 1))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("screen text failed: %s", exc)
+    return "\n".join(p for p in parts if p)
+
+
+def _win_screen_text(budget_s: float, max_chars: int) -> str:
+    import ctypes
+    import time
+
+    uia, U = _uia()
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    deadline = time.monotonic() + budget_s
+    walker = uia.ContentViewWalker
+    out: list[str] = []
+    size = 0
+    queue = [uia.ElementFromHandle(hwnd)]
+    while queue and time.monotonic() < deadline and size < max_chars:
+        el = queue.pop(0)
+        try:
+            name = el.CurrentName
+            if name and len(name) < 2000:
+                out.append(name)
+                size += len(name)
+            child = walker.GetFirstChildElement(el)
+            while child is not None and len(queue) < 4000:
+                queue.append(child)
+                child = walker.GetNextSiblingElement(child)
+        except Exception:  # noqa: BLE001 - elements vanish while we walk
+            continue
+    return "\n".join(out)[:max_chars]
+
+
+def _mac_screen_text(budget_s: float, max_chars: int) -> str:
+    import time
+
+    from ApplicationServices import (AXIsProcessTrusted, AXUIElementCopyAttributeValue,
+                                     AXUIElementCreateApplication)
+    from AppKit import NSWorkspace
+
+    if not AXIsProcessTrusted():
+        return ""
+    front = NSWorkspace.sharedWorkspace().frontmostApplication()
+    app = AXUIElementCreateApplication(front.processIdentifier())
+    err, window = AXUIElementCopyAttributeValue(app, "AXFocusedWindow", None)
+    if err or window is None:
+        return ""
+    deadline = time.monotonic() + budget_s
+    out: list[str] = []
+    size = 0
+    queue = [window]
+    while queue and time.monotonic() < deadline and size < max_chars:
+        el = queue.pop(0)
+        for name in ("AXTitle", "AXValue", "AXDescription"):
+            e, v = AXUIElementCopyAttributeValue(el, name, None)
+            if not e and isinstance(v, str) and v and len(v) < 5000:
+                out.append(v)
+                size += len(v)
+        e, children = AXUIElementCopyAttributeValue(el, "AXChildren", None)
+        if not e and children:
+            queue.extend(list(children)[: max(0, 4000 - len(queue))])
+    return "\n".join(out)[:max_chars]

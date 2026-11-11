@@ -113,6 +113,22 @@ class Recorder:
                 self._recording = False
                 raise
 
+    def samples_since(self, start: int) -> np.ndarray:
+        """Audio recorded so far from sample ``start`` on (for transcribing while you talk)."""
+        with self._lock:
+            chunks = self._chunks[:]
+            total = self._samples
+        if start >= total:
+            return np.zeros(0, np.float32)
+        tail, have = [], total
+        for c in reversed(chunks):  # only copy the part we need
+            tail.append(c)
+            have -= len(c)
+            if have <= start:
+                break
+        audio = np.concatenate(tail[::-1])
+        return audio[start - have:]
+
     def stop(self) -> tuple[np.ndarray, int]:
         if not self.keep_open:
             self._close()  # waits for the last callback

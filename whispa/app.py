@@ -16,7 +16,7 @@ from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import autostart, focus, textproc
+from . import autostart, focus, styles, textproc
 from . import config as config_mod
 from .asr import Transcriber
 from .audio import Recorder
@@ -28,6 +28,7 @@ from .icons import app_icon, tray_icon
 from .inject import Injector
 from .overlay import Overlay
 from .sounds import Sounds
+from .streaming import LiveSession
 
 log = logging.getLogger("whispa")
 
@@ -50,6 +51,10 @@ class Bridge(QObject):
     update_restart = Signal()
     history_changed = Signal()
     update_changed = Signal()
+    paste_last = Signal()
+    read_aloud = Signal()
+    speak_state = Signal(str)
+    notice = Signal(str, bool)  # message, is_error
 
 
 class WhispaApp:
@@ -59,12 +64,15 @@ class WhispaApp:
         self.bridge = Bridge()
         self.recording = False
         self.pending = 0
-        self.history: list[str] = []
+        self.live: LiveSession | None = None  # transcribes long dictations while you talk
+        self._context_names: list[str] = []  # names seen on screen when the dictation started
+        self._speaker = None
         self._focus = focus.Focus()
         self._before: str | None = None
         self.window = None
         self._status_text = "Loading speech model…"
         self.history_path = config_mod.config_dir() / "history.jsonl"
+        self.history: list[str] = self._recent_history()
 
         try:
             hotkey = Hotkey.parse(cfg.hotkey)
@@ -117,6 +125,10 @@ class WhispaApp:
         b.captured.connect(self._on_captured)
         b.history_changed.connect(lambda: self.window and self.window.history_changed())
         b.learned.connect(lambda words: self.overlay.flash(f"Learned: {words}", seconds=2.5))
+        b.paste_last.connect(self.paste_last)
+        b.read_aloud.connect(self.read_aloud)
+        b.speak_state.connect(self._on_speak_state)
+        b.notice.connect(lambda msg, err: self.overlay.flash(msg, error=err, seconds=3))
 
         from .updater import Updater
 
@@ -139,6 +151,10 @@ class WhispaApp:
         self.max_timer = QTimer()
         self.max_timer.setInterval(250)
         self.max_timer.timeout.connect(self._check_max_duration)
+        self.live_timer = QTimer()
+        self.live_timer.setInterval(2000)
+        self.live_timer.timeout.connect(self._poll_live)
+        self._apply_action_hotkeys()
 
         self._build_tray()
         self.hotkeys.start()
@@ -241,6 +257,12 @@ class WhispaApp:
             return
         self.recording = True
         self.polisher.prewarm()  # load the AI model while you talk (no-op if it's loaded)
+        if mode == "dictate":
+            self.live = LiveSession(self.transcriber.transcribe) if self.transcriber.ready.is_set() else None
+            self.live_timer.start()
+            self._context_names = []
+            if self.cfg.screen_context:
+                threading.Thread(target=self._grab_screen_names, name="screen-names", daemon=True).start()
         self.overlay.set_mode(mode)
         self.overlay.set_state("listening")
         self.tray.setIcon(tray_icon(True))
@@ -250,6 +272,7 @@ class WhispaApp:
     def _end_recording(self):
         self.recording = False
         self.max_timer.stop()
+        self.live_timer.stop()
         self.tray.setIcon(tray_icon(False))
         return self.recorder.stop()
 
@@ -263,13 +286,17 @@ class WhispaApp:
         self.sounds.play("stop")
         self.pending += 1
         self.overlay.set_state("transcribing")
-        job = self._process_command if self.mode == "command" else self._process
-        self.worker.submit(job, audio, sr)
+        live, self.live = self.live, None
+        if self.mode == "command":
+            self.worker.submit(self._process_command, audio, sr)
+        else:
+            self.worker.submit(self._process, audio, sr, live)
 
     def _on_cancel(self, silent: bool) -> None:
         if not self.recording:
             return
         self._end_recording()
+        self.live = None
         self.overlay.set_state("transcribing" if self.pending else "idle")
         if not silent:
             self.sounds.play("cancel")
@@ -278,13 +305,35 @@ class WhispaApp:
         if self.recording and self.recorder.duration >= self.cfg.max_duration_s:
             self.sm.finish()
 
+    def _poll_live(self) -> None:
+        if self.recording and self.live is not None:
+            try:
+                self.live.poll(self.recorder.samples_since, self.recorder.samplerate)
+            except Exception:  # noqa: BLE001 - never break the recording over this
+                log.exception("Live transcription failed; transcribing at the end instead")
+                self.live = None
+
+    def _grab_screen_names(self) -> None:
+        """Names in the window you're dictating into, so they come out spelled right."""
+        try:
+            t0 = time.perf_counter()
+            text = focus.screen_text(focus.inspect())
+            self._context_names = textproc.candidate_names(text)
+            log.debug("Screen names (%.0f ms): %s", (time.perf_counter() - t0) * 1000,
+                      ", ".join(self._context_names[:20]))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Screen names failed: %s", exc)
+
     # -- worker thread ---------------------------------------------------
-    def _process(self, audio, sr) -> None:
+    def _process(self, audio, sr, live: LiveSession | None = None) -> None:
         try:
             if not self.transcriber.ready.wait(timeout=300):
                 raise RuntimeError("Speech model is still loading")
             t0 = time.perf_counter()
-            raw = self.transcriber.transcribe(audio, sr)
+            if live is not None and live.parts:
+                raw = live.finish(audio, sr)  # most of it was transcribed while you talked
+            else:
+                raw = self.transcriber.transcribe(audio, sr)
             t_asr = time.perf_counter() - t0
             text = self._clean(raw) if raw else ""
             log.info("%.1fs audio -> %d chars, ASR %.0f ms, total %.0f ms (%s)", len(audio) / sr,
@@ -336,19 +385,30 @@ class WhispaApp:
 
     def _clean(self, raw: str) -> str:
         self.hotkeys.wait_for_modifiers_released()
-        self._focus = focus.inspect()
+        self._focus = f = focus.inspect()
+        style = styles.style_for(self.cfg.styles, f.app, f.title, f.is_terminal)
         terms, corrections = self.dictionary.snapshot()
+        known = {t.lower() for t in terms}
+        names = [n for n in self._context_names if n.lower() not in known] \
+            if self.cfg.screen_context else []
         replacements = {**corrections, **self.cfg.replacements}
         text = textproc.process(raw, fillers=self.cfg.remove_fillers,
                                 commands=self.cfg.voice_commands,
                                 replacements=replacements, terms=terms)
+        if names:  # careful matching: only words heard as names, only real misspellings
+            text = textproc.apply_terms(text, names, threshold=0.86, min_len=5, case_only=False)
         snippets = self.dictionary.snippets_snapshot()
         triggers = textproc.find_snippets(text, snippets)
-        polished = self.polisher.polish(text, app=self._focus.app, terms=terms)
+        if style == "exact":
+            polished = text  # code & terminals: your words, never reworded by the AI
+        else:
+            polished = self.polisher.polish(text, app=f.app, terms=terms + names[:40])
         if triggers and textproc.find_snippets(polished, snippets) != triggers:
             polished = text  # the AI reworded a snippet trigger; keep the original wording
         # Corrections again: the LLM may have reintroduced a misspelling.
         text = textproc.apply_replacements(polished, replacements)
+        text = styles.apply(text, style, keep=set(terms) | set(names))
+        log.info("Style: %s (%s)", style, styles.category(f.app, f.title, f.is_terminal))
         if triggers:  # last, so neither the AI nor the rules touch the saved text
             text = textproc.expand_snippets(text, snippets)
             log.info("Snippet: %s", ", ".join(triggers))
@@ -416,6 +476,10 @@ class WhispaApp:
         menu.addAction(self.status_action)
         menu.addSeparator()
         menu.addAction("Start hands-free dictation", self.sm.toggle_hands_free)
+        menu.addAction("Paste last dictation", self.paste_last)
+        self.read_action = QAction("Read selection aloud", menu)
+        self.read_action.triggered.connect(self.read_aloud)
+        menu.addAction(self.read_action)
         self.recent_menu = menu.addMenu("Copy recent transcript")
         self.recent_menu.aboutToShow.connect(self._fill_recent)
         menu.addSeparator()
@@ -453,6 +517,91 @@ class WhispaApp:
             label = text.replace("\n", " ")
             label = label if len(label) <= 60 else label[:57] + "…"
             self.recent_menu.addAction(label, lambda t=text: QGuiApplication.clipboard().setText(t))
+
+    # -- paste again / read aloud -----------------------------------------
+    def _recent_history(self) -> list[str]:
+        """The last dictations, so "paste last" works right after a restart too."""
+        try:
+            lines = self.history_path.read_text(encoding="utf-8").splitlines()[-10:]
+            return [r["text"] for r in map(json.loads, lines) if r.get("text")]
+        except (OSError, ValueError, KeyError, TypeError):
+            return []
+
+    def _apply_action_hotkeys(self) -> None:
+        for name, spec, signal in (("paste_last", self.cfg.paste_last_hotkey, self.bridge.paste_last),
+                                   ("read", self.cfg.read_hotkey, self.bridge.read_aloud)):
+            hk = None
+            if spec:
+                try:
+                    hk = Hotkey.parse(spec)
+                except ValueError as exc:
+                    log.error("%s shortcut %r: %s", name, spec, exc)
+            self.hotkeys.set_action(name, hk, signal.emit)
+
+    def paste_last(self) -> None:
+        if not self.history:
+            self.overlay.flash("Nothing to paste yet")
+            return
+        self.worker.submit(self.injector.inject, self.history[-1])
+
+    def paste_text(self, text: str) -> None:
+        """Paste a past dictation into the app you were using before opening Whispa."""
+        if self.window is not None:
+            self.window.hide()
+        if sys.platform == "darwin":
+            try:  # give focus back to the previous app
+                from AppKit import NSApplication
+
+                NSApplication.sharedApplication().hide_(None)
+            except Exception:  # noqa: BLE001
+                pass
+        QTimer.singleShot(400, lambda: self.worker.submit(self.injector.inject, text))
+
+    def speaker(self):
+        if self._speaker is None:
+            from .speak import Speaker
+
+            self._speaker = Speaker(self.cfg.read_voice, self.cfg.read_speed, self.cfg.device,
+                                    on_state=self.bridge.speak_state.emit)
+        return self._speaker
+
+    def read_aloud(self) -> None:
+        """Read the selected text aloud; while reading, stop."""
+        if self._speaker is not None and self._speaker.speaking:
+            self._speaker.stop()
+            return
+        threading.Thread(target=self._read_selection, name="read-selection", daemon=True).start()
+
+    def _read_selection(self) -> None:
+        self.hotkeys.wait_for_modifiers_released()
+        f = focus.inspect()
+        text = f.read_selection()
+        if text is None and not f.is_terminal:  # Ctrl+C in a terminal would interrupt
+            text = self.injector.copy_selection()
+        if not text or not text.strip():
+            self.bridge.notice.emit("Select some text to read aloud", False)
+            return
+        log.info("Reading %d characters aloud", len(text))
+        self.speaker().speak(text)
+
+    def speak_sample(self) -> None:
+        self.speaker().speak("Hi! This is how Whispa reads your text aloud.")
+
+    def _on_speak_state(self, state: str) -> None:
+        speaking = state in ("loading", "speaking")
+        self.read_action.setText("Stop reading" if speaking else "Read selection aloud")
+        if state == "loading":
+            self.overlay.flash("Loading the reading voice…", seconds=3)
+        elif state == "speaking":
+            hint = ""
+            if self.cfg.read_hotkey:
+                try:
+                    hint = f" · {Hotkey.parse(self.cfg.read_hotkey).label()} to stop"
+                except ValueError:
+                    pass
+            self.overlay.flash(f"Reading aloud{hint}", seconds=2.5)
+        elif state.startswith("error:"):
+            self.overlay.flash(state[6:][:60], error=True, seconds=4)
 
     # -- window ----------------------------------------------------------
     def show_window(self, page: int | None = None) -> None:
@@ -563,6 +712,21 @@ class WhispaApp:
                 self.update_timer.stop()
         elif key == "double_tap_to_lock":
             self.sm.double_tap = bool(value)
+        elif key in ("paste_last_hotkey", "read_hotkey"):
+            if value:
+                try:
+                    hk = Hotkey.parse(value)
+                except ValueError as exc:
+                    return str(exc)
+                if hk == self.hotkey:
+                    return "That's already your push-to-talk shortcut."
+            setattr(cfg, key, value)
+            self._apply_action_hotkeys()
+        elif key in ("read_voice", "read_speed"):
+            if self._speaker is not None:
+                setattr(self._speaker, key.removeprefix("read_"), value)
+        elif key == "styles":
+            value = {**cfg.styles, **value}
         if not hasattr(cfg, key):
             return f"Unknown setting {key}"
         setattr(cfg, key, value)
@@ -687,6 +851,8 @@ class WhispaApp:
         self.qapp.quit()
 
     def shutdown(self) -> None:
+        if self._speaker is not None:
+            self._speaker.stop()
         self.hotkeys.stop()
         self.recorder.shutdown()
         self.tray.hide()

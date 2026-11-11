@@ -284,6 +284,25 @@ class HotkeyService:
         self._tap = None
         self._capture: dict | None = None
         self._lock = threading.Lock()
+        self._actions: dict[str, tuple[Hotkey, Callable[[], None]]] = {}
+
+    def set_action(self, name: str, hotkey: Hotkey | None, callback: Callable[[], None]) -> None:
+        """A shortcut that does something once when pressed (paste last, read aloud).
+        It runs on the keyboard thread, so the callback should only hand off (emit a signal)."""
+        with self._lock:
+            if hotkey is None:
+                self._actions.pop(name, None)
+            else:
+                self._actions[name] = (hotkey, callback)
+
+    def _fire_action(self, new: set[str]) -> None:
+        if not new or self.sm.state != self.sm.IDLE:
+            return
+        with self._lock:
+            actions = list(self._actions.values())
+        hits = [(len(hk.keys), cb) for hk, cb in actions if hk.satisfied(self.sm.held) and new & hk.keys]
+        if hits:
+            max(hits, key=lambda h: h[0])[1]()
 
     def start(self) -> None:
         if sys.platform == "darwin":
@@ -365,7 +384,9 @@ class HotkeyService:
         if cancelled is not None:
             cancelled["cb"](None, None)
             return
+        new = names - self.sm.held
         self.sm.press(names)
+        self._fire_action(new)
 
     def _release(self, names: set[str], primary: str) -> None:
         done = None
