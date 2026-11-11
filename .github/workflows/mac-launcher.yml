@@ -1,6 +1,9 @@
-# Builds Murmr.app's small native launcher (mac/launcher.c) as a universal binary.
-# The result is committed as whispa/resources/MurmrLauncher, so installs don't need
-# Xcode. Run it (Actions tab or `gh workflow run mac-launcher.yml`) after changing the source.
+# Builds Murmr's small native macOS programs as universal binaries:
+#   mac/launcher.c     -> whispa/resources/MurmrLauncher   (Murmr.app's executable)
+#   mac/audiotap.swift -> whispa/resources/murmr-audiotap  (computer audio for meetings)
+# The results are committed, so installs don't need Xcode. Run it (Actions tab or
+# `gh workflow run mac-launcher.yml`) after changing the source, then commit the artifact.
+# Don't recommit an unchanged launcher: a new binary makes macOS forget Murmr's permissions.
 name: macOS launcher
 
 on:
@@ -30,7 +33,22 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'bundle=1 args=one two words'
           echo "$out" | grep -q 'exit=3'
+      - name: Build the audio helper
+        run: |
+          set -e
+          swiftc -O -target arm64-apple-macos13.0 -o tap-arm64 mac/audiotap.swift
+          swiftc -O -target x86_64-apple-macos13.0 -o tap-x86_64 mac/audiotap.swift
+          lipo -create -output murmr-audiotap tap-arm64 tap-x86_64
+          codesign --force --sign - murmr-audiotap
+          lipo -info murmr-audiotap
+          out=$(./murmr-audiotap --check)
+          echo "check: $out"
+          echo "$out" | grep -Eq '^(granted|denied)$'
       - uses: actions/upload-artifact@v4
         with:
           name: MurmrLauncher
           path: MurmrLauncher
+      - uses: actions/upload-artifact@v4
+        with:
+          name: murmr-audiotap
+          path: murmr-audiotap
