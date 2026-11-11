@@ -63,7 +63,11 @@ def install(desktop: bool = True) -> list[Path]:
         targets = [Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Whispa.lnk"]
         if desktop:
             targets.append(Path(os.environ["USERPROFILE"]) / "Desktop/Whispa.lnk")
-        workdir = str(Path(__file__).resolve().parent.parent)
+        from .updater import runtime_dir
+
+        # Installed copies start in the install root, never inside app/current (which
+        # updates have to rename).
+        workdir = str(runtime_dir() or Path(__file__).resolve().parent.parent)
         for lnk in targets:
             lnk.parent.mkdir(parents=True, exist_ok=True)
             ps = (

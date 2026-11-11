@@ -86,8 +86,9 @@ $zip = Join-Path $tmp "whispa.zip"
 Invoke-WebRequest -Headers $headers "https://codeload.github.com/$Repo/zip/$sha" -OutFile $zip
 Expand-Archive $zip -DestinationPath $tmp
 $src = Get-ChildItem $tmp -Directory | Select-Object -First 1
-@{ sha = $sha; date = $date; repo = $Repo; branch = $Branch; changes = @() } |
-    ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $src.FullName "version.json")
+# JSON without a byte-order mark (Windows PowerShell's utf8 adds one, which Python rejects).
+function Write-Json($obj, $path) { [IO.File]::WriteAllText($path, ($obj | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
+Write-Json @{ sha = $sha; date = $date; repo = $Repo; branch = $Branch; changes = @() } (Join-Path $src.FullName "version.json")
 
 $current = Join-Path $App "current"
 $previous = Join-Path $App "previous"
@@ -108,8 +109,7 @@ if (-not (Test-Path (Join-Path $Venv "Scripts\python.exe"))) {
 Run $uv pip install --python (Join-Path $Venv "Scripts\python.exe") -r (Join-Path $current "pyproject.toml") --extra $Runtime
 
 Copy-Item (Join-Path $current "whispa\_boot.py") (Join-Path $Root "boot.py") -Force
-@{ repo = $Repo; branch = $Branch; runtime = $Runtime; uv = $uv; installed = (Get-Date -Format o) } |
-    ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $Root "install.json")
+Write-Json @{ repo = $Repo; branch = $Branch; runtime = $Runtime; uv = $uv; installed = (Get-Date -Format o) } (Join-Path $Root "install.json")
 
 # The base interpreter's pythonw.exe: virtual-env launcher stubs can open a console window.
 $base = (& (Join-Path $Venv "Scripts\python.exe") -c "import sys; print(sys.base_prefix)").Trim()
@@ -123,5 +123,5 @@ Step "Adding Whispa to the Start Menu and Desktop"
 Run $python -I -S $boot --install-shortcuts
 Run $python -I -S $boot --autostart on
 
-Start-Process $pythonw -ArgumentList "-I", "-S", "`"$boot`""
+Start-Process $pythonw -ArgumentList "-I", "-S", "`"$boot`"" -WorkingDirectory $Root
 Write-Host "`nWhispa is installed and running (tray icon). It starts at login; Settings > Updates keeps it current." -ForegroundColor Green

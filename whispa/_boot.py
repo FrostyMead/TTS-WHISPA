@@ -42,7 +42,7 @@ def log(msg: str) -> None:
 
 def _version(path: str) -> str:
     try:
-        with open(os.path.join(path, "version.json"), encoding="utf-8") as f:
+        with open(os.path.join(path, "version.json"), encoding="utf-8-sig") as f:
             return json.load(f).get("sha", "?")[:7]
     except (OSError, ValueError):
         return "?"
@@ -64,7 +64,11 @@ def apply_update() -> None:
     shutil.rmtree(PREVIOUS, ignore_errors=True)
     if os.path.isdir(CURRENT):
         _replace(CURRENT, PREVIOUS)
-    _replace(NEXT, CURRENT)
+    try:
+        _replace(NEXT, CURRENT)
+    except OSError:
+        _replace(PREVIOUS, CURRENT)  # put the working version back before giving up
+        raise
     with open(TRIAL, "w", encoding="utf-8") as f:
         f.write(_version(CURRENT))
     log(f"updated {_version(PREVIOUS)} -> {_version(CURRENT)}")
@@ -109,14 +113,24 @@ def add_packages() -> None:
 
 
 def main() -> None:
+    # Never run from inside app/current: Windows can't rename a process's working folder,
+    # which would stop the update from being applied (and the next one, from this process).
+    os.chdir(RUNTIME)
     args = sys.argv[1:]
     if "--rollback" in args:
         args.remove("--rollback")
         rollback("requested")
     elif os.path.exists(TRIAL) and not os.path.isdir(NEXT):
         # The last update was started but never reported a healthy start: undo it.
-        rollback("the updated version did not start")
-    apply_update()
+        try:
+            rollback("the updated version did not start")
+        except OSError as exc:
+            log(f"rollback failed, starting the current version: {exc}")
+    try:
+        apply_update()
+    except OSError as exc:
+        # e.g. a folder is open in Explorer. Start what we have; the update stays staged.
+        log(f"couldn't apply the update yet, starting the current version: {exc}")
     add_packages()
     sys.path.insert(0, CURRENT)
     sys.argv = ["whispa", *args]

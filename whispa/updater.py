@@ -73,14 +73,14 @@ class Updater:
         if not self.runtime:
             return {}
         try:
-            return json.loads((self.runtime / "install.json").read_text(encoding="utf-8"))
+            return json.loads((self.runtime / "install.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return {}
 
     def current_version(self) -> dict:
         app = self.runtime / "app" / "current" if self.runtime else APP_DIR
         try:
-            return json.loads((app / "version.json").read_text(encoding="utf-8"))
+            return json.loads((app / "version.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return {}
 
@@ -91,7 +91,7 @@ class Updater:
         if not self.runtime:
             return None
         try:
-            return json.loads((self.runtime / "app" / "next" / "version.json").read_text(encoding="utf-8"))
+            return json.loads((self.runtime / "app" / "next" / "version.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return None
 

@@ -1,6 +1,7 @@
 """The update flow end to end, against a fake GitHub: check -> stage -> bootstrap applies ->
 auto-rollback when the new version never reports a healthy start -> manual rollback."""
 
+import codecs
 import io
 import json
 import shutil
@@ -16,6 +17,7 @@ import pytest
 from whispa.updater import Updater
 
 REAL_BOOT = Path(__file__).resolve().parent.parent / "whispa" / "_boot.py"
+BASE_PY = str(Path(sys.base_prefix) / ("python.exe" if sys.platform == "win32" else "bin/python3"))
 STUB_MAIN = '''import json, os
 def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -98,7 +100,7 @@ def runtime(tmp_path):
 
 
 def boot(rt: Path, out: Path, *args: str) -> list[str]:
-    subprocess.run([sys.executable, "-I", "-S", str(rt / "boot.py"), *args], check=True,
+    subprocess.run([BASE_PY, "-I", "-S", str(rt / "boot.py"), *args], check=True,
                    env={"WHISPA_TEST_OUT": str(out), "SYSTEMROOT": __import__("os").environ.get("SYSTEMROOT", "")})
     return out.read_text().split()
 
@@ -175,3 +177,47 @@ def test_development_copy_is_left_alone(tmp_path):
 def test_offline_is_reported_not_raised(runtime):
     info = Updater(runtime=runtime, api="http://127.0.0.1:9", codeload="http://127.0.0.1:9").check()
     assert not info.available and "Couldn't check" in info.error
+
+
+def test_windows_installer_files_with_bom_are_read(runtime, github, tmp_path):
+    """Windows PowerShell 5.1 writes UTF-8 with a byte-order mark."""
+    (runtime / "app" / "current" / "version.json").write_bytes(
+        codecs.BOM_UTF8 + json.dumps({"sha": OLD}).encode())
+    (runtime / "install.json").write_bytes(codecs.BOM_UTF8 + json.dumps({"repo": "o/r", "runtime": "cpu"}).encode())
+    u = updater(runtime, github)
+    assert u.current_version()["sha"] == OLD and u.install_info()["runtime"] == "cpu"
+    info = u.check()
+    assert info.current_sha == OLD and info.changes  # compare worked
+    u.stage(info)
+    out = tmp_path / "ran.txt"
+    assert boot(runtime, out) == [NEW]
+    assert f"{OLD[:7]} -> {NEW[:7]}" in (runtime / "boot.log").read_text()
+
+
+def test_boot_works_when_started_inside_the_app_folder(runtime, github, tmp_path):
+    """The old shortcut started Whispa with app/current as its working folder."""
+    u = updater(runtime, github)
+    u.stage(u.check())
+    out = tmp_path / "ran.txt"
+    subprocess.run([BASE_PY, "-I", "-S", str(runtime / "boot.py")], check=True,
+                   cwd=runtime / "app" / "current",
+                   env={"WHISPA_TEST_OUT": str(out), "SYSTEMROOT": __import__("os").environ.get("SYSTEMROOT", "")})
+    assert out.read_text().split() == [NEW]
+
+
+def test_locked_folder_starts_current_version_and_keeps_update(runtime, github, tmp_path, monkeypatch):
+    """If the update can't be applied (folder open elsewhere), Whispa still starts."""
+    u = updater(runtime, github)
+    u.stage(u.check())
+    import os
+    out = tmp_path / "ran.txt"
+    lock = open(runtime / "app" / "current" / "pyproject.toml")  # open file: Windows can't rename the folder
+    try:
+        if sys.platform == "win32":
+            env = {"WHISPA_TEST_OUT": str(out), "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")}
+            subprocess.run([BASE_PY, "-I", "-S", str(runtime / "boot.py")], check=True, env=env)
+            assert out.read_text().split() == [OLD]  # started the version it had
+            assert (runtime / "app" / "next").is_dir()  # update kept for next time
+            assert "couldn't apply" in (runtime / "boot.log").read_text()
+    finally:
+        lock.close()
