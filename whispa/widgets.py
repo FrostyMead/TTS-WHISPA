@@ -80,6 +80,14 @@ def nav_icon(kind: str, off: str, on: str, size: int = 18) -> QIcon:
                 p.drawRoundedRect(QRectF(s * 0.22, s * 0.15, s * 0.56, s * 0.7), 2, 2)
                 p.drawLine(QPointF(s * 0.36, s * 0.36), QPointF(s * 0.64, s * 0.36))
                 p.drawLine(QPointF(s * 0.36, s * 0.52), QPointF(s * 0.58, s * 0.52))
+            elif kind == "meetings":  # speech bubble with lines
+                bubble = QPainterPath()
+                bubble.addRoundedRect(QRectF(s * 0.14, s * 0.18, s * 0.72, s * 0.5), 3, 3)
+                p.drawPath(bubble)
+                p.drawLine(QPointF(s * 0.34, s * 0.68), QPointF(s * 0.28, s * 0.84))
+                p.drawLine(QPointF(s * 0.28, s * 0.84), QPointF(s * 0.48, s * 0.68))
+                p.drawLine(QPointF(s * 0.3, s * 0.36), QPointF(s * 0.7, s * 0.36))
+                p.drawLine(QPointF(s * 0.3, s * 0.5), QPointF(s * 0.58, s * 0.5))
             elif kind == "training":  # microphone
                 p.drawRoundedRect(QRectF(s * 0.38, s * 0.14, s * 0.24, s * 0.42), s * 0.12, s * 0.12)
                 arc = QPainterPath()

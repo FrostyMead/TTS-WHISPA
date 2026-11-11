@@ -250,6 +250,25 @@ point"** before each item to make a list. Each rule needs a clear shape (a real 
 number next to the unit), so "the dot com bubble" or "lost 5 pounds" stay as they are. Settings →
 Writing → Smart formatting.
 
+### Meeting notes and live captions
+**Meetings** in the sidebar (or the tray menu): **Start meeting notes** when a call begins.
+Murmr transcribes your microphone as **You** and the computer's audio (the other people in
+Teams, Zoom or Meet) as **Others**, live, then **Stop and summarize** has the local AI write
+a summary with decisions and a checklist of action items. Meetings are saved on this computer
+(text only; no audio is kept) and can be copied or exported as Markdown.
+
+- **Live captions:** a floating bar with what's being said right now, for any audio. On its
+  own it saves nothing; during meeting notes it shows the meeting.
+- **Light on the computer:** lines become final at pauses and their audio is dropped; the
+  live text updates every ~1.5 s, slower when transcription is busy (CPU-only Macs).
+- **Echo:** if your mic picks up the other people through your speakers, those copies are
+  dropped (headphones avoid it entirely).
+- **Computer audio** works on Windows (WASAPI loopback). On macOS, meeting notes use the
+  microphone for now.
+- Summaries need the local AI (Ollama + gemma3:4b). Long meetings are summarized in parts.
+- Let everyone know you're taking notes: in some places transcribing a conversation needs
+  everyone's consent.
+
 ### Long dictations
 For dictations longer than about 20 s, Murmr transcribes while you're still talking: it cuts
 the audio at a pause and works on that piece in the background, so letting go only waits for

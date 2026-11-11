@@ -16,6 +16,7 @@ dependencies = [
   "pynput>=1.7.7",
   "PySide6-Essentials>=6.6",
   "pyperclip>=1.8",
+  "soundcard>=0.4.4; sys_platform == 'win32'",  # computer audio for meeting notes
   "espeakng-loader>=0.2.4",  # pronunciation for the read-aloud voice
   "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
   "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",

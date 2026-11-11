@@ -124,6 +124,9 @@ class Config:
     show_idle_pill: bool = True
     pill_anchor: str = "bottom-center"  # where the pill snaps; drag it or pick in Settings
     save_history: bool = True
+    # Meetings / live captions
+    meeting_mic: bool = True  # transcribe your microphone ("You")
+    meeting_system: bool = True  # and the computer's audio ("Others"; Windows)
     # Read aloud (local Kokoro voice)
     read_voice: str = "af_heart"
     read_speed: float = 1.0

@@ -131,6 +131,8 @@ QPushButton:hover {{ background: {p.surface_hover}; }}
 QPushButton:disabled {{ color: {p.faint}; }}
 QPushButton#primary {{ background: {p.accent}; color: {p.accent_text}; border: 1px solid {p.accent}; }}
 QPushButton#primary:hover {{ background: {p.accent_hover}; border-color: {p.accent_hover}; }}
+QPushButton#danger {{ background: {p.danger}; color: #ffffff; border: 1px solid {p.danger}; }}
+QPushButton#danger:hover {{ background: #b91c1c; border-color: #b91c1c; }}
 QPushButton#recording {{ background: {p.accent}; color: {p.accent_text}; border: 1px solid {p.accent}; }}
 QPushButton#icon {{ background: transparent; border: none; padding: 4px 6px; color: {p.muted};
     font-size: 13px; border-radius: 6px; }}

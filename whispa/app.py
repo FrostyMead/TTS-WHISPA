@@ -55,6 +55,7 @@ class Bridge(QObject):
     paste_last = Signal()
     read_aloud = Signal()
     speak_state = Signal(str)
+    meeting_changed = Signal(str)  # meeting id (saved, summary progress or done)
     notice = Signal(str, bool)  # message, is_error
 
 
@@ -137,6 +138,7 @@ class MurmrApp:
         b.paste_last.connect(self.paste_last)
         b.read_aloud.connect(self.read_aloud)
         b.speak_state.connect(self._on_speak_state)
+        b.meeting_changed.connect(self._on_meeting_changed)
         b.notice.connect(lambda msg, err: self.overlay.flash(msg, error=err, seconds=3))
 
         from .updater import Updater
@@ -166,6 +168,13 @@ class MurmrApp:
         self.max_timer = QTimer()
         self.max_timer.setInterval(250)
         self.max_timer.timeout.connect(self._check_max_duration)
+        self._meeting = None  # the running MeetingSession (notes or captions-only)
+        self._summary_state: dict[str, str] = {}
+        self._captions = None
+        self._captions_on = False
+        self.captions_timer = QTimer()
+        self.captions_timer.setInterval(400)
+        self.captions_timer.timeout.connect(self._update_captions)
         self.live_timer = QTimer()
         self.live_timer.setInterval(2000)
         self.live_timer.timeout.connect(self._poll_live)
@@ -556,6 +565,13 @@ class MurmrApp:
         self.read_action = QAction("Read selection aloud", menu)
         self.read_action.triggered.connect(self.read_aloud)
         menu.addAction(self.read_action)
+        self.meeting_action = QAction("Start meeting notes", menu)
+        self.meeting_action.triggered.connect(self._toggle_meeting_from_tray)
+        menu.addAction(self.meeting_action)
+        self.captions_action = QAction("Live captions", menu)
+        self.captions_action.setCheckable(True)
+        self.captions_action.triggered.connect(self.set_captions)
+        menu.addAction(self.captions_action)
         self.recent_menu = menu.addMenu("Copy recent transcript")
         self.recent_menu.aboutToShow.connect(self._fill_recent)
         menu.addSeparator()
@@ -688,6 +704,197 @@ class MurmrApp:
         elif state.startswith("error:"):
             self.overlay.flash(state[6:][:60], error=True, seconds=4)
 
+    # -- meetings & live captions (meetings.py) ------------------------------
+    def meeting_store(self):
+        from .meetings import MeetingStore
+
+        return MeetingStore(config_mod.config_dir() / "meetings")
+
+    def meeting_session(self):
+        return self._meeting
+
+    def meeting_running(self) -> bool:
+        return bool(self._meeting and self._meeting.running and self._meeting.keep)
+
+    def meeting_status(self) -> str:
+        busy = [s for s in self._summary_state.values() if s]
+        return busy[0] if busy else ""
+
+    def _captures(self):
+        from .meetings import MicCapture, SystemCapture, system_audio_supported
+
+        caps = []
+        if self.cfg.meeting_mic:
+            caps.append(MicCapture(self.cfg.input_device))
+        if self.cfg.meeting_system and system_audio_supported():
+            caps.append(SystemCapture())
+        return caps
+
+    def _start_session(self, keep: bool) -> str | None:
+        from .meetings import MeetingSession
+
+        if not self.transcriber.ready.is_set():
+            return "The speech model is still loading. Try again in a moment."
+        caps = self._captures()
+        if not caps:
+            return "Turn on the microphone or computer audio first."
+        session = MeetingSession(caps, self.transcriber.transcribe, keep=keep)
+        try:
+            session.start()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Meeting start failed")
+            return f"Couldn't start: {exc}"
+        self._meeting = session
+        log.info("%s started (%s)", "Meeting notes" if keep else "Live captions",
+                 ", ".join(c.who for c in session.captures))
+        return None
+
+    def start_meeting(self) -> str | None:
+        if self.meeting_running():
+            return None
+        if self._meeting is not None:  # a captions-only session: replace it with real notes
+            self._meeting.stop()
+            self._meeting = None
+        err = self._start_session(keep=True)
+        if err is None:
+            self.meeting_action.setText("Stop meeting notes")
+            self.overlay.flash("Meeting notes on", seconds=2)
+        return err
+
+    def stop_meeting(self) -> None:
+        session = self._meeting
+        if session is None:
+            return
+        self._meeting = None
+        self.meeting_action.setText("Start meeting notes")
+        if self._captions_on and session.keep:
+            self.set_captions(False)
+
+        def work():
+            lines = session.stop()
+            if not session.keep:
+                return
+            if not lines:
+                log.info("Meeting notes stopped: nothing was said")
+                self.bridge.meeting_changed.emit("")
+                return
+            meeting = {"started": session.started, "duration": round(session.elapsed, 1),
+                       "sources": [c.capture.who for c in session.channels],
+                       "lines": [line.__dict__ for line in lines], "title": "", "summary": ""}
+            mid = self.meeting_store().save(meeting)
+            log.info("Meeting saved: %s (%d lines, %.0f min)", mid, len(lines), session.elapsed / 60)
+            self.bridge.meeting_changed.emit(mid)
+            self._summarize(mid)
+
+        threading.Thread(target=work, name="meeting-stop", daemon=True).start()
+
+    def summarize_meeting(self, meeting_id: str) -> None:
+        threading.Thread(target=self._summarize, args=(meeting_id,), name="meeting-summary",
+                         daemon=True).start()
+
+    def summary_state(self, meeting_id: str) -> str:
+        return self._summary_state.get(meeting_id, "")
+
+    def _summarize(self, mid: str) -> None:
+        from .llm import summarize_meeting
+        from .meetings import transcript_text
+
+        store = self.meeting_store()
+        meeting = store.load(mid)
+        if meeting is None:
+            return
+        if not self.polisher.reachable(wait=True):
+            meeting["summary_error"] = ("Summaries need the local AI. Install Ollama and run "
+                                        f"“ollama pull {self.cfg.llm_cleanup.model}”, then "
+                                        "click Summarize again. The transcript is saved.")
+            store.save(meeting)
+            self.bridge.meeting_changed.emit(mid)
+            return
+
+        def progress(msg: str) -> None:
+            self._summary_state[mid] = msg
+            self.bridge.meeting_changed.emit(mid)
+
+        progress("Summarizing…")
+        try:
+            title, summary = summarize_meeting(self.polisher, transcript_text(meeting["lines"]), progress)
+            meeting.update(title=title, summary=summary, summary_error="")
+            log.info("Meeting summarized: %s", title)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Meeting summary failed")
+            meeting["summary_error"] = f"The summary failed ({exc}). Click Summarize again."
+        store.save(meeting)
+        self._summary_state.pop(mid, None)
+        self.bridge.meeting_changed.emit(mid)
+
+    def meetings(self) -> list[dict]:
+        return self.meeting_store().list()
+
+    def meeting(self, meeting_id: str) -> dict | None:
+        return self.meeting_store().load(meeting_id)
+
+    def delete_meeting(self, meeting_id: str) -> None:
+        self.meeting_store().delete(meeting_id)
+
+    def _on_meeting_changed(self, mid: str) -> None:
+        if self.window is not None and hasattr(self.window, "meetings"):
+            self.window.meetings.show_summary_progress(mid)
+            if self.window.pages.currentWidget() is self.window.meetings:
+                self.window.meetings.refresh()
+        state = self._summary_state.get(mid)
+        if mid and not state:
+            m = self.meeting_store().load(mid)
+            if m and m.get("summary"):
+                self.tray.showMessage("Meeting notes ready", m.get("title") or "Your summary is ready",
+                                      tray_icon(), 6000)
+                self._tray_click_page = None
+
+    def _toggle_meeting_from_tray(self) -> None:
+        if self.meeting_running():
+            self.stop_meeting()
+        else:
+            err = self.start_meeting()
+            if err:
+                self.overlay.flash(err[:60], error=True, seconds=3)
+        if self.window is not None and self.window.isVisible():
+            self.window.refresh()
+
+    def captions_on(self) -> bool:
+        return self._captions_on
+
+    def set_captions(self, on: bool) -> None:
+        from .captions import CaptionsWindow
+
+        on = bool(on)
+        if on and self._meeting is None:
+            err = self._start_session(keep=False)  # captions only: nothing is saved
+            if err:
+                self.overlay.flash(err[:60], error=True, seconds=3)
+                on = False
+        self._captions_on = on
+        self.captions_action.setChecked(on)
+        if on:
+            if self._captions is None:
+                self._captions = CaptionsWindow()
+                self._captions.closed.connect(lambda: self.set_captions(False))
+            self._captions.set_lines([])
+            self.captions_timer.start()
+        else:
+            self.captions_timer.stop()
+            if self._captions is not None:
+                self._captions.hide()
+            if self._meeting is not None and not self._meeting.keep:
+                self.stop_meeting()  # captions-only session ends with the captions
+        if self.window is not None and self.window.isVisible() and hasattr(self.window, "meetings"):
+            self.window.meetings.captions_btn.setChecked(on)
+
+    def _update_captions(self) -> None:
+        s = self._meeting
+        if s is None or self._captions is None:
+            return
+        shown = [(line.who, line.text) for line in s.lines[-2:]] + s.live()
+        self._captions.set_lines(shown)
+
     # -- window ----------------------------------------------------------
     def show_window(self, page: int | None = None) -> None:
         if self.window is None:
@@ -810,6 +1017,8 @@ class MurmrApp:
                     return "That's already your push-to-talk shortcut."
             setattr(cfg, key, value)
             self._apply_action_hotkeys()
+        elif key in ("meeting_mic", "meeting_system"):
+            pass  # used by the next meeting
         elif key in ("read_voice", "read_speed"):
             if self._speaker is not None:
                 setattr(self._speaker, key.removeprefix("read_"), value)
@@ -1055,6 +1264,16 @@ class MurmrApp:
 
     def shutdown(self) -> None:
         import faulthandler
+
+        if self._meeting is not None:  # save the notes taken so far
+            session, self._meeting = self._meeting, None
+            lines = session.stop()
+            if session.keep and lines:
+                self.meeting_store().save({
+                    "started": session.started, "duration": round(session.elapsed, 1),
+                    "sources": [c.capture.who for c in session.channels], "title": "", "summary": "",
+                    "lines": [line.__dict__ for line in lines],
+                    "summary_error": "Murmr closed before summarizing. Click Summarize again."})
 
         faulthandler.cancel_dump_traceback_later()
         if getattr(self, "watchdog", None):

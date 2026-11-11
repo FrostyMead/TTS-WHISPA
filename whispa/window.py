@@ -1191,6 +1191,7 @@ class MainWindow(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             self.nav.addButton(b, i)
             sl.addWidget(b)
+        self._add_meetings_page(ctl, sl)
         self._add_voice_training_page(ctl, sl)
         self.nav.idClicked.connect(self.show_page)
         sl.addStretch(1)
@@ -1211,6 +1212,21 @@ class MainWindow(QWidget):
         except AttributeError:
             pass
         self.show_page(0)
+
+    def _add_meetings_page(self, ctl, sidebar: QVBoxLayout) -> None:
+        """Meetings (meetings_page.py), listed after Dictionary."""
+        from .meetings_page import MeetingsPage
+
+        self.meetings = MeetingsPage(ctl)
+        index = self.pages.addWidget(self.meetings)
+        b = QPushButton("  Meetings")
+        b.setObjectName("nav")
+        b.setProperty("kind", "meetings")
+        b.setIconSize(QSize(18, 18))
+        b.setCheckable(True)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.nav.addButton(b, index)
+        sidebar.insertWidget(sidebar.indexOf(self.nav.button(self.pages.indexOf(self.settings))), b)
 
     def _add_voice_training_page(self, ctl, sidebar: QVBoxLayout) -> None:
         """Voice training (voice_training.py): the last page index, listed above Settings."""

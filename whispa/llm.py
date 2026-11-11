@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from typing import Callable
 
 from .config import LLMCleanup
 
@@ -359,12 +360,19 @@ class Polisher:
         timeout = 20 + (len(selection or "") / 40)  # long selections take longer to rewrite
         return clean_command_output(self._chat(msgs, timeout, 0.3), selection)
 
-    def _chat(self, msgs: list[dict], timeout: float, temperature: float) -> str:
+    def chat_once(self, system: str, user: str, timeout: float = 120, temperature: float = 0.2) -> str:
+        """One system + user exchange with a larger context (meeting notes)."""
+        return self._chat([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                          timeout, temperature, num_ctx=8192)
+
+    def _chat(self, msgs: list[dict], timeout: float, temperature: float, num_ctx: int | None = None) -> str:
         base = self.cfg.base_url.rstrip("/")
         if self.is_ollama:
             url = base + "/api/chat"
             body = {"model": self.cfg.model, "messages": msgs, "stream": False, "think": False,
                     "keep_alive": self.cfg.keep_alive, "options": {"temperature": temperature}}
+            if num_ctx:
+                body["options"]["num_ctx"] = num_ctx
         else:
             url = base + "/chat/completions"
             body = {"model": self.cfg.model, "messages": msgs, "temperature": temperature}
@@ -377,3 +385,77 @@ class Polisher:
         if self.is_ollama:
             return data["message"]["content"]
         return data["choices"][0]["message"]["content"]
+
+
+# --------------------------------------------------------------------------- meeting notes
+MEETING_CHUNK_PROMPT = (
+    "You are taking notes on part of a meeting transcript. Each line is '[time] Speaker: "
+    "text'. 'You' is the person who recorded the meeting; 'Others' are the other people on the "
+    "call. Write concise bullet-point notes of everything substantive: topics, facts and "
+    "numbers, decisions, commitments (say who will do what), and open questions. Only use what "
+    "is in the transcript. No preamble, no headings, just bullets.")
+MEETING_SUMMARY_PROMPT = (
+    "Write the summary of a meeting from the material below. Reply in Markdown, exactly in "
+    "this shape:\n"
+    "Title: <a short title, at most 8 words>\n"
+    "## Summary\n<3-6 bullets>\n"
+    "## Decisions\n<bullets, or 'None.'>\n"
+    "## Action items\n<'- [ ] Who: task (when, if said)' per item, or 'None.'>\n"
+    "## Open questions\n<bullets, or 'None.'>\n"
+    "'You' is the person who recorded the meeting and 'Others' are the other people; use real "
+    "names only if they appear in the material. Never invent names, dates, numbers or tasks.")
+CHUNK_CHARS = 6000
+
+
+def split_transcript(text: str, size: int = CHUNK_CHARS) -> list[str]:
+    chunks, cur, n = [], [], 0
+    for line in text.splitlines():
+        if n + len(line) > size and cur:
+            chunks.append("\n".join(cur))
+            cur, n = [], 0
+        cur.append(line)
+        n += len(line) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks
+
+
+def parse_summary(reply: str) -> tuple[str, str]:
+    """(title, markdown body) from the model's reply, with tidy bullets and a checklist of
+    action items."""
+    reply = reply.strip().removeprefix("```markdown").removeprefix("```").removesuffix("```").strip()
+    title, body, section = "", [], ""
+    for line in reply.splitlines():
+        m = re.match(r"\s*\**title\**\s*:\s*(.+)", line, re.IGNORECASE)
+        if m and not title:
+            title = m.group(1).strip().strip("*#\"' ")
+            continue
+        if line.lstrip().startswith("#"):
+            section = line.strip("# ").lower()
+        line = re.sub(r"^\s*[*•]\s+", "- ", line)  # one bullet style
+        if section.startswith("action") and line.startswith("- ") and not line.startswith("- ["):
+            item = line[2:].strip()
+            if re.fullmatch(r"(?:\w+:\s*)?none\.?", item, re.IGNORECASE):
+                continue  # "Others: None."
+            line = "- [ ] " + item
+        body.append(line)
+    text = "\n".join(body).strip()
+    text = re.sub(r"(## Action items\n)(?=\s*(##|$))", r"\1None.\n\n", text)
+    return title[:80], text
+
+
+def summarize_meeting(polisher: "Polisher", transcript: str,
+                      progress: Callable[[str], None] = lambda s: None) -> tuple[str, str]:
+    """Title and Markdown summary of a meeting transcript, with the local AI. Long
+    transcripts are summarized in parts first, then combined (fits a small model's context)."""
+    chunks = split_transcript(transcript)
+    if len(chunks) > 1:
+        notes = []
+        for i, chunk in enumerate(chunks, 1):
+            progress(f"Reading part {i} of {len(chunks)}…")
+            notes.append(polisher.chat_once(MEETING_CHUNK_PROMPT, chunk, timeout=180))
+        material = "Notes from each part of the meeting, in order:\n\n" + "\n\n".join(notes)
+    else:
+        material = "Transcript:\n\n" + transcript
+    progress("Writing the summary…")
+    return parse_summary(polisher.chat_once(MEETING_SUMMARY_PROMPT, material, timeout=240))
