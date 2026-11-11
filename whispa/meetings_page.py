@@ -78,13 +78,11 @@ class MeetingsPage(QScrollArea):
         sec.addWidget(setting_row("My microphone", "What you say, labelled “You”.", self.mic_sw,
                                   first=True))
         self.sys_sw = Switch(cfg.meeting_system and system_audio_supported())
-        self.sys_sw.setEnabled(system_audio_supported())
         self.sys_sw.toggled.connect(lambda on: ctl.update_setting("meeting_system", on))
-        sec.addWidget(setting_row(
-            "Computer audio", "The other people in your Teams, Zoom or Meet call (what your "
-            "speakers or headphones play), labelled “Others”." if system_audio_supported() else
-            "Not available on this computer yet (Windows only for now): the other people are "
-            "transcribed through your microphone.", self.sys_sw))
+        if system_audio_supported():  # Windows for now; elsewhere the mic hears everyone
+            sec.addWidget(setting_row(
+                "Computer audio", "The other people in your Teams, Zoom or Meet call (what your "
+                "speakers or headphones play), labelled “Others”.", self.sys_sw))
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 12, 0, 6)
         self.start_btn = QPushButton("Start meeting notes")
@@ -178,7 +176,9 @@ class MeetingsPage(QScrollArea):
     # -- refresh ---------------------------------------------------------
     def refresh(self) -> None:
         running = self.ctl.meeting_running()
-        self.start_btn.setText("Stop and summarize" if running else "Start meeting notes")
+        self.ai = self.ctl.ai_available() if hasattr(self.ctl, "ai_available") else True
+        stop = "Stop and summarize" if self.ai else "Stop"
+        self.start_btn.setText(stop if running else "Start meeting notes")
         self.start_btn.setObjectName("danger" if running else "primary")
         self.start_btn.style().unpolish(self.start_btn)
         self.start_btn.style().polish(self.start_btn)
@@ -240,6 +240,9 @@ class MeetingsPage(QScrollArea):
         when = dt.datetime.fromtimestamp(m["started"]).strftime("%A %d %B %Y, %H:%M")
         self.detail_meta.setText(f"{when} · {fmt_time(m.get('duration') or 0)}")
         state = self.ctl.summary_state(meeting_id)
+        ai = getattr(self, "ai", True)
+        self.resum_btn.setVisible(ai)  # summaries need the local AI
+        self.summary_view.setVisible(bool(ai or m.get("summary")))
         if m.get("summary"):
             import re
 

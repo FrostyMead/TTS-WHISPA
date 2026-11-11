@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLa
 
 from . import __version__, theme
 from .config import Config
+from .config import config_dir as config_mod_dir
 from .hotkey import Hotkey
 from .icons import app_icon, app_pixmap
 from .learn import Dictionary
@@ -615,10 +616,11 @@ class SettingsPage(QScrollArea):
         self.command = HotkeyField(hotkey_labels(cfg.command_hotkey) if cfg.command_hotkey else ["Off"])
         self.command.change_requested.connect(lambda: self._record("command_hotkey"))
         self.command.cancel_requested.connect(self._cancel_record)
-        sec.addWidget(setting_row("Command Mode",
-                                  "Select text, hold this and say what to do (“make this more "
-                                  "formal”, “translate to Spanish”). With nothing selected, it "
-                                  "writes what you ask for.", self.command))
+        self.command_row = setting_row("Command Mode",
+                                       "Select text, hold this and say what to do (“make this more "
+                                       "formal”, “translate to Spanish”). With nothing selected, it "
+                                       "writes what you ask for.", self.command)
+        sec.addWidget(self.command_row)
         self.paste_last = HotkeyField(hotkey_labels(cfg.paste_last_hotkey) if cfg.paste_last_hotkey
                                       else ["Off"])
         self.paste_last.change_requested.connect(lambda: self._record("paste_last_hotkey"))
@@ -719,6 +721,7 @@ class SettingsPage(QScrollArea):
             "with a local AI model. “Only when needed” runs it just on dictations that look like "
             "they need it, so the rest stay instant.", self.llm_mode, first=True)
         llm_row.layout().itemAt(0).widget().layout().addWidget(self.llm_row_desc)
+        self.llm_row = llm_row
         sec.addWidget(llm_row)
         sec.addWidget(self._switch_row("learn_from_edits", "Learn from my corrections",
                                        "After pasting, notice when you fix a word and remember it."))
@@ -742,22 +745,25 @@ class SettingsPage(QScrollArea):
         self.managed_note.setWordWrap(True)
         self.managed_note.setVisible(False)
         sec.addWidget(self.managed_note)
-        sec.addWidget(self._switch_row("save_training_audio", "Improve recognition with my voice",
-                                       "Keep your dictations' audio (and your Voice training "
-                                       "reading) to tune the speech model to your voice and "
-                                       "accent."))
-        sec.addWidget(self._switch_row("voice_clone", "Create a voice that sounds like me",
-                                       "Use your Voice training reading to build a read-aloud "
-                                       "voice like yours. Only from sentences you read live, "
-                                       "never from other recordings."))
-        self.excluded_apps = QLineEdit(", ".join(cfg.training_excluded_apps))
-        self.excluded_apps.setMinimumWidth(280)
-        self.excluded_apps.setCursorPosition(0)  # show the start of the list
-        self.excluded_apps.editingFinished.connect(
-            lambda: self._set("training_excluded_apps", self.excluded_apps.text()))
-        sec.addWidget(setting_row("Never keep recordings from",
-                                  "Apps where nothing you say is kept, comma separated. Password "
-                                  "fields are always skipped.", self.excluded_apps))
+        from . import capabilities
+
+        if capabilities.can_train():  # macOS can't train, so it keeps no voice data at all
+            sec.addWidget(self._switch_row("save_training_audio", "Improve recognition with my voice",
+                                           "Keep your dictations' audio (and your Voice training "
+                                           "reading) to tune the speech model to your voice and "
+                                           "accent."))
+            sec.addWidget(self._switch_row("voice_clone", "Create a voice that sounds like me",
+                                           "Use your Voice training reading to build a read-aloud "
+                                           "voice like yours. Only from sentences you read live, "
+                                           "never from other recordings."))
+            self.excluded_apps = QLineEdit(", ".join(cfg.training_excluded_apps))
+            self.excluded_apps.setMinimumWidth(280)
+            self.excluded_apps.setCursorPosition(0)  # show the start of the list
+            self.excluded_apps.editingFinished.connect(
+                lambda: self._set("training_excluded_apps", self.excluded_apps.text()))
+            sec.addWidget(setting_row("Never keep recordings from",
+                                      "Apps where nothing you say is kept, comma separated. "
+                                      "Password fields are always skipped.", self.excluded_apps))
         self.samples_info = Label()
         self.samples_info.setObjectName("faint")
         self.samples_info.setWordWrap(True)
@@ -775,8 +781,11 @@ class SettingsPage(QScrollArea):
         # Speech model: base or tuned to your voice (speech_model.py)
         from .speech_model import SpeechModelSection
 
-        self.speech_model = SpeechModelSection(ctl)
-        _section(lay, "Speech model").addWidget(self.speech_model)
+        self.speech_model = None
+        models_dir = config_mod_dir() / "models"
+        if capabilities.can_train() or (models_dir.exists() and any(models_dir.iterdir())):
+            self.speech_model = SpeechModelSection(ctl)  # (a tuned model copied here still shows)
+            _section(lay, "Speech model").addWidget(self.speech_model)
 
         # Read aloud
         from .speak import all_voices
@@ -828,8 +837,9 @@ class SettingsPage(QScrollArea):
         self.device.currentIndexChanged.connect(self._device_changed)
         self.device_note = Label("")
         self.device_note.setObjectName("faint")
-        sec.addWidget(setting_row("Speech model runs on", "", self.device))
-        sec.addWidget(self.device_note)
+        if capabilities.gpu_choice():  # macOS: always the built-in CPU path
+            sec.addWidget(setting_row("Speech model runs on", "", self.device))
+            sec.addWidget(self.device_note)
 
         # Updates
         sec = _section(lay, "Updates")
@@ -1072,9 +1082,15 @@ class SettingsPage(QScrollArea):
                 "confidential work information; consider keeping your voice data on a personal "
                 "computer instead." if reason else "")
             self.managed_note.setVisible(bool(reason))
-        self.speech_model.refresh()
+        if self.speech_model is not None:
+            self.speech_model.refresh()
         self._refresh_voices()
-        ok, text = self.ctl.llm_status()
+        ai = self.ctl.ai_available() if hasattr(self.ctl, "ai_available") else True
+        self.command_row.setVisible(ai)  # Command Mode and AI clean-up need the local AI
+        self.llm_row.setVisible(ai)
+        if hasattr(self.ctl, "refresh_capabilities"):
+            self.ctl.refresh_capabilities()
+        ok, text = self.ctl.llm_status() if ai else (False, "")
         self.llm_row_desc.setText(text)
         self.llm_row_desc.setObjectName("ok" if ok else "faint")
         self.llm_row_desc.style().unpolish(self.llm_row_desc)
@@ -1192,7 +1208,10 @@ class MainWindow(QWidget):
             self.nav.addButton(b, i)
             sl.addWidget(b)
         self._add_meetings_page(ctl, sl)
-        self._add_voice_training_page(ctl, sl)
+        from . import capabilities
+
+        if capabilities.can_train():  # recordings for tuning: only where tuning can run
+            self._add_voice_training_page(ctl, sl)
         self.nav.idClicked.connect(self.show_page)
         sl.addStretch(1)
         self.side_status = Label()

@@ -88,7 +88,7 @@ class MurmrApp:
         self.transcriber = Transcriber(cfg.model, cfg.device, cfg.quantization)
         self.sm = PTTStateMachine(
             hotkey, hands_free_key=cfg.hands_free_key or None, double_tap=cfg.double_tap_to_lock,
-            command_hotkey=self._parse_command_hotkey(cfg.command_hotkey, hotkey),
+            command_hotkey=self._command_hotkey(cfg, hotkey),
             on_start=lambda: self.bridge.start.emit(self.sm.mode), on_stop=self.bridge.stop.emit,
             on_cancel=self.bridge.cancel.emit, on_lock=self.bridge.lock.emit)
         self.hotkeys = HotkeyService(self.sm)
@@ -102,8 +102,11 @@ class MurmrApp:
         finish_pending_delete()
         threading.Thread(target=self.managed_reason, name="managed-check", daemon=True).start()
         self.dictionary = Dictionary(cdir / "dictionary.json")
+        from . import capabilities
+
+        # No training on this computer (macOS): don't keep dictation audio nothing can use.
         self.training = (TrainingStore(cdir / "training", cfg.training_max_mb)
-                         if cfg.save_training_audio else None)
+                         if cfg.save_training_audio and capabilities.can_train() else None)
         self.watcher = CorrectionWatcher(
             self.dictionary,
             on_learned=lambda cs: self.bridge.learned.emit(", ".join(c.meant for c in cs)),
@@ -186,6 +189,28 @@ class MurmrApp:
         threading.Thread(target=self._load_model, name="model-load", daemon=True).start()
         if sys.platform == "darwin":
             QTimer.singleShot(1500, self._check_mac_permissions)
+
+    def ai_available(self) -> bool:
+        """The local AI is installed: Command Mode, AI clean-up and meeting summaries work."""
+        from . import capabilities
+
+        return capabilities.local_ai_installed(self.cfg.llm_cleanup) or \
+            bool(getattr(self, "polisher", None) and self.polisher.available)
+
+    def _command_hotkey(self, cfg, dictate: Hotkey) -> Hotkey | None:
+        """Command Mode's shortcut, only if the local AI is there to carry out commands."""
+        from . import capabilities
+
+        if not capabilities.local_ai_installed(cfg.llm_cleanup):
+            return None
+        return self._parse_command_hotkey(cfg.command_hotkey, dictate)
+
+    def refresh_capabilities(self) -> None:
+        """Ollama installed (or removed) since start: switch Command Mode's shortcut to match."""
+        want = self._command_hotkey(self.cfg, self.hotkey) if self.ai_available() else None
+        if want != self.sm.command_hotkey:
+            self.hotkeys.set_hotkey(self.hotkey, self.cfg.hands_free_key or None, want)
+            log.info("Command Mode %s", "on" if want else "off (no local AI)")
 
     @staticmethod
     def _parse_command_hotkey(spec: str, dictate: Hotkey) -> Hotkey | None:
@@ -784,7 +809,8 @@ class MurmrApp:
             mid = self.meeting_store().save(meeting)
             log.info("Meeting saved: %s (%d lines, %.0f min)", mid, len(lines), session.elapsed / 60)
             self.bridge.meeting_changed.emit(mid)
-            self._summarize(mid)
+            if self.ai_available():
+                self._summarize(mid)
 
         threading.Thread(target=work, name="meeting-stop", daemon=True).start()
 
@@ -998,8 +1024,10 @@ class MurmrApp:
             if isinstance(value, str):
                 value = [a.strip() for a in value.split(",") if a.strip()]
         elif key == "save_training_audio":
+            from . import capabilities
+
             self.training = (TrainingStore(config_mod.config_dir() / "training", cfg.training_max_mb)
-                             if value else None)
+                             if value and capabilities.can_train() else None)
         elif key == "update_check":
             if value and self.updater.installed:
                 self.update_timer.start()

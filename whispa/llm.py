@@ -122,8 +122,9 @@ def find_ollama() -> str | None:
     if sys.platform == "win32":
         candidates.append(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"))
     elif sys.platform == "darwin":
-        candidates += ["/Applications/Ollama.app/Contents/Resources/ollama", "/usr/local/bin/ollama",
-                       "/opt/homebrew/bin/ollama"]
+        candidates += ["/Applications/Ollama.app/Contents/Resources/ollama",
+                       os.path.expanduser("~/Applications/Ollama.app/Contents/Resources/ollama"),
+                       "/usr/local/bin/ollama", "/opt/homebrew/bin/ollama"]
     else:
         candidates += ["/usr/local/bin/ollama", "/usr/bin/ollama"]
     return next((c for c in candidates if os.path.isfile(c)), None)
