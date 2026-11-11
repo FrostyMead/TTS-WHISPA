@@ -28,7 +28,7 @@ class Ctl:
             "checked": True, "busy": "", "has_previous": False, "whats_new": [], "staged": False},
             "voice_storage": {"clips": 0, "seconds": 0, "models": 0, "voices": 0, "bytes": 0, "folder": ""},
             "managed_reason": "", "meetings": [], "meeting_running": False, "captions_on": False,
-            "meeting_status": "", "training_stats": None}
+            "meeting_status": "", "training_stats": None, "permissions": {}}
         if name in defaults:
             return lambda *a, **k: defaults[name]
         return lambda *a, **k: None

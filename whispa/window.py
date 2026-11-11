@@ -1021,7 +1021,7 @@ class SettingsPage(QScrollArea):
     def refresh_permissions(self) -> None:
         if not self.perm_rows or not self.isVisible():
             return
-        for kind, ok in self.ctl.permissions().items():
+        for kind, ok in (self.ctl.permissions() or {}).items():
             if kind not in self.perm_rows:
                 continue
             state, btn = self.perm_rows[kind]
