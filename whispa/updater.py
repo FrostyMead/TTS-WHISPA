@@ -1,6 +1,6 @@
 """Updates from GitHub for installed copies (see whispa/_boot.py for the folder layout).
 
-* check():  newest commit on the branch whose CI run passed, compared with ours,
+* check():  newest signed release whose CI run passed (CI-only until keys are configured),
             plus the list of changes in between. If that can't be confirmed (GitHub
             unreachable, no passing run), there is no update: never an untested one.
 * stage():  download that snapshot, check every file against the commit's own git
@@ -21,6 +21,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+from urllib.parse import urlencode
 import shutil
 import subprocess
 import sys
@@ -36,6 +38,8 @@ log = logging.getLogger(__name__)
 API = "https://api.github.com"
 CODELOAD = "https://codeload.github.com"
 USER_AGENT = "Murmr-Updater"
+# Add offline signing public keys here (32-byte Ed25519 keys, hex encoded).
+RELEASE_KEYS: list[str] = []
 CI_WORKFLOW = "ci.yml"
 MAX_DOWNLOAD = 100 << 20  # the snapshot zip (about 1 MB today)
 MAX_UNPACKED = 300 << 20
@@ -59,6 +63,7 @@ class UpdateInfo:
     target_date: str = ""
     changes: list[str] = field(default_factory=list)
     error: str = ""
+    seq: int = 0
 
 
 class Updater:
@@ -113,6 +118,119 @@ class Updater:
             except FileNotFoundError:
                 pass
 
+    def mark_running(self, crash_log: Path) -> None:
+        if not self.runtime:
+            return
+        try:
+            crash_log = crash_log.resolve()
+            size = crash_log.stat().st_size if crash_log.exists() else 0
+            self._write_state("running", {"sha": self.current_version().get("sha", ""),
+                                          "crash_log": str(crash_log), "size": size})
+        except Exception:
+            log.exception("Couldn't record running marker")
+
+    def _write_state(self, name: str, data: dict) -> None:
+        path = self.runtime / name
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+
+    def mark_clean_exit(self) -> None:
+        if not self.runtime:
+            return
+        try:
+            marker = self.runtime / "running"
+            running = json.loads(marker.read_text(encoding="utf-8"))
+            marker.unlink()
+            path = self.runtime / "probation"
+            if path.exists():
+                probation = json.loads(path.read_text(encoding="utf-8"))
+                if probation["sha"] == running["sha"] == self.current_version().get("sha"):
+                    probation["clean_exits"] = probation.get("clean_exits", 0) + 1
+                    if probation["clean_exits"] >= 3 or time.time() - probation["time"] >= 86400:
+                        path.unlink()
+                    else:
+                        self._write_state("probation", probation)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            log.exception("Couldn't record clean exit")
+
+    def rollback_notice(self, save_report: Callable[[], Path]) -> str:
+        if not self.runtime or not (self.runtime / "rolled_back.json").exists():
+            return ""
+        message = "The last update crashed, so Murmr went back to the version before."
+        try:
+            path = save_report()
+            if path.is_file() and path.parent == Path.home() / "Desktop":
+                message += " A problem report is on your Desktop."
+        except Exception:
+            log.exception("Couldn't save rollback report")
+        try:
+            (self.runtime / "rolled_back.json").unlink()
+        except OSError:
+            pass
+        return message
+
+    def _check_skipped(self, sha: str, *, clear: bool = False) -> None:
+        if not self.runtime:
+            return
+        path = self.runtime / "skipped"
+        try:
+            skipped = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        if skipped.get("sha") == sha:
+            raise RuntimeError("This update crashed before and has been skipped; waiting for a newer version")
+        if clear:
+            path.unlink()
+
+    def signed_release(self) -> dict:
+        """Choose the highest authenticated sequence among recent published releases."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from cryptography.exceptions import InvalidSignature
+
+        candidates = []
+        for release in self._json("/releases?per_page=10"):
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            try:
+                assets = {a["name"]: a["browser_download_url"] for a in release["assets"]}
+                raw = self._get_limited(assets["release.json"], 16384)
+                sig = self._get_limited(assets["release.json.sig"], 64)
+                verified = False
+                for key in RELEASE_KEYS:
+                    try:
+                        Ed25519PublicKey.from_public_bytes(bytes.fromhex(key)).verify(sig, raw)
+                        verified = True
+                        break
+                    except (ValueError, InvalidSignature):
+                        continue
+                if not verified:
+                    continue
+                manifest = json.loads(raw)
+                if (not re.fullmatch(r"[0-9a-f]{40}", manifest["sha"])
+                        or type(manifest["seq"]) is not int or manifest["seq"] <= 0
+                        or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", manifest["version"])
+                        or not isinstance(manifest["date"], str)
+                        or release.get("tag_name") != "v" + manifest["version"]):
+                    continue
+                candidates.append(manifest)
+            except Exception:
+                log.warning("Ignoring an invalid or unavailable signed release", exc_info=True)
+        if not candidates:
+            raise RuntimeError("No valid signed release was found; waiting for a signed update")
+        manifest = max(candidates, key=lambda m: m["seq"])
+        if manifest["seq"] <= self.current_version().get("seq", 0):
+            raise RuntimeError("No newer signed release is available (release sequence is not newer)")
+        runs = self._json(f"/actions/workflows/{CI_WORKFLOW}/runs?" + urlencode({
+            "branch": self.branch, "head_sha": manifest["sha"], "status": "success",
+            "event": "push", "per_page": 100}))
+        if not any(r.get("head_sha") == manifest["sha"] and r.get("conclusion") == "success"
+                   for r in runs.get("workflow_runs", [])):
+            raise RuntimeError("The signed version has not passed CI tests")
+        return manifest
+
     # -- GitHub ------------------------------------------------------------------------
     def _get(self, url: str, timeout: float = 15):
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
@@ -136,7 +254,13 @@ class Updater:
     def check(self) -> UpdateInfo:
         info = UpdateInfo(current_sha=self.current_version().get("sha", ""))
         try:
-            sha, date = self.latest_good_commit()
+            if RELEASE_KEYS:
+                manifest = self.signed_release()
+                sha, date, info.seq = manifest["sha"], manifest["date"], manifest["seq"]
+            else:
+                log.warning("Release signing is not configured; using CI-only updates")
+                sha, date = self.latest_good_commit()
+            self._check_skipped(sha, clear=sha != info.current_sha)
             info.target_sha, info.target_date = sha, date
             staged = self.staged()
             if staged and staged.get("sha") == sha:
@@ -158,6 +282,11 @@ class Updater:
         """Download ``info.target_sha`` into app/next. Applied by the bootstrap on restart."""
         if not self.runtime:
             raise RuntimeError("This is a development copy; update it with git")
+        self._check_skipped(info.target_sha)
+        if RELEASE_KEYS:
+            manifest = self.signed_release()
+            if manifest["sha"] != info.target_sha or manifest["seq"] != info.seq:
+                raise RuntimeError("The signed release changed; check for updates again")
         app = self.runtime / "app"
         nxt, tmp = app / "next", app / "next.partial"
         shutil.rmtree(tmp, ignore_errors=True)
@@ -184,7 +313,7 @@ class Updater:
         (src / "version.json").write_text(json.dumps({
             "sha": info.target_sha, "date": info.target_date, "repo": self.repo,
             "branch": self.branch, "changes": info.changes, "staged_at": time.time(),
-            "env": env,
+            "env": env, "seq": info.seq,
         }, indent=2), encoding="utf-8")
         src.replace(nxt) if src != tmp else tmp.replace(nxt)
         shutil.rmtree(tmp, ignore_errors=True)

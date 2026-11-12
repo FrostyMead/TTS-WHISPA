@@ -4,3 +4,8 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+
+# Local signing artifacts / secrets
+release.json
+release.json.sig
+*.pem

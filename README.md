@@ -497,3 +497,42 @@ launcher.pyw   windowless start on Windows (base pythonw.exe + the venv's packag
 Murmr is MIT licensed (see `LICENSE`). The Parakeet model it downloads is NVIDIA's, released
 under CC-BY-4.0; the ONNX conversion used here comes from
 [istupakov/parakeet-tdt-0.6b-v3-onnx](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx).
+
+
+### Signing updater releases (offline)
+
+Until `whispa/updater.py`'s `RELEASE_KEYS` contains a public key, updates use CI
+only and log a warning. Generate your key on a trusted local machine, never in CI:
+
+```powershell
+.venv/Scripts/python.exe scripts/sign_release.py --generate-key ~/.murmr-signing/release_key.pem
+```
+
+Put the printed public hex key in `RELEASE_KEYS` (a list; multiple keys allow rotation),
+commit it, and ship that trusted updater to users. Keep and back up the private PEM
+outside the repository and GitHub; on Windows restrict its ACL to your account
+(POSIX creation uses owner-only mode). Default signing key:
+`~/.murmr-signing/release_key.pem`; override with `--key` or `MURMR_SIGNING_KEY`.
+After reviewing a full commit SHA and waiting for its main-branch CI to pass:
+
+```powershell
+.venv/Scripts/python.exe scripts/sign_release.py --sign --version 0.8.16 --sha FULL_40_CHARACTER_SHA
+.venv/Scripts/python.exe scripts/sign_release.py --publish
+```
+
+Review the generated `release.json` before publishing. Sequence numbers use Unix
+seconds: wait at least a second between signatures and keep your clock correct;
+each release must have a greater sequence than the previous one. Publishing uploads
+`release.json` and the binary detached `release.json.sig` to `v<version>` with
+`--clobber`, preserving installers created by `release.yml`, or creates the release
+if absent. Run from this repository with authenticated `gh`. Signing never runs in
+GitHub Actions. Existing CI-only installations must receive the trusted public key
+before signature enforcement protects them; installers still bootstrap via CI.
+
+Probation lasts 24 hours or three clean exits. A remaining runtime `running` marker
+plus growth of its recorded `crash.log` triggers rollback and quarantines that SHA.
+The restored version must contain these safeguards to display the rollback notice,
+write the automatic report and keep enforcing signed updates. In particular, the
+first rollout can restore an older updater without these features; deploy a trusted
+baseline before relying on the complete rollback/signing protocol. Native Windows
+and macOS crash/restart flows should also be smoke-tested on installed copies.

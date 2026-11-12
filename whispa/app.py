@@ -222,6 +222,7 @@ class MurmrApp:
         self._tray_click: tuple[int, str] | None = None  # where clicking a notification goes
         if self.updater.installed:
             QTimer.singleShot(8000, self.updater.mark_healthy)  # we started: keep this version
+            QTimer.singleShot(3000, self._announce_rollback)
             QTimer.singleShot(6000, self._announce_update)
             if cfg.update_check:
                 QTimer.singleShot(90_000, lambda: self.check_updates(quiet=True))
@@ -2151,6 +2152,14 @@ class MurmrApp:
                 "whats_new": cur.get("changes", []),
                 "staged": bool(staged and last and staged.get("sha") == last.target_sha)}
 
+    def _announce_rollback(self) -> None:
+        from . import report
+
+        message = self.updater.rollback_notice(lambda: report.build(
+            "The last update crashed and was automatically rolled back.", self))
+        if message:
+            self.tray.showMessage("Murmr recovered from a crash", message, tray_icon(), 15000)
+
     def _announce_update(self) -> None:
         """After an update: a "What's new" note (not on the first run after installing)."""
         cur = self.updater.current_version()
@@ -2425,6 +2434,7 @@ class MurmrApp:
         self.hotkeys.stop()
         self.recorder.shutdown()
         self.tray.hide()
+        self.updater.mark_clean_exit()
 
     def quit(self) -> None:
         self.shutdown()
@@ -2576,8 +2586,6 @@ def enable_crash_log() -> None:
     """Python-level crash dumps (native faults included) go to crash.log."""
     import faulthandler
 
-    if faulthandler.is_enabled():
-        return  # ensure_std_streams already sent them to stdio.log
     try:
         path = config_mod.config_dir() / "crash.log"
         f = open(path, "a", encoding="utf-8")  # noqa: SIM115 - must stay open
@@ -2635,6 +2643,9 @@ def run(background: bool = False) -> int:
         except Exception:  # noqa: BLE001
             pass
 
+    from .updater import Updater
+
+    Updater().mark_running(config_mod.config_dir() / "crash.log")
     app = MurmrApp(qapp, cfg)
     app.instance = instance
     instance.listen(app.show_window)

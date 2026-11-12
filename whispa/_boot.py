@@ -51,6 +51,47 @@ def _version(path: str) -> str:
         return "?"
 
 
+def _full_version(path: str) -> str:
+    with open(os.path.join(path, "version.json"), encoding="utf-8-sig") as f:
+        return json.load(f).get("sha", "")
+
+
+def _write_state(name: str, data: dict) -> None:
+    path = os.path.join(RUNTIME, name)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(path + ".tmp", path)
+
+
+def check_probation() -> bool:
+    """Consume crash evidence before another update. Errors must never block startup."""
+    rolled_back = False
+    try:
+        path = os.path.join(RUNTIME, "running")
+        with open(path, encoding="utf-8") as f:
+            running = json.load(f)
+        with open(os.path.join(RUNTIME, "probation"), encoding="utf-8") as f:
+            probation = json.load(f)
+        if time.time() - probation["time"] >= 86400 or probation.get("clean_exits", 0) >= 3:
+            os.remove(os.path.join(RUNTIME, "probation"))
+            return False
+        crashed = os.path.getsize(running["crash_log"]) > running["size"]
+        sha = _full_version(CURRENT)
+        if (crashed and running["sha"] == probation["sha"] == sha
+                and _full_version(PREVIOUS) == probation["previous_sha"]):
+            _write_state("skipped", {"sha": sha})
+            if rollback("the updated version crashed during probation"):
+                rolled_back = True
+                _write_state("rolled_back.json", {"from": sha, "to": _full_version(CURRENT),
+                                                   "why": "crash during probation"})
+                os.remove(os.path.join(RUNTIME, "probation"))
+                shutil.rmtree(NEXT, ignore_errors=True)
+                return True
+    except Exception as exc:
+        log(f"probation check: {exc}")
+    return rolled_back
+
+
 def _replace(src: str, dst: str) -> None:
     for attempt in range(20):  # the previous Murmr may still be shutting down
         try:
@@ -64,6 +105,13 @@ def _replace(src: str, dst: str) -> None:
 def apply_update() -> None:
     if not os.path.isfile(os.path.join(NEXT, "version.json")):
         return
+    try:
+        with open(os.path.join(RUNTIME, "skipped"), encoding="utf-8") as f:
+            if json.load(f).get("sha") == _full_version(NEXT):
+                log("not applying a version quarantined after a crash")
+                return
+    except Exception:
+        pass
     shutil.rmtree(PREVIOUS, ignore_errors=True)
     if os.path.isdir(CURRENT):
         _replace(CURRENT, PREVIOUS)
@@ -74,6 +122,11 @@ def apply_update() -> None:
         raise
     with open(TRIAL, "w", encoding="utf-8") as f:
         f.write(_version(CURRENT))
+    try:
+        _write_state("probation", {"sha": _full_version(CURRENT), "time": time.time(),
+                                    "previous_sha": _full_version(PREVIOUS), "clean_exits": 0})
+    except Exception as exc:
+        log(f"couldn't record probation: {exc}")
     log(f"updated {_version(PREVIOUS)} -> {_version(CURRENT)}")
     refresh_self()
 
@@ -86,7 +139,12 @@ def rollback(reason: str) -> bool:
     shutil.rmtree(bad, ignore_errors=True)
     if os.path.isdir(CURRENT):
         _replace(CURRENT, bad)
-    _replace(PREVIOUS, CURRENT)
+    try:
+        _replace(PREVIOUS, CURRENT)
+    except OSError:
+        if os.path.isdir(bad) and not os.path.isdir(CURRENT):
+            _replace(bad, CURRENT)
+        raise
     shutil.rmtree(bad, ignore_errors=True)
     try:
         os.remove(TRIAL)
@@ -162,6 +220,7 @@ def main() -> None:
     # which would stop the update from being applied (and the next one, from this process).
     os.chdir(RUNTIME)
     args = sys.argv[1:]
+    probation_rollback = check_probation()
     if "--rollback" in args:
         args.remove("--rollback")
         rollback("requested")
@@ -172,7 +231,8 @@ def main() -> None:
         except OSError as exc:
             log(f"rollback failed, starting the current version: {exc}")
     try:
-        apply_update()
+        if not probation_rollback:
+            apply_update()
     except OSError as exc:
         # e.g. a folder is open in Explorer. Start what we have; the update stays staged.
         log(f"couldn't apply the update yet, starting the current version: {exc}")
