@@ -164,11 +164,20 @@ def _polisher(llm_cfg, model: str):
     return Polisher(replace(llm_cfg, model=model, provider=provider, timeout_s=60, keep_alive="2m"))
 
 
+MAX_CAUGHT = 1  # test dictations it may get wrong in a way the safety check catches
+
+
 def quality_check(llm_cfg, model: str) -> str | None:
-    """None if ``model`` handled the tricky dictations, else what went wrong."""
+    """None if ``model`` handled the tricky dictations, else what went wrong.
+
+    What matters is what you'd get. A refusal, or an answer that loses or changes your
+    words and still looks like an edit, would be pasted: that fails. An answer the safety
+    check (llm.check_edit) rejects, like starting to write the poem it was dictated, never
+    reaches you: the transcript is pasted as said. One of those is allowed."""
     from .llm import check_edit
 
     p = _polisher(llm_cfg, model)
+    caught = []
     for text, keep in QUALITY_SAMPLES:
         try:
             out = p._complete(text, app="", terms=[]).strip()
@@ -176,8 +185,12 @@ def quality_check(llm_cfg, model: str) -> str | None:
             kind = getattr(exc, "kind", "")
             return ("it refused ordinary dictation" if kind == "guardrail"
                     else f"it failed on a test dictation ({exc})")
-        if keep.lower() not in out.lower() or check_edit(text, out, []):
-            return f"it changed a test dictation too much ({text!r} became {out[:60]!r})"
+        if check_edit(text, out, []):
+            caught.append(text)  # rejected when dictating too: you'd get your words as said
+        elif keep.lower() not in out.lower():
+            return f"it changed a test dictation ({text!r} became {out[:60]!r})"
+    if len(caught) > MAX_CAUGHT:
+        return f"it didn't just tidy {len(caught)} of {len(QUALITY_SAMPLES)} test dictations"
     return None
 
 

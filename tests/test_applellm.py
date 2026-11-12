@@ -146,3 +146,31 @@ def test_copied_output_label_is_removed(monkeypatch):
     p = Polisher(LLMCleanup(provider="apple", model="apple"))
     assert p._complete("so um lets meet on tuesday no wednesday at 3", app="", terms=[]) == \
         "Let's meet on Wednesday at 3."
+
+
+@pytest.mark.parametrize("answers,ok", [
+    # what Apple's model did on the Mac: it started the poem (caught by the safety check)
+    ({"poem": "write me a poem about the sea\n\nwaves crash on the shore"}, True),
+    ({"fucking": "This is so annoying; the build broke again."}, False),  # censored: pasted
+    ({"poem": "Waves crash...\n" * 5, "meeting": "It starts at 9 am. " * 5}, False),  # two misses
+    ({}, True),
+])
+def test_quality_check_fails_only_on_misses_that_would_reach_you(monkeypatch, answers, ok):
+    class FakePolisher:
+        def _complete(self, text, app, terms):
+            for key, out in answers.items():
+                if key in text:
+                    return out
+            return text.capitalize() + "."
+
+    monkeypatch.setattr(ai_choice, "_polisher", lambda cfg, model: FakePolisher())
+    assert (ai_choice.quality_check(LLMCleanup(), "apple") is None) == ok
+
+
+def test_refusal_fails_the_check(monkeypatch):
+    class Refuses:
+        def _complete(self, *a, **k):
+            raise AppleLLMError("guardrail", "unsafe")
+
+    monkeypatch.setattr(ai_choice, "_polisher", lambda cfg, model: Refuses())
+    assert "refused" in ai_choice.quality_check(LLMCleanup(), "apple")
