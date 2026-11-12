@@ -497,7 +497,11 @@ class SyncService:
                 msg = json.loads(data)
             except ValueError:
                 continue
-            if isinstance(msg, dict) and msg.get("murmr") == "who" and msg.get("id") != self.id:
+            # Only paired computers, or anyone while a pairing code is showing, get an answer:
+            # the rest of the network doesn't learn this computer's name.
+            pairing = bool(self.pairing and self.pairing["until"] > time.time())
+            if isinstance(msg, dict) and msg.get("murmr") == "who" and msg.get("id") != self.id \
+                    and (pairing or msg.get("id") in self.peers):
                 try:
                     self._udp.sendto(json.dumps(self._hello()).encode(), addr)
                 except OSError:
@@ -683,7 +687,7 @@ class SyncService:
         self.peers[pid] = Peer(pid, name, key, addr)
         self.pairing = None
         self._save()
-        log.info("Sync: paired with %s", name)
+        log.info("Sync: paired with a computer (%d paired)", len(self.peers))
         self.on_event("paired", {"id": pid, "name": name})
         self.sync_soon()
 
@@ -693,7 +697,10 @@ class SyncService:
         return okm[:32], okm[32:]  # initiator -> responder, responder -> initiator
 
     def _local_files(self) -> dict[str, dict[str, int]]:
-        return {kind: folder_manifest(self.folders[kind]) for kind in KINDS}
+        """What this computer shares: only the kinds switched on here (names and sizes of the
+        others aren't even listed)."""
+        shared = set(self.accepts())
+        return {kind: folder_manifest(self.folders[kind]) if kind in shared else {} for kind in KINDS}
 
     def _serve_sync(self, ch: Channel, msg: dict, addr) -> None:
         peer = self.peers.get(str(msg.get("id")))
@@ -737,6 +744,8 @@ class SyncService:
                 self._report(peer, n, got_files)
                 return
             if t == "get" and req.get("kind") in KINDS:
+                if req["kind"] not in self.accepts():  # switched off here: never sent
+                    raise SyncError("not shared")
                 folder = self.folders[req["kind"]] / str(req.get("name", ""))
                 if not _NAME_OK.match(str(req.get("name", ""))) or not folder.is_dir():
                     raise SyncError("no such folder")
@@ -760,7 +769,7 @@ class SyncService:
                 status = self._sync_locked(peer)
             except (OSError, SyncError, KeyError, ValueError) as exc:
                 status = Status(time.time(), False, _friendly(exc))
-                log.info("Sync with %s failed: %s", peer.name, exc)
+                log.info("Sync with a paired computer failed: %s", exc)
             finally:
                 self._lock.release()
             if status.ok or status.text != "busy":
@@ -827,7 +836,7 @@ class SyncService:
                         ch.send({"t": "get", "kind": kind, "name": name})
                         recv_folder(ch, self.folders[kind], name)
                         got.append((kind, name))
-                if kind in (remote.get("accepts") or []):
+                if kind in (remote.get("accepts") or []) and kind in self.accepts():
                     for name in sorted(set(mine) - set(theirs) - gone):
                         if not _NAME_OK.match(name):
                             continue
@@ -862,7 +871,7 @@ class SyncService:
             parts.append(f"sent {len(sent)}")
         status = Status(time.time(), True, ", ".join(parts) or "Up to date")
         self.status[peer.id] = status
-        log.info("Synced with %s: %s", peer.name, status.text)
+        log.info("Synced with a paired computer: %s", status.text)
         for kind, name in got:
             self.on_event("received", {"kind": kind, "name": name, "from": peer.name})
         self.on_event("status", {"id": peer.id})

@@ -404,6 +404,7 @@ class MeetingSession:
         self._voiceprints: dict[int, list] = {}  # id(line) -> its voiceprints (memory only)
         self._last_print: dict[str, object] = {}  # channel -> the voiceprint of the next line
         self._named: set[str] = set()  # names you gave during the meeting
+        self.no_remember: set[str] = set()  # named, but they didn't agree to be remembered
         self.final_prints: dict = {}  # after the meeting: name -> voiceprint (memory only)
         self._stop = threading.Event()
         self._lock = threading.Lock()

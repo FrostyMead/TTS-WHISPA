@@ -330,3 +330,87 @@ def test_recorder_stops_keeping_audio_past_its_hard_limit():
     for _ in range(50):  # 5 s of audio
         r._callback(block, 1600, None, None)
     assert r._samples == 16000
+
+
+# --------------------------------------------------------------------------- privacy review
+def test_sync_never_lists_or_sends_kinds_switched_off_here(tmp_path):
+    from whispa import sync
+    from whispa.learn import Dictionary
+
+    def svc(name, accepts):
+        d = tmp_path / name
+        d.mkdir()
+        s = sync.SyncService(d, Dictionary(d / "d.json"), name=lambda: name, accepts=lambda: accepts,
+                             udp_port=None, tcp_port=0, auto=False, host="127.0.0.1")
+        s.start()
+        return s
+
+    pc, mac = svc("PC", []), svc("Mac", ["models", "voices"])  # the PC shares neither
+    try:
+        voice = pc.folders["voices"] / "me"
+        voice.mkdir(parents=True)
+        (voice / "voice.onnx").write_bytes(b"x")
+        assert pc._local_files() == {"models": {}, "voices": {}}  # not even listed
+        code = pc.start_pairing()
+        mac.pair_with(code, "127.0.0.1", pc.port)
+        assert mac.sync_with(pc.id).ok
+        assert not (mac.folders["voices"] / "me").exists()
+    finally:
+        pc.stop()
+        mac.stop()
+
+
+def test_logs_keep_out_what_you_said(tmp_path, caplog):
+    import logging
+
+    from whispa.learn import Correction, CorrectionWatcher, Dictionary
+
+    caplog.set_level(logging.INFO)
+    d = Dictionary(tmp_path / "d.json")
+    d.learn(Correction("cooper netties", "Kubernetes"))
+    d.learn(Correction("cooper netties", "Kubernetes"))
+    from whispa.llm import Polisher
+    from whispa.config import LLMCleanup
+
+    p = Polisher(LLMCleanup(enabled=True, when="always"))
+    p.active = lambda wait=False: True
+    p._complete = lambda *a, **k: "Here is a secret poem about the private launch plans"
+    p.polish("write me a poem about the launch")
+    assert "secret poem" not in caplog.text and "launch plans" not in caplog.text
+
+
+def test_report_settings_leave_out_your_text():
+    from whispa.config import Config
+    from whispa.report import safe_settings
+
+    cfg = Config()
+    cfg.custom_mode_prompt = "Always mention Project Falcon"
+    cfg.device_name = "Angus's MacBook"
+    cfg.llm_cleanup.base_url = "https://ai.example.com"
+    data = safe_settings(cfg)
+    flat = str(data)
+    assert "Falcon" not in flat and "Angus" not in flat and "example.com" not in flat
+
+
+def test_one_click_setup_refuses_a_server_elsewhere():
+    import threading
+
+    from whispa import ai_setup
+    from whispa.config import LLMCleanup
+
+    with pytest.raises(RuntimeError, match="only installs the AI on this computer"):
+        ai_setup.setup(LLMCleanup(base_url="https://ai.example.com"), lambda *a: None, threading.Event())
+
+
+def test_pending_voice_delete_keeps_trying_until_gone(tmp_path, monkeypatch):
+    from whispa import config as config_mod
+    from whispa import privacy
+
+    monkeypatch.setattr(config_mod, "config_dir", lambda: tmp_path)
+    stuck = tmp_path / "training"
+    stuck.mkdir()
+    (stuck / "clip.wav").write_bytes(b"x")
+    (tmp_path / "delete-voice-data").write_text("pending")
+    monkeypatch.setattr(privacy.shutil, "rmtree", lambda *a, **k: None)  # "in use"
+    privacy.finish_pending_delete()
+    assert (tmp_path / "delete-voice-data").exists() and privacy.remaining_voice_data()

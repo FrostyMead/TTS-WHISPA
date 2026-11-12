@@ -13,6 +13,81 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 
+def copy_private(text: str) -> bool:
+    """Put text on the clipboard just to paste it, marked so it isn't kept elsewhere:
+    Windows leaves it out of Clipboard history and the cloud clipboard (Win+V); macOS
+    clipboard managers skip it (org.nspasteboard transient / concealed types). False if
+    that isn't possible here (then the caller uses the plain clipboard)."""
+    try:
+        if sys.platform == "win32":
+            return _win_copy_private(text)
+        if sys.platform == "darwin":
+            from AppKit import NSPasteboard, NSPasteboardTypeString
+
+            pb = NSPasteboard.generalPasteboard()
+            pb.clearContents()
+            transient, concealed = "org.nspasteboard.TransientType", "org.nspasteboard.ConcealedType"
+            pb.declareTypes_owner_([NSPasteboardTypeString, transient, concealed], None)
+            ok = pb.setString_forType_(text, NSPasteboardTypeString)
+            pb.setString_forType_("", transient)
+            pb.setString_forType_("", concealed)
+            return bool(ok)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Private clipboard failed: %s", exc)
+    return False
+
+
+def _win_copy_private(text: str) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.RegisterClipboardFormatW.restype = wintypes.UINT
+    user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+
+    def block(data: bytes):
+        h = kernel32.GlobalAlloc(0x0002, max(1, len(data)))  # GMEM_MOVEABLE
+        if not h:
+            raise OSError("GlobalAlloc failed")
+        p = kernel32.GlobalLock(h)
+        ctypes.memmove(p, data, len(data))
+        kernel32.GlobalUnlock(h)
+        return h
+
+    for _ in range(10):  # another app may be holding the clipboard for a moment
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.02)
+    else:
+        return False
+    try:
+        user32.EmptyClipboard()
+        h = block((text + "\0").encode("utf-16-le"))
+        if not user32.SetClipboardData(13, h):  # CF_UNICODETEXT; the clipboard owns h now
+            kernel32.GlobalFree(h)
+            return False
+        zero = (0).to_bytes(4, "little")
+        for name, data in (("ExcludeClipboardContentFromMonitorProcessing", b"\0"),
+                           ("CanIncludeInClipboardHistory", zero),
+                           ("CanUploadToCloudClipboard", zero)):
+            fmt = user32.RegisterClipboardFormatW(name)
+            hb = block(data)
+            if not user32.SetClipboardData(fmt, hb):
+                kernel32.GlobalFree(hb)
+        return True
+    finally:
+        user32.CloseClipboard()
+
+
 def _is_wayland() -> bool:
     return sys.platform.startswith("linux") and bool(os.environ.get("WAYLAND_DISPLAY"))
 
@@ -123,7 +198,8 @@ class Injector:
                 previous = pyperclip.paste()
             except Exception:  # noqa: BLE001 - non-text clipboard content
                 previous = None
-        pyperclip.copy(text)
+        if not copy_private(text):  # kept out of clipboard history / managers where possible
+            pyperclip.copy(text)
         time.sleep(0.04)
         self._send_shortcut(self.shortcut)
         if previous is not None:

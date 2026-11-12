@@ -449,7 +449,7 @@ class Polisher:
                              any_words=bool(language) or (bool(mode_prompt) and not allow_drop and
                                                           mode_prompt not in _BUILTIN_PROMPTS()))
         if problem:
-            log.warning("LLM output rejected (%s): %r", problem, out[:80])
+            log.warning("LLM output rejected (%s)", problem.split(" (")[0])
             return text
         log.info("LLM polish %.0f ms", (time.perf_counter() - t0) * 1000)
         return out

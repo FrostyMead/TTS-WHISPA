@@ -56,11 +56,9 @@ def delete_everything(cfg: config_mod.Config) -> bool:
     speech model was active (the app should restart onto the base model)."""
     from .asr import BASE_MODEL
 
-    leftovers = False
     for path in voice_dirs().values():
         shutil.rmtree(path, ignore_errors=True)
-        leftovers |= path.exists()  # e.g. the tuned model is still loaded (Windows locks it)
-    if leftovers:
+    if remaining_voice_data():  # e.g. the tuned model is still loaded (Windows locks it)
         (config_mod.config_dir() / "delete-voice-data").write_text("pending", encoding="utf-8")
     tuned = cfg.model != BASE_MODEL
     if tuned:
@@ -76,8 +74,22 @@ def finish_pending_delete() -> None:
     if marker.exists():
         for path in voice_dirs().values():
             shutil.rmtree(path, ignore_errors=True)
+        left = remaining_voice_data()
+        if left:  # keep trying at every start until it's really gone
+            log.warning("Voice data still couldn't be deleted (%d items); trying again next time",
+                        len(left))
+            return
         marker.unlink(missing_ok=True)
         log.info("Finished deleting voice data")
+
+
+def remaining_voice_data() -> list[Path]:
+    """Voice files a delete couldn't remove yet (in use). Empty when it's all gone."""
+    left = []
+    for path in voice_dirs().values():
+        if path.exists():
+            left += [p for p in path.rglob("*") if p.is_file()] or [path]
+    return left
 
 
 def managed_device() -> str:

@@ -275,7 +275,11 @@ def setup(llm_cfg, progress: Callable[[str, float | None], None], cancel: thread
     one you chose) and check it's quick enough here. Returns the model name; the measured
     time goes to ``llm_cfg.measured_s``."""
     from .ai_choice import APPLE, KNOWN, SLOW_S, detect, recommend, smaller, speed_check
-    from .llm import find_ollama
+    from .llm import find_ollama, is_local_url
+
+    if not is_local_url(llm_cfg.base_url):
+        raise RuntimeError("One-click setup only installs the AI on this computer; your AI server "
+                           "is set to another address in config.json")
 
     if not getattr(llm_cfg, "auto_model", True):
         exe = find_ollama() or install_ollama(progress, cancel)

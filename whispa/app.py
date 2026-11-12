@@ -301,6 +301,10 @@ class MurmrApp:
         try:
             import urllib.request
 
+            from .llm import is_local_url
+
+            if not is_local_url(self.cfg.llm_cleanup.base_url):
+                raise RuntimeError("not a server on this computer")
             body = json.dumps({"model": self.cfg.llm_cleanup.model, "keep_alive": 0}).encode()
             urllib.request.urlopen(urllib.request.Request(
                 self.cfg.llm_cleanup.base_url.rstrip("/") + "/api/generate", data=body,
@@ -912,8 +916,8 @@ class MurmrApp:
             selection = f.read_selection()
             if selection is None and not f.is_terminal:  # Ctrl+C in a terminal would interrupt
                 selection = self.injector.copy_selection()
-            log.info("Command %r on %s (%d chars selected)", instruction, f.app or "?",
-                     len(selection or ""))
+            log.info("Command (%d words) on %s (%d chars selected)", len(instruction.split()),
+                     f.app or "?", len(selection or ""))
             result = self.polisher.command(instruction, selection, app=f.app)
             if not result.strip():
                 raise RuntimeError("The AI returned nothing")
@@ -981,7 +985,7 @@ class MurmrApp:
         log.info("Style: %s (%s)", style, styles.category(f.app, f.title, f.is_terminal))
         if triggers:  # last, so neither the AI nor the rules touch the saved text
             text = textproc.expand_snippets(text, snippets)
-            log.info("Snippet: %s", ", ".join(triggers))
+            log.info("Snippets used: %d", len(triggers))
         # Never end with a newline: some apps treat it as Enter and send the message.
         return text.strip()
 
@@ -1376,7 +1380,7 @@ class MurmrApp:
         try:
             title, summary = summarize_meeting(self.polisher, transcript_text(meeting["lines"]), progress)
             meeting.update(title=title, summary=summary, summary_error="")
-            log.info("Meeting summarized: %s", title)
+            log.info("Meeting summarized (%d characters)", len(title or ""))
         except Exception as exc:  # noqa: BLE001
             log.exception("Meeting summary failed")
             meeting["summary_error"] = f"The summary failed ({exc}). Click Summarize again."
@@ -1394,6 +1398,13 @@ class MurmrApp:
         self.meeting_store().delete(meeting_id)
 
     # -- voices remembered across meetings (people.py, opt-in) --------------------
+    def needs_voice_consent(self, name: str) -> bool:
+        """Naming someone would remember their voice for the first time: ask first."""
+        name = " ".join(name.split())
+        return bool(self.cfg.remember_voices and name and name != "You"
+                    and not name.startswith(("Person ", "Others"))
+                    and name not in self.people_store().names())
+
     def people_store(self):
         from .people import PeopleStore
 
@@ -1412,15 +1423,20 @@ class MurmrApp:
             if name == "You" or name.startswith(("Person ", "Others")):
                 continue
             unit = v / (np.linalg.norm(v) or 1.0)
-            if name in session._named:  # you said who it is
+            if name in getattr(session, "no_remember", set()):
+                continue  # they didn't agree
+            if name in session._named:  # you said who it is (and that they agreed)
                 store.learn(name, v)
             elif name in known and float(unit @ known[name]) >= 0.6:  # recognised, and clearly them
                 store.learn(name, v)
 
-    def rename_live_speaker(self, old: str, new: str) -> None:
-        """Name someone during the meeting (live transcript)."""
+    def rename_live_speaker(self, old: str, new: str, remember: bool = True) -> None:
+        """Name someone during the meeting (live transcript). ``remember``: they agreed to
+        their voice being remembered (only matters with Remember voices on)."""
         if self._meeting is not None:
             self._meeting.rename(old, new)
+            if not remember:
+                self._meeting.no_remember.add(" ".join(new.split()))
             log.info("Named a speaker during the meeting")
 
     def edit_live_line(self, index: int, text: str) -> None:
@@ -1436,7 +1452,7 @@ class MurmrApp:
             if learned:
                 self.bridge.learned.emit(", ".join(c.meant for c in learned))
 
-    def rename_speaker(self, meeting_id: str, old: str, new: str) -> None:
+    def rename_speaker(self, meeting_id: str, old: str, new: str, remember: bool = True) -> None:
         """Name a speaker: every line of theirs, and the summary, use the new name. Giving
         two labels the same name merges them (one person heard as two)."""
         import re
@@ -1459,7 +1475,7 @@ class MurmrApp:
         recent = getattr(self, "_recent_prints", {}).get(meeting_id, {})
         if old in recent:  # still in memory: the meeting just ended
             recent[new] = recent.pop(old)
-            if self.cfg.remember_voices and not new.startswith(("Person ", "Others")):
+            if self.cfg.remember_voices and remember and not new.startswith(("Person ", "Others")):
                 self.people_store().learn(new, recent[new])
         log.info("Meeting %s: renamed a speaker", meeting_id)
 
@@ -1752,7 +1768,8 @@ class MurmrApp:
             return f"Unknown setting {key}"
         setattr(cfg, key, value)
         config_mod.save(cfg)
-        log.info("Setting %s = %r", key, value)
+        # Values that are numbers or switches only: text (your instructions, names) stays out.
+        log.info("Setting %s = %s", key, value if isinstance(value, (bool, int, float)) else "(changed)")
         return None
 
     def _safe_open_mic(self) -> None:

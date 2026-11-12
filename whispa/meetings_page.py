@@ -92,7 +92,8 @@ class MeetingsPage(QScrollArea):
         area, lay = _page("Meetings",
                           "Take notes in calls and meetings: Murmr transcribes you and the other "
                           "people as they talk, then writes a summary with decisions and action "
-                          "items. All on this computer, and no audio is kept, only the text.")
+                          "items. Transcribed on this computer, and no audio is kept, only the "
+                          "text.")
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setWidget(area.takeWidget())
@@ -374,6 +375,23 @@ class MeetingsPage(QScrollArea):
             self.ctl.people_store().forget_all()
             self._fill_people()
 
+    def _consent(self, name: str) -> bool:
+        """Before remembering someone's voice for the first time: did they agree?"""
+        if not hasattr(self.ctl, "needs_voice_consent") or not self.ctl.needs_voice_consent(name):
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("Remember this voice?")
+        box.setText(f"Remember {name}'s voice?")
+        box.setInformativeText(
+            f"Murmr would keep a voiceprint of {name} (a description of how they sound: no audio, "
+            "nothing they said) on this computer, to recognise them in later meetings. It's their "
+            f"personal information: only choose Remember if {name} has agreed. You can forget it "
+            "any time on the Meetings page.")
+        remember = box.addButton("Remember", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Just this meeting", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() is remember
+
     def _live_clicked(self, url) -> None:
         """During the meeting: name a speaker, or correct a line."""
         from urllib.parse import unquote
@@ -392,7 +410,7 @@ class MeetingsPage(QScrollArea):
                     "The same name as someone else merges them.",
                     text="" if old.startswith(("Person ", "Others", "You")) else old)
                 if ok and new.strip():
-                    self.ctl.rename_live_speaker(old, new.strip())
+                    self.ctl.rename_live_speaker(old, new.strip(), self._consent(new.strip()))
             elif url.scheme() == "line":
                 index = int(url.path() or url.toString()[len("line:"):])
                 if 0 <= index < len(s.lines):
@@ -416,7 +434,7 @@ class MeetingsPage(QScrollArea):
                                        f"Who is “{old}”? (Same name as someone else merges them.)",
                                        text="" if old.startswith(("Person ", "Others")) else old)
         if ok and new.strip():
-            self.ctl.rename_speaker(self._meeting["id"], old, new.strip())
+            self.ctl.rename_speaker(self._meeting["id"], old, new.strip(), self._consent(new.strip()))
             self.open_meeting(self._meeting["id"])
 
     def _copy_summary(self) -> None:
@@ -494,6 +512,16 @@ class MeetingsPage(QScrollArea):
         if self.ctl.meeting_running():
             self.ctl.stop_meeting()
         else:
+            if not self.ctl.cfg.meeting_notice_ok:  # once: everyone should know
+                answer = QMessageBox.question(
+                    self, "Before you start",
+                    "Let everyone in the meeting know you're taking notes. In some places, "
+                    "recording or transcribing a conversation needs everyone's consent.\n\n"
+                    "Murmr transcribes on this computer and keeps only the text.",
+                    QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+                if answer != QMessageBox.StandardButton.Ok:
+                    return
+                self.ctl.update_setting("meeting_notice_ok", True)
             err = self.ctl.start_meeting()
             if err:
                 QMessageBox.warning(self, "Meeting notes", err)

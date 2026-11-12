@@ -69,6 +69,15 @@ def safe_settings(cfg) -> dict:
     if llm.get("prompt"):
         llm["prompt"] = "[custom prompt]"
     data["replacements"] = f"[{len(data.get('replacements') or {})} replacements]"
+    for key in ("custom_mode_prompt", "device_name"):  # your own words / names
+        if data.get(key):
+            data[key] = "[set]"
+    if data.get("training_excluded_apps"):
+        data["training_excluded_apps"] = f"[{len(data['training_excluded_apps'])} apps]"
+    if llm.get("base_url"):
+        from .llm import is_local_url
+
+        llm["base_url"] = "[this computer]" if is_local_url(llm["base_url"]) else "[another address]"
     return data
 
 
@@ -222,11 +231,23 @@ def build(description: str, ctl=None, dest: Path | None = None, cdir: Path | Non
     return path
 
 
+def contents(path: Path, max_chars: int = 200_000) -> str:
+    """Everything in a report zip, as text: what you'd be sending."""
+    parts = []
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            text = z.read(name).decode("utf-8", "replace")
+            parts.append(f"===== {name} =====\n{text}")
+    out = "\n\n".join(parts)
+    return out if len(out) <= max_chars else out[:max_chars] + "\n[…]"
+
+
 def issue_url(description: str, ctl=None) -> str:
     """A new GitHub issue with the description and system summary filled in."""
     info = system_info(ctl)
     keep = ("Murmr", "Build", "OS", "macOS", "Machine", "Status")
     summary = "\n".join(f"- {k}: {info[k]}" for k in keep if info.get(k))
+    description = redact(description)  # your user name / home folder, if you pasted a path
     first = description.strip().splitlines()[0][:80] if description.strip() else "Problem report"
     body = (f"**What happened**\n\n{description.strip()}\n\n**System**\n\n{redact(summary)}\n\n"
             "_Drag the report zip from your Desktop here to attach it._\n")
@@ -278,6 +299,11 @@ def show_dialog(ctl, parent=None) -> None:
     result.setObjectName("ok")
     result.setVisible(False)
     lay.addWidget(result)
+    preview = QPlainTextEdit()  # exactly what's in the zip, before you send it anywhere
+    preview.setReadOnly(True)
+    preview.setMinimumHeight(180)
+    preview.setVisible(False)
+    lay.addWidget(preview)
     row = QHBoxLayout()
     issue = QPushButton("Open a GitHub issue")
     issue.setToolTip("Opens github.com with your description filled in. Attach the report there.")
@@ -303,8 +329,10 @@ def show_dialog(ctl, parent=None) -> None:
             result.setVisible(True)
             return
         state["path"] = path
-        result.setText(f"Saved “{path.name}” to your {path.parent.name}. Send it to the developer, "
-                       "or attach it to a GitHub issue.")
+        result.setText(f"Saved “{path.name}” to your {path.parent.name}. Check what's in it below, "
+                       "then send it to the developer or attach it to a GitHub issue.")
+        preview.setPlainText(contents(path))
+        preview.setVisible(True)
         result.setVisible(True)
         issue.setEnabled(True)
         save.setText("Show the file")

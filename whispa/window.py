@@ -1420,9 +1420,18 @@ class SettingsPage(QScrollArea):
                 "Delete all your recordings, tuned speech models and voices from this computer? "
                 "This can't be undone.") != QMessageBox.StandardButton.Yes:
             return
-        if self.ctl.delete_all_voice():
-            QMessageBox.information(self, "Murmr", "Deleted. Murmr restarts to use the standard "
-                                    "speech model again.")
+        restart = self.ctl.delete_all_voice()
+        from .privacy import remaining_voice_data
+
+        left = remaining_voice_data()
+        if left:  # in use (e.g. a loaded model): removed when Murmr starts again
+            QMessageBox.information(self, "Murmr", f"Deleted, except {len(left)} file(s) in use. "
+                                    "They're removed when Murmr restarts.")
+            restart = True
+        if restart:
+            if not left:
+                QMessageBox.information(self, "Murmr", "Deleted. Murmr restarts to use the "
+                                        "standard speech model again.")
             self.ctl.restart()
             return
         self.refresh()

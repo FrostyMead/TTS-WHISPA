@@ -279,7 +279,9 @@ a summary with decisions and a checklist of action items. Meetings are saved on 
   as Person 1, Person 2, ..., with WeSpeaker voiceprints (a 26 MB local model). Click a name
   in the transcript to name that person; it changes in every line and in the summary, and
   giving two labels the same name merges them. With only a mic, your own voice is recognised
-  as "You" from your recordings. Voiceprints exist only during the meeting and are never saved.
+  as "You" from your recordings. Voiceprints exist only during the meeting, unless you switch
+  on **Remember voices of people I name**: then, for each person who agreed (Murmr asks), a
+  voiceprint (no audio) is kept in `people.json` so later meetings name them. See PRIVACY.md.
 - **Live captions:** a floating bar with what's being said right now, for any audio. On its
   own it saves nothing; during meeting notes it shows the meeting.
 - **Light on the computer:** lines become final at pauses and their audio is dropped; the
@@ -437,10 +439,11 @@ murmr-cli --transcribe x.wav  # run Parakeet on a file (prints raw + cleaned)
 Logs: `whispa.log` next to the config (tray → Open log).
 
 **Report a problem** (tray menu, or the button at the bottom of Settings) saves one zip to
-your Desktop: what you describe, versions, OS, settings and logs. Learned words, meeting
-titles, replacements, API keys and your user name are taken out; audio, history, the
-Dictionary and meetings are never included. You choose whether to send it (it can open a
-pre-filled GitHub issue).
+your Desktop: what you describe, versions, OS, settings and logs, and shows you exactly
+what's in it. The logs don't record what you say or write; settings leave out replacements,
+Custom mode instructions, your computer's name, API keys and the AI server address; your user
+name and home folder are taken out. Audio, history, the Dictionary and meetings are never
+included. You choose whether to send it (it can open a pre-filled GitHub issue).
 
 ## Architecture
 

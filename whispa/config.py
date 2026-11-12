@@ -158,6 +158,7 @@ class Config:
     meeting_system: bool = True  # and the computer's audio ("Others"; Windows)
     meeting_room: bool = False  # several people share the mic (meeting room): tell their voices apart
     remember_voices: bool = False  # recognise people you've named in later meetings (people.py)
+    meeting_notice_ok: bool = False  # you confirmed you'll tell people you're taking notes
     # Read aloud (local Kokoro voice)
     read_voice: str = "af_heart"
     read_speed: float = 1.0

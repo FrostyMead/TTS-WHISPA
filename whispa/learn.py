@@ -567,5 +567,5 @@ class CorrectionWatcher:
             self.on_final(s["sample"], corrections)
         learned = [c for c in corrections if self.dictionary.learn(c)]
         if learned:
-            log.info("Learned: %s", ", ".join(f"{c.heard!r}->{c.meant!r}" for c in learned))
+            log.info("Learned %d correction(s)", len(learned))
             self.on_learned(learned)
