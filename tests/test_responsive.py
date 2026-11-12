@@ -8,7 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QScrollArea  # noqa: E402
+from PySide6.QtWidgets import QApplication, QScrollArea, QWidget  # noqa: E402
 
 from tests.test_capabilities_ui import Ctl  # noqa: E402
 
@@ -96,3 +96,31 @@ def test_scrolling_past_a_dropdown_never_changes_it(window):
         app.sendEvent(combo, ev)
         assert combo.currentIndex() == before, combo
     assert bar.value() >= top  # the page scrolled instead (or was already at the bottom)
+
+
+def test_wheel_over_every_page_and_scrollbar_is_safe(window):
+    """Scrolling over any page, its scrollbar, or a control on it never recurses (0.8.11
+    guarded the scrollbars themselves, which forwarded the wheel to themselves forever)."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QAbstractScrollArea, QAbstractSlider, QComboBox, QScrollBar
+
+    def wheel(target):
+        ev = QWheelEvent(QPointF(3, 3), QPointF(target.mapToGlobal(QPoint(3, 3))), QPoint(0, 0),
+                         QPoint(0, -120), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                         Qt.ScrollPhase.NoScrollPhase, False)
+        app.sendEvent(target, ev)
+
+    app, w = window
+    w.resize(700, 420)  # small, so most pages scroll
+    for i in range(w.pages.count()):
+        w.show_page(i)
+        settle(app, 5)
+        page = w.pages.widget(i)
+        targets = [x for x in page.findChildren(QWidget)
+                   if isinstance(x, (QScrollBar, QComboBox, QAbstractSlider, QAbstractScrollArea))
+                   and x.isVisible()]
+        for t in targets:
+            wheel(t)
+    assert not any(isinstance(x, QScrollBar) and x.property("_wheel_guarded")
+                   for x in w.findChildren(QWidget))

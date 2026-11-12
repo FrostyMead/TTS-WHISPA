@@ -7,7 +7,7 @@ from PySide6.QtCore import (QEvent, QObject, QTimer, Property, QEasingCurve, QPo
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSlider, QAbstractSpinBox, QApplication,
                                QBoxLayout, QAbstractButton, QComboBox, QFrame, QHBoxLayout, QLabel,
-                               QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+                               QPushButton, QScrollBar, QSizePolicy, QVBoxLayout, QWidget)
 
 from . import theme
 
@@ -370,16 +370,27 @@ class _WheelGuard(QObject):
     the pointer happens to pass over: the wheel only changes one you've clicked into.
     Otherwise the page scrolls as if the control wasn't there."""
 
+    _forwarding = False
+
     def eventFilter(self, obj, event) -> bool:
-        if event.type() != QEvent.Type.Wheel or obj.hasFocus():
+        if event.type() != QEvent.Type.Wheel or self._forwarding or isinstance(obj, QScrollBar):
             return False
-        w = obj.parentWidget()
-        while w is not None and not isinstance(w, QAbstractScrollArea):
-            w = w.parentWidget()
-        if w is not None:
-            bar = w.verticalScrollBar()
-            if bar is not None and bar.isVisible():
-                QApplication.sendEvent(bar, event)
+        try:
+            if obj.hasFocus():
+                return False
+            w = obj.parentWidget()
+            while w is not None and not isinstance(w, QAbstractScrollArea):
+                w = w.parentWidget()
+            if w is not None:
+                bar = w.verticalScrollBar()
+                if bar is not None and bar is not obj and bar.isVisible():
+                    self._forwarding = True  # never let the forwarded wheel come back here
+                    try:
+                        QApplication.sendEvent(bar, event)
+                    finally:
+                        self._forwarding = False
+        except RuntimeError:  # the widget was deleted mid-event
+            return False
         return True
 
 
@@ -392,8 +403,9 @@ def guard_wheel(root: QWidget) -> None:
     if _wheel_guard is None:
         _wheel_guard = _WheelGuard()
     for w in root.findChildren(QWidget):
+        # A scrollbar is a slider too, but it's what the wheel should move: never guard it.
         if isinstance(w, (QComboBox, QAbstractSpinBox, QAbstractSlider)) \
-                and not w.property("_wheel_guarded"):
+                and not isinstance(w, QScrollBar) and not w.property("_wheel_guarded"):
             w.setProperty("_wheel_guarded", True)
             if w.focusPolicy() == Qt.FocusPolicy.WheelFocus:
                 w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # the wheel alone doesn't focus it
