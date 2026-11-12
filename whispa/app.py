@@ -616,9 +616,11 @@ class MurmrApp:
             self.overlay.flash(self._mic_problem(), error=True, seconds=4)
             return
         self.recording = True
-        self._start_focus = None
-        if mode == "dictate" and self.cfg.insert_original:  # where the text should go
-            threading.Thread(target=self._capture_start_focus, name="start-focus", daemon=True).start()
+        self._rec_target = None
+        if mode == "dictate" and self.cfg.insert_original:  # where this recording's text goes
+            self._rec_target = {"focus": None, "done": threading.Event()}
+            threading.Thread(target=self._capture_start_focus, args=(self._rec_target,),
+                             name="start-focus", daemon=True).start()
         if not self.transcriber.ready.is_set():
             self.overlay.flash("Speech model still loading: your words appear when it's ready",
                                seconds=3)
@@ -761,11 +763,14 @@ class MurmrApp:
                 return "Microphone not allowed: System Settings > Privacy > Microphone"
         return "Microphone unavailable: pick one in Settings > Microphone"
 
-    def _capture_start_focus(self) -> None:
+    @staticmethod
+    def _capture_start_focus(target: dict) -> None:
         try:
-            self._start_focus = focus.inspect()
+            target["focus"] = focus.inspect()
         except Exception:  # noqa: BLE001
-            self._start_focus = None
+            target["focus"] = None
+        finally:
+            target["done"].set()
 
     def _end_recording(self):
         self.recording = False
@@ -788,7 +793,7 @@ class MurmrApp:
         if self.mode == "command":
             self.worker.submit(self._process_command, audio, sr)
         else:
-            self.worker.submit(self._process, audio, sr, live)
+            self.worker.submit(self._process, audio, sr, live, getattr(self, "_rec_target", None))
 
     def _on_cancel(self, silent: bool) -> None:
         if not self.recording:
@@ -823,8 +828,10 @@ class MurmrApp:
             log.debug("Screen names failed: %s", exc)
 
     # -- worker thread ---------------------------------------------------
-    def _process(self, audio, sr, live: LiveSession | None = None) -> None:
+    def _process(self, audio, sr, live: LiveSession | None = None, target: dict | None = None) -> None:
         self.polisher.last_issue = ""
+        self._cur_target = target  # where this recording started (Insert into original field)
+        partly_live = live is not None and bool(live.parts)
         try:
             if not self.transcriber.ready.wait(timeout=300):
                 raise RuntimeError("Speech model is still loading")
@@ -858,7 +865,9 @@ class MurmrApp:
                                         False)
         log.info("%.1fs audio -> %d chars, ASR %.0f ms, total %.0f ms (%s)", len(audio) / sr,
                  len(text), t_asr * 1000, (time.perf_counter() - t0) * 1000, self.transcriber.backend)
-        if len(audio) >= 2 * sr and t_asr > 0:  # how fast recognition really is here
+        # How fast recognition really is here: only dictations timed whole (part of a long one is
+        # transcribed while you talk, so its end-of-dictation time would overstate the speed).
+        if len(audio) >= 2 * sr and t_asr > 0 and not partly_live:
             speeds = getattr(self, "_asr_speeds", [])
             speeds.append(len(audio) / sr / t_asr)
             self._asr_speeds = speeds[-20:]
@@ -867,8 +876,12 @@ class MurmrApp:
                                   if _quiet(audio) else "Didn't catch that")
             self.bridge.done.emit("")
             return
-        # Kept before pasting (history and Paste last): a failed paste never loses it.
-        self._remember(raw, text, len(audio) / sr)
+        # Kept before pasting (history and Paste last): a failed paste never loses it, and a
+        # failed save (a full disk...) never stops the paste.
+        try:
+            self._remember(raw, text, len(audio) / sr)
+        except Exception:  # noqa: BLE001
+            log.exception("Keeping the dictation in history failed")
         try:
             self._deliver(text)
         except Exception as exc:  # noqa: BLE001
@@ -939,9 +952,16 @@ class MurmrApp:
         where dictation started, brought back first. If that can't be confirmed, the copy
         card shows the text instead of pasting it somewhere you didn't mean."""
         f = focus.inspect()
-        start = getattr(self, "_start_focus", None)
-        if not self.cfg.insert_original or start is None or start._handle is None:
+        target = getattr(self, "_cur_target", None)
+        if not self.cfg.insert_original or target is None:
             return f
+        target["done"].wait(1.5)  # a very short dictation: the start may still be being read
+        start = target["focus"]
+        if start is None:  # couldn't tell where it started: don't guess
+            self._card_reason = "Couldn't tell which field you started in · copied to clipboard"
+            return f
+        if start._handle is None:
+            return f  # this system can't identify fields (or no permission): paste as usual
         if f.same_element(start):
             return f
         log.info("Focus moved from %s to %s while transcribing; going back", start.app or "?",
@@ -1279,7 +1299,7 @@ class MurmrApp:
             from .speakers import Embedder
 
             self._embedder = Embedder()
-        session = MeetingSession(caps, self.transcriber.transcribe, keep=keep, embedder=self._embedder,
+        session = MeetingSession(caps, self.transcriber.transcribe_background, keep=keep, embedder=self._embedder,
                                  profile_dir=config_mod.config_dir() / "training",
                                  room=self.cfg.meeting_room,
                                  people=self.people_store().known() if self.cfg.remember_voices else None)
@@ -1521,7 +1541,7 @@ class MurmrApp:
 
                     self._embedder = Embedder()
                 lines = filetrans.transcribe_file(
-                    p, self.transcriber.transcribe, cancel=cancel, embedder=self._embedder,
+                    p, self.transcriber.transcribe_background, cancel=cancel, embedder=self._embedder,
                     progress=lambda f, msg: self.bridge.file_progress.emit(f"{p.name}: {msg}", f))
                 if not lines:
                     self.bridge.file_progress.emit("error:No speech found in that file", -1.0)

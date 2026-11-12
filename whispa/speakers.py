@@ -210,31 +210,41 @@ def regroup_lines(embs: list[np.ndarray], seconds: list[float]) -> tuple[list[in
 
 def regroup(embs: list[np.ndarray], threshold: float = REGROUP_SAME) -> list[int]:
     """Group voiceprints into people using all of them at once (average linkage): far
-    steadier than deciding line by line. Returns a group number per voiceprint."""
+    steadier than deciding line by line. Returns a group number per voiceprint.
+
+    The table of average similarities is updated in place after each merge (the
+    Lance-Williams formula), so a long meeting regroups in a fraction of a second."""
     n = len(embs)
     if n == 0:
         return []
-    x = np.stack([e / (np.linalg.norm(e) or 1.0) for e in embs])
-    sums = x @ x.T  # summed similarity between groups (each starts as one line)
+    x = np.stack([e / (np.linalg.norm(e) or 1.0) for e in embs]).astype(np.float64)
+    avg = x @ x.T
+    np.fill_diagonal(avg, -np.inf)
     sizes = np.ones(n)
     alive = np.ones(n, bool)
-    group = list(range(n))
-    np.fill_diagonal(sums, -np.inf)
+    parent = list(range(n))
     while alive.sum() > 1:
-        avg = sums / np.outer(sizes, sizes)
-        avg[~alive, :] = -np.inf
-        avg[:, ~alive] = -np.inf
-        i, j = np.unravel_index(int(np.argmax(avg)), avg.shape)
+        flat = int(np.argmax(avg))
+        i, j = divmod(flat, n)
         if avg[i, j] < threshold:
             break
-        sums[i, :] += sums[j, :]
-        sums[:, i] += sums[:, j]
-        sums[i, i] = -np.inf
+        # merge j into i: the average to every other group, weighted by size
+        row = (sizes[i] * avg[i] + sizes[j] * avg[j]) / (sizes[i] + sizes[j])
+        avg[i, :] = row
+        avg[:, i] = row
+        avg[i, i] = -np.inf
+        avg[j, :] = -np.inf
+        avg[:, j] = -np.inf
         sizes[i] += sizes[j]
         alive[j] = False
-        group = [i if g == j else g for g in group]
+        parent[j] = i
+    def root(k: int) -> int:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
     order: dict[int, int] = {}
-    return [order.setdefault(g, len(order)) for g in group]
+    return [order.setdefault(root(k), len(order)) for k in range(n)]
 
 
 def voice_profile(embedder: Embedder, training_dir, max_clips: int = 12) -> np.ndarray | None:

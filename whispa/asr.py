@@ -79,6 +79,34 @@ def select_providers(device: str) -> tuple[list[str], str]:
     return ["CPUExecutionProvider"], "CPU"
 
 
+class _TurnTaking:
+    """One recognition at a time, dictation first: a meeting or file waiting for its turn
+    lets a dictation that arrives go ahead (it can't interrupt one that's running, but
+    those pieces are short)."""
+
+    def __init__(self):
+        self._cv = threading.Condition()
+        self._busy = False
+        self._urgent = 0
+
+    def acquire(self, urgent: bool) -> None:
+        with self._cv:
+            if urgent:
+                self._urgent += 1
+            try:
+                while self._busy or (not urgent and self._urgent):
+                    self._cv.wait()
+            finally:
+                if urgent:
+                    self._urgent -= 1
+            self._busy = True
+
+    def release(self) -> None:
+        with self._cv:
+            self._busy = False
+            self._cv.notify_all()
+
+
 class Transcriber:
     def __init__(self, model: str = "nemo-parakeet-tdt-0.6b-v3", device: str = "auto",
                  quantization: str = "auto"):
@@ -92,6 +120,7 @@ class Transcriber:
         self._model = None
         self._vad_model = None
         self._lock = threading.Lock()
+        self._turns = _TurnTaking()
 
     def _quant(self, label: str) -> str | None:
         q = (self.quantization or "auto").lower()
@@ -116,11 +145,15 @@ class Transcriber:
 
     def switch_device(self, device: str) -> None:
         """Reload on another device (e.g. the CPU while training uses the GPU). Blocking."""
-        with self._lock:
-            self.ready.clear()
-            self.device = device
-            self._model = None
-            self.load()
+        self._turns.acquire(urgent=True)
+        try:
+            with self._lock:
+                self.ready.clear()
+                self.device = device
+                self._model = None
+                self.load()
+        finally:
+            self._turns.release()
 
     def load(self) -> None:
         try:
@@ -157,16 +190,26 @@ class Transcriber:
     def _warmup(self) -> None:
         self._model.recognize(np.zeros(16000, np.float32), sample_rate=16000)
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
+    def transcribe(self, audio: np.ndarray, sample_rate: int, urgent: bool = True) -> str:
+        """Dictation (``urgent``) goes before meeting notes and file transcription."""
         if not self.ready.is_set():
             raise RuntimeError("Model is not loaded")
         audio = np.asarray(audio, dtype=np.float32)
         if audio.size == 0:
             return ""
-        with self._lock:
+        self._turns.acquire(urgent)
+        try:
+            if not self.ready.is_set() or self._model is None:
+                raise RuntimeError("Model is not loaded")
             if audio.size / sample_rate > LONG_AUDIO_S:
                 return self._transcribe_long(audio, sample_rate)
             return str(self._model.recognize(audio, sample_rate=sample_rate)).strip()
+        finally:
+            self._turns.release()
+
+    def transcribe_background(self, audio: np.ndarray, sample_rate: int) -> str:
+        """Meeting notes, captions and files: wait for any dictation."""
+        return self.transcribe(audio, sample_rate, urgent=False)
 
     def _transcribe_long(self, audio: np.ndarray, sample_rate: int) -> str:
         import onnx_asr

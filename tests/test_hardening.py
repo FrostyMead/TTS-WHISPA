@@ -414,3 +414,39 @@ def test_pending_voice_delete_keeps_trying_until_gone(tmp_path, monkeypatch):
     monkeypatch.setattr(privacy.shutil, "rmtree", lambda *a, **k: None)  # "in use"
     privacy.finish_pending_delete()
     assert (tmp_path / "delete-voice-data").exists() and privacy.remaining_voice_data()
+
+
+def test_dictation_goes_before_meeting_and_file_recognition():
+    from whispa.asr import _TurnTaking
+
+    turns = _TurnTaking()
+    order = []
+    turns.acquire(urgent=False)  # a meeting piece is being recognised
+
+    def wait(name, urgent):
+        turns.acquire(urgent)
+        order.append(name)
+        time.sleep(0.05)
+        turns.release()
+
+    background = threading.Thread(target=wait, args=("meeting", False))
+    background.start()
+    time.sleep(0.1)  # the next meeting piece is already waiting...
+    dictation = threading.Thread(target=wait, args=("dictation", True))
+    dictation.start()  # ...when you dictate
+    time.sleep(0.1)
+    turns.release()
+    background.join(2)
+    dictation.join(2)
+    assert order == ["dictation", "meeting"]
+
+
+def test_long_meeting_regroups_quickly():
+    from whispa.speakers import regroup
+
+    rng = np.random.default_rng(0)
+    centers = rng.normal(size=(6, 256))
+    embs = [centers[i % 6] + rng.normal(scale=0.5, size=256) for i in range(800)]
+    t0 = time.perf_counter()
+    groups = regroup(embs)
+    assert time.perf_counter() - t0 < 1.0 and len(set(groups)) == 6
