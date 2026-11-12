@@ -1,8 +1,19 @@
-"""Per-app writing styles: casual in chats, proper in email, your exact words in code.
+"""Dictation modes: how your words come out.
 
-``category(app, title, is_terminal)`` sorts the focused app into chat / email / code /
-other. ``apply(text, style)`` adjusts the finished text; the "exact" style also tells the
-app to skip the AI rewrite, so prompts and commands are never reworded.
+A mode is picked per kind of app (chat / email / code / everything else), or chosen by hand
+from the tray, Settings or a shortcut (``Config.mode``; "auto" = per app):
+
+* exact      your words as heard (fillers out, corrections applied), never an AI rewrite
+* casual     Message: light tidy, natural tone, no full stop on a one-line message
+* very_casual  lowercase, no full stop
+* formal     proper sentences
+* email      greeting, paragraphs and sign-off on their own lines
+* notes      your points as a tidy list, nothing invented
+* technical  identifiers, file names, commands and code kept exactly as said
+* custom     your own instructions (Settings > Dictation modes > Custom instructions)
+
+``category(app, title, is_terminal)`` sorts the focused app; ``apply(text, style)`` adjusts
+the finished text; ``prompt_for(style)`` is what the AI clean-up is told for that mode.
 """
 
 from __future__ import annotations
@@ -10,7 +21,10 @@ from __future__ import annotations
 import re
 
 CATEGORIES = ("chat", "email", "code", "other")
-STYLES = ("formal", "casual", "very_casual", "exact")
+STYLES = ("formal", "casual", "very_casual", "exact", "email", "notes", "technical", "custom")
+# Modes the AI always runs for (they reshape the text), and how strictly its answer is checked.
+AI_ALWAYS = {"email", "notes", "technical", "custom"}
+MODE_CYCLE = ("auto", "casual", "formal", "email", "notes", "technical", "exact", "custom")
 DEFAULTS = {"chat": "casual", "email": "formal", "code": "exact", "other": "formal"}
 
 CATEGORY_LABELS = {
@@ -21,10 +35,45 @@ CATEGORY_LABELS = {
 }
 STYLE_LABELS = {
     "formal": "Formal · proper sentences",
-    "casual": "Casual · no full stop at the end",
+    "casual": "Message · light tidy, no full stop at the end",
     "very_casual": "Very casual · lowercase, no full stop",
     "exact": "Exact · your words, no AI rewrite",
+    "email": "Email · greeting, paragraphs, sign-off",
+    "notes": "Notes · your points as a tidy list",
+    "technical": "Technical · code and names kept exactly",
+    "custom": "Custom · your own instructions",
 }
+MODE_NAMES = {"auto": "Automatic", "formal": "Formal", "casual": "Message", "very_casual": "Very casual",
+              "exact": "Exact", "email": "Email", "notes": "Notes", "technical": "Technical",
+              "custom": "Custom"}
+
+_PROMPTS = {
+    "email": "Format it as an email. Keep every sentence the speaker said, in order, with proper "
+             "punctuation and capitalisation. If they start with a greeting (\"Hi Sam\"), put it "
+             "on its own line followed by a blank line. If they end with a sign-off (\"Thanks, "
+             "Angus\"), put it after a blank line, with the name on its own line. Split a long "
+             "body into short paragraphs. Don't add a greeting, sign-off, subject or anything "
+             "they didn't say.",
+    "notes": "Format it as notes: one point per line, each line starting with \"- \", in the "
+             "speaker's order. Write each point as a clean phrase with proper capitalisation "
+             "(names capitalised). Drop filler like \"okay so\"; never add facts, conclusions "
+             "or points they didn't say.",
+    "technical": "This is technical text. Keep code identifiers, file names, paths, commands, "
+                 "flags, URLs, version numbers and product names exactly as said, including "
+                 "their case (camelCase, snake_case, kebab-case). Don't add punctuation inside "
+                 "them and don't expand abbreviations.",
+}
+
+
+def prompt_for(style: str, custom: str = "") -> str:
+    """Extra instructions for the AI clean-up in this mode ("" = the normal clean-up)."""
+    if style == "custom":
+        return custom.strip()
+    return _PROMPTS.get(style, "")
+
+
+def mode_name(mode: str) -> str:
+    return MODE_NAMES.get(mode, mode)
 
 # Lower-case process names (Windows, without .exe) and app names (macOS).
 _APPS = {

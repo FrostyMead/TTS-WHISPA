@@ -123,6 +123,10 @@ class Config:
     append_space: bool = True
     replacements: dict[str, str] = field(default_factory=dict)
     styles: dict[str, str] = field(default_factory=_default_styles)  # chat/email/code/other
+    mode: str = "auto"  # dictation mode: auto (per app, from styles) or one for everything (styles.py)
+    custom_mode_prompt: str = ""  # instructions for the Custom mode
+    mode_hotkey: str = ""  # press to switch to the next mode ("" = off)
+    output_language: str = ""  # write dictations in this language (translation; "" = as spoken)
     screen_context: bool = True  # spell names the way they appear in the window you dictate into
     llm_cleanup: LLMCleanup = field(default_factory=LLMCleanup)
     # Learning

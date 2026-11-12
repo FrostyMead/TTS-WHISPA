@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QLockFile, QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
@@ -53,6 +53,7 @@ class Bridge(QObject):
     update_changed = Signal()
     update_auto = Signal()  # an update is downloading for an automatic restart
     paste_last = Signal()
+    cycle_mode = Signal()
     read_aloud = Signal()
     speak_state = Signal(str)
     meeting_changed = Signal(str)  # meeting id (saved, summary progress or done)
@@ -143,6 +144,7 @@ class MurmrApp:
         b.history_changed.connect(lambda: self.window and self.window.history_changed())
         b.learned.connect(lambda words: self.overlay.flash(f"Learned: {words}", seconds=2.5))
         b.paste_last.connect(self.paste_last)
+        b.cycle_mode.connect(self.cycle_mode)
         b.read_aloud.connect(self.read_aloud)
         b.speak_state.connect(self._on_speak_state)
         b.meeting_changed.connect(self._on_meeting_changed)
@@ -609,6 +611,11 @@ class MurmrApp:
         if not self.transcriber.ready.is_set():
             self.overlay.flash("Speech model still loading: your words appear when it's ready",
                                seconds=3)
+        elif mode == "dictate" and (self.cfg.mode != "auto" or self.cfg.output_language):
+            label = styles.mode_name(self.cfg.mode) if self.cfg.mode != "auto" else "Dictating"
+            if self.cfg.output_language:
+                label += f" → {self.cfg.output_language}"
+            self.overlay.flash(label, seconds=1.2)  # which mode you're talking in
         self.polisher.prewarm()  # load the AI model while you talk (no-op if it's loaded)
         if mode == "dictate":
             self.live = LiveSession(self.transcriber.transcribe) if self.transcriber.ready.is_set() else None
@@ -621,6 +628,31 @@ class MurmrApp:
         self.tray.setIcon(tray_icon(True))
         self.sounds.play("start")
         self.max_timer.start()
+
+    # -- dictation modes (styles.py) ----------------------------------------
+    def set_mode(self, mode: str, announce: bool = True) -> None:
+        self.update_setting("mode", mode)
+        if announce:
+            self.overlay.flash(f"Mode: {styles.mode_name(mode)}"
+                               + (" (per app)" if mode == "auto" else ""), seconds=1.6)
+        if self.window is not None and hasattr(self.window.settings, "mode_box"):
+            self.window.settings.sync_mode(mode)
+
+    def cycle_mode(self) -> None:
+        """The switch-mode shortcut: the next mode (Custom only once it has instructions)."""
+        modes = [m for m in styles.MODE_CYCLE if m != "custom" or self.cfg.custom_mode_prompt.strip()]
+        i = modes.index(self.cfg.mode) if self.cfg.mode in modes else -1
+        self.set_mode(modes[(i + 1) % len(modes)])
+
+    def _sync_mode_menu(self) -> None:
+        for mode, act in getattr(self, "mode_actions", {}).items():
+            act.setChecked(mode == self.cfg.mode)
+
+    def _mode_for(self, f) -> str:
+        """The mode for this dictation: the one you picked, or the one for this kind of app."""
+        if self.cfg.mode != "auto" and self.cfg.mode in styles.STYLES:
+            return self.cfg.mode
+        return styles.style_for(self.cfg.styles, f.app, f.title, f.is_terminal)
 
     def _mic_problem(self) -> str:
         """What to say when the microphone won't open, with what to do about it."""
@@ -717,10 +749,15 @@ class MurmrApp:
             text = raw.strip()
             self.bridge.notice.emit("Couldn't tidy the text: pasted as heard", True)
         else:
-            if text and self.polisher.last_issue:
+            issue = self.polisher.last_issue
+            if text and issue == "unavailable":
+                what = (f"{styles.mode_name(getattr(self, '_last_style', ''))} mode"
+                        if getattr(self, "_last_style", "") in styles.AI_ALWAYS else "Translation")
+                self.bridge.notice.emit(f"{what} needs the local AI: pasted as heard", True)
+            elif text and issue:
                 self.bridge.notice.emit("AI clean-up took too long: pasted as heard"
-                                        if self.polisher.last_issue == "timeout"
-                                        else "AI clean-up failed: pasted as heard", False)
+                                        if issue == "timeout" else "AI clean-up failed: pasted as heard",
+                                        False)
         log.info("%.1fs audio -> %d chars, ASR %.0f ms, total %.0f ms (%s)", len(audio) / sr,
                  len(text), t_asr * 1000, (time.perf_counter() - t0) * 1000, self.transcriber.backend)
         if not text:
@@ -799,7 +836,8 @@ class MurmrApp:
     def _clean(self, raw: str) -> str:
         self.hotkeys.wait_for_modifiers_released()
         self._focus = f = self._target()
-        style = styles.style_for(self.cfg.styles, f.app, f.title, f.is_terminal)
+        style = self._mode_for(f)
+        self._last_style = style
         terms, corrections = self.dictionary.snapshot()
         known = {t.lower() for t in terms}
         names = [n for n in self._context_names if n.lower() not in known] \
@@ -816,7 +854,10 @@ class MurmrApp:
         if style == "exact" or self.tuning_active():
             polished = text  # code & terminals: your words; while training: GPU is busy
         else:
-            polished = self.polisher.polish(text, app=f.app, terms=terms + names[:40])
+            polished = self.polisher.polish(
+                text, app=f.app, terms=terms + names[:40],
+                mode_prompt=styles.prompt_for(style, self.cfg.custom_mode_prompt),
+                language=self.cfg.output_language, allow_drop=style == "notes")
         if triggers and textproc.find_snippets(polished, snippets) != triggers:
             polished = text  # the AI reworded a snippet trigger; keep the original wording
         # Corrections again: the LLM may have reintroduced a misspelling.
@@ -906,6 +947,17 @@ class MurmrApp:
         self.read_action = QAction("Read selection aloud", menu)
         self.read_action.triggered.connect(self.read_aloud)
         menu.addAction(self.read_action)
+        self.mode_menu = menu.addMenu("Mode")
+        self.mode_actions = {}
+        group = QActionGroup(self.mode_menu)
+        for mode in styles.MODE_CYCLE:
+            label = "Automatic (per app)" if mode == "auto" else styles.mode_name(mode)
+            act = QAction(label, self.mode_menu, checkable=True)
+            act.triggered.connect(lambda _=False, m=mode: self.set_mode(m))
+            group.addAction(act)
+            self.mode_menu.addAction(act)
+            self.mode_actions[mode] = act
+        self._sync_mode_menu()
         self.meeting_action = QAction("Start meeting notes", menu)
         self.meeting_action.triggered.connect(self._toggle_meeting_from_tray)
         menu.addAction(self.meeting_action)
@@ -986,7 +1038,8 @@ class MurmrApp:
 
     def _apply_action_hotkeys(self) -> None:
         for name, spec, signal in (("paste_last", self.cfg.paste_last_hotkey, self.bridge.paste_last),
-                                   ("read", self.cfg.read_hotkey, self.bridge.read_aloud)):
+                                   ("read", self.cfg.read_hotkey, self.bridge.read_aloud),
+                                   ("mode", self.cfg.mode_hotkey, self.bridge.cycle_mode)):
             hk = None
             if spec:
                 try:
@@ -1434,7 +1487,12 @@ class MurmrApp:
                 self.update_timer.stop()
         elif key == "double_tap_to_lock":
             self.sm.double_tap = bool(value)
-        elif key in ("paste_last_hotkey", "read_hotkey"):
+        elif key == "mode":
+            if value not in styles.MODE_CYCLE:
+                return f"Unknown mode {value}"
+            setattr(cfg, key, value)
+            self._sync_mode_menu()
+        elif key in ("paste_last_hotkey", "read_hotkey", "mode_hotkey"):
             if value:
                 try:
                     hk = Hotkey.parse(value)

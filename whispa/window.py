@@ -183,6 +183,10 @@ class FlowLayout(QLayout):
         return y + line_h - rect.y()
 
 
+OUTPUT_LANGUAGES = ["", "English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch",
+                    "Japanese", "Chinese", "Korean"]
+
+
 def _page(title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
     area = QScrollArea()
     area.setWidgetResizable(True)
@@ -645,6 +649,11 @@ class SettingsPage(QScrollArea):
         self.read_key.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Read aloud", "Select text anywhere and press this to hear it. "
                                   "Press it again to stop.", self.read_key))
+        self.mode_key = HotkeyField(hotkey_labels(cfg.mode_hotkey) if cfg.mode_hotkey else ["Off"])
+        self.mode_key.change_requested.connect(lambda: self._record("mode_hotkey"))
+        self.mode_key.cancel_requested.connect(self._cancel_record)
+        sec.addWidget(setting_row("Switch mode", "Press to go to the next dictation mode (Message, "
+                                  "Email, Notes…). The pill shows which one.", self.mode_key))
         sec.addWidget(self._switch_row("double_tap_to_lock", "Double-tap for hands-free",
                                        "Double-tap the shortcut to start hands-free mode."))
         self.hotkey_msg = Label("")
@@ -700,7 +709,20 @@ class SettingsPage(QScrollArea):
         # Styles
         from .styles import CATEGORIES, CATEGORY_LABELS, STYLE_LABELS
 
-        sec = _section(lay, "Style per app")
+        sec = _section(lay, "Dictation modes")
+        from .styles import MODE_CYCLE, mode_name
+
+        self.mode_box = QComboBox()
+        for mode in MODE_CYCLE:
+            self.mode_box.addItem("Automatic · per app, below" if mode == "auto" else
+                                  STYLE_LABELS.get(mode, mode_name(mode)), mode)
+        self.mode_box.setCurrentIndex(max(0, self.mode_box.findData(cfg.mode)))
+        self.mode_box.currentIndexChanged.connect(
+            lambda: self.ctl.set_mode(self.mode_box.currentData(), announce=False)
+            if hasattr(self.ctl, "set_mode") else self._set("mode", self.mode_box.currentData()))
+        sec.addWidget(setting_row("Dictation mode", "Automatic picks the style for the kind of app "
+                                  "you're in. Pick one to use it everywhere (also from the tray menu "
+                                  "or the Switch mode shortcut).", self.mode_box, first=True))
         intro = Label("How your words come out depends on where you're typing. Exact skips the "
                        "AI clean-up, so prompts and commands are never reworded.")
         intro.setObjectName("muted")
@@ -718,6 +740,24 @@ class SettingsPage(QScrollArea):
             title, desc = CATEGORY_LABELS[cat]
             sec.addWidget(setting_row(title, desc, box))
             self.style_boxes[cat] = box
+        self.custom_prompt = QLineEdit(cfg.custom_mode_prompt)
+        self.custom_prompt.setPlaceholderText("e.g. Write in British English and keep it short")
+        self.custom_prompt.setMinimumWidth(240)
+        self.custom_prompt.editingFinished.connect(
+            lambda: self._set("custom_mode_prompt", self.custom_prompt.text().strip()))
+        sec.addWidget(setting_row("Custom instructions", "What the Custom mode tells the local AI "
+                                  "to do with your dictation.", self.custom_prompt))
+        self.language = QComboBox()
+        for lang in OUTPUT_LANGUAGES:
+            self.language.addItem(lang or "As spoken", lang)
+        if cfg.output_language and self.language.findData(cfg.output_language) < 0:
+            self.language.addItem(cfg.output_language, cfg.output_language)
+        self.language.setCurrentIndex(max(0, self.language.findData(cfg.output_language)))
+        self.language.currentIndexChanged.connect(
+            lambda: self._set("output_language", self.language.currentData()))
+        sec.addWidget(setting_row("Write in", "Speak in one language and Murmr writes in another, "
+                                  "with the local AI (on this computer). Exact mode is never "
+                                  "translated.", self.language))
 
         # Smart features
         sec = _section(lay, "Smart features")
@@ -1154,12 +1194,14 @@ class SettingsPage(QScrollArea):
 
     def _cancel_record(self) -> None:
         self.ctl.cancel_capture()
-        for field in (self.hotkey, self.hands, self.command, self.paste_last, self.read_key):
+        for field in (self.hotkey, self.hands, self.command, self.paste_last, self.read_key,
+                      self.mode_key):
             field.set_recording(False)
 
     def _field(self, kind: str) -> HotkeyField:
         return {"hotkey": self.hotkey, "hands_free_key": self.hands, "command_hotkey": self.command,
-                "paste_last_hotkey": self.paste_last, "read_hotkey": self.read_key}[kind]
+                "paste_last_hotkey": self.paste_last, "read_hotkey": self.read_key,
+                "mode_hotkey": self.mode_key}[kind]
 
     def sync_pill_anchor(self, anchor: str) -> None:
         """The pill was dragged: show its new spot without re-triggering a move."""
@@ -1184,6 +1226,12 @@ class SettingsPage(QScrollArea):
             self.hotkey_msg.setVisible(True)
             return
         field.set_labels(hotkey_labels(spec))
+
+    def sync_mode(self, mode: str) -> None:
+        """The mode changed elsewhere (tray, shortcut): show it here without re-applying it."""
+        self.mode_box.blockSignals(True)
+        self.mode_box.setCurrentIndex(max(0, self.mode_box.findData(mode)))
+        self.mode_box.blockSignals(False)
 
     def _delete_history(self) -> None:
         from PySide6.QtWidgets import QMessageBox
