@@ -17,6 +17,15 @@ import pytest
 from whispa.updater import Updater
 
 REAL_BOOT = Path(__file__).resolve().parent.parent / "whispa" / "_boot.py"
+
+
+@pytest.fixture(autouse=True)
+def _ci_only(monkeypatch):
+    """These tests cover the CI-checked download path; signing has its own tests
+    (test_updater_safeguards.py)."""
+    import whispa.updater as updater_mod
+
+    monkeypatch.setattr(updater_mod, "RELEASE_KEYS", [])
 BASE_PY = str(Path(sys.base_prefix) / ("python.exe" if sys.platform == "win32" else "bin/python3"))
 STUB_MAIN = '''import json, os, sys
 def main():

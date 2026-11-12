@@ -69,7 +69,8 @@ def test_three_clean_exits_end_probation(probation, runtime):
     assert not _boot.check_probation()
 
 
-def test_skip_blocks_check_and_stage(runtime, github):
+def test_skip_blocks_check_and_stage(runtime, github, monkeypatch):
+    monkeypatch.setattr(mod, "RELEASE_KEYS", [])
     u = Updater(runtime=runtime, api=github["url"])
     (runtime / "skipped").write_text(json.dumps({"sha": NEW}))
     assert not u.check().available
@@ -181,7 +182,10 @@ def test_signed_release_rejected(signed, runtime, monkeypatch, bad):
     else:
         monkeypatch.setattr(u, "_json", lambda path: [])
     info = u.check()
-    assert not info.available and info.error
+    if bad == "downgrade":  # nothing newer: up to date, not an error (and never go back)
+        assert not info.available and not info.error and info.target_sha == OLD
+    else:
+        assert not info.available and info.error
     with pytest.raises(RuntimeError):
         u.stage(UpdateInfo(target_sha=NEW, seq=100))
 

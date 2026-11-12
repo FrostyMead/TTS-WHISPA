@@ -38,8 +38,9 @@ log = logging.getLogger(__name__)
 API = "https://api.github.com"
 CODELOAD = "https://codeload.github.com"
 USER_AGENT = "Murmr-Updater"
-# Add offline signing public keys here (32-byte Ed25519 keys, hex encoded).
-RELEASE_KEYS: list[str] = []
+# Public keys of the offline release-signing key (Ed25519, hex). The private key lives only
+# on the maintainer's PC, never on GitHub: a release must be signed with it to install.
+RELEASE_KEYS: list[str] = ["6f3bf71224602450ad4a8c81a9ba4429c4c0297d09e0d4b5a27c51e28b980125"]
 CI_WORKFLOW = "ci.yml"
 MAX_DOWNLOAD = 100 << 20  # the snapshot zip (about 1 MB today)
 MAX_UNPACKED = 300 << 20
@@ -221,8 +222,6 @@ class Updater:
         if not candidates:
             raise RuntimeError("No valid signed release was found; waiting for a signed update")
         manifest = max(candidates, key=lambda m: m["seq"])
-        if manifest["seq"] <= self.current_version().get("seq", 0):
-            raise RuntimeError("No newer signed release is available (release sequence is not newer)")
         runs = self._json(f"/actions/workflows/{CI_WORKFLOW}/runs?" + urlencode({
             "branch": self.branch, "head_sha": manifest["sha"], "status": "success",
             "event": "push", "per_page": 100}))
@@ -256,6 +255,11 @@ class Updater:
         try:
             if RELEASE_KEYS:
                 manifest = self.signed_release()
+                if manifest["seq"] <= self.current_version().get("seq", 0):
+                    # Up to date (or the newest signed release is older: never go back).
+                    info.target_sha = info.current_sha
+                    self.last = info
+                    return info
                 sha, date, info.seq = manifest["sha"], manifest["date"], manifest["seq"]
             else:
                 log.warning("Release signing is not configured; using CI-only updates")
@@ -287,6 +291,8 @@ class Updater:
             manifest = self.signed_release()
             if manifest["sha"] != info.target_sha or manifest["seq"] != info.seq:
                 raise RuntimeError("The signed release changed; check for updates again")
+            if manifest["seq"] <= self.current_version().get("seq", 0):
+                raise RuntimeError("That isn't newer than this version")
         app = self.runtime / "app"
         nxt, tmp = app / "next", app / "next.partial"
         shutil.rmtree(tmp, ignore_errors=True)
