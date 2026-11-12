@@ -149,6 +149,7 @@ def test_stale_watch_does_not_end_the_new_one(tmp_path):
 
 
 # --- Cancel stops only Murmr's own training ------------------------------------------------
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="training runs in WSL on Windows")
 def test_training_runs_in_its_own_process_group(monkeypatch, tmp_path):
     from whispa import config as config_mod
     from whispa import tuning
