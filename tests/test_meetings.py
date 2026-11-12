@@ -215,3 +215,58 @@ def test_starting_never_loads_voiceprints_on_the_calling_thread(tmp_path):
     assert time.perf_counter() - t0 < 0.3
     s.stop()
     assert all(t is not threading.main_thread() for t in calls)
+
+
+def test_rename_merges_and_new_lines_use_the_name():
+    from whispa.speakers import Tracker
+
+    a, b = np.array([1.0, 0, 0]), np.array([0, 1.0, 0])
+    t = Tracker("Person")
+    assert t.assign(a, "x") == "Person 1" and t.assign(b, "x") == "Person 2"
+    t.rename("Person 1", "Priya")
+    assert t.assign(a, "x") == "Priya"
+    t.rename("Person 2", "Priya")  # one person heard as two
+    assert [p[0] for p in t.people] == ["Priya"]
+
+
+def test_room_and_call_share_one_numbering():
+    from whispa.meetings import Capture, MeetingSession
+
+    class Mic(Capture):
+        who = "You"
+
+    class Call(Capture):
+        who = "Others"
+
+    s = MeetingSession([Mic(), Call()], lambda a, sr: "", embedder=lambda a, sr: None, room=True)
+    s.channels = [type("C", (), {"capture": c})() for c in s.captures]
+    s._setup_speakers()
+    room, call = s._trackers["You"], s._trackers["Others"]
+    assert room.assign(np.array([1.0, 0, 0]), "x") == "Person 1"
+    assert call.assign(np.array([0, 1.0, 0]), "x") == "Person 2"  # not a second Person 1
+    s2 = MeetingSession([Mic(), Call()], lambda a, sr: "", embedder=lambda a, sr: None)
+    s2.channels = s.channels
+    s2._setup_speakers()
+    assert "You" not in s2._trackers  # not a room: the mic is just you
+
+
+def test_live_rename_and_correction():
+    from whispa.meetings import Line, MeetingSession
+
+    s = MeetingSession([], lambda a, sr: "")
+    s.lines = [Line(0, "Person 1", "the beta has forty testers"), Line(3, "Person 2", "great")]
+    s.rename("Person 1", "Priya")
+    assert s.lines[0].who == "Priya"
+    assert s.edit_line(1, "Great, thanks.") == "great"
+    assert s.lines[1].text == "Great, thanks." and s.lines[1].edited
+    assert s.edit_line(9, "x") is None
+
+
+def test_live_view_links_names_and_lines():
+    from whispa.meetings import Line
+    from whispa.meetings_page import lines_html
+
+    out = lines_html([Line(0, "Person 1", "hello"), Line(2, "You", "hi", edited=True)], links=True,
+                     edit_from=40)
+    assert 'href="speaker:Person%201"' in out and 'href="line:40"' in out and 'href="line:41"' in out
+    assert "edited" in out

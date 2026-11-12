@@ -65,8 +65,17 @@ def test_only_what_works_is_shown(monkeypatch, mac, ai):
     assert ("Create a voice that sounds like me" in titles) == (not mac)
     assert ("Speech model runs on" in titles) == (not mac)
     assert ("Speech model" in titles) == (not mac)
-    assert ("Command Mode" in titles) == ai
+    # Command Mode: with the AI, or for computer commands ("open Spotify") without it
+    assert "Command Mode" in titles
     assert ("AI clean-up" in titles) == ai
     assert ("Local AI" in titles) == (not ai)  # the one-click setup, only when missing
     assert "Read aloud" in titles and "Your voice" in titles  # these work everywhere
+    w.close()
+
+
+def test_command_mode_hidden_without_ai_or_computer_commands(monkeypatch):
+    w, nav, titles = _window(monkeypatch, True, False)
+    w.ctl.cfg.computer_commands = False
+    w.settings.refresh()
+    assert not w.settings.command_row.isVisibleTo(w.settings.widget())
     w.close()

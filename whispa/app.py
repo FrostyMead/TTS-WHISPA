@@ -1274,7 +1274,8 @@ class MurmrApp:
 
             self._embedder = Embedder()
         session = MeetingSession(caps, self.transcriber.transcribe, keep=keep, embedder=self._embedder,
-                                 profile_dir=config_mod.config_dir() / "training")
+                                 profile_dir=config_mod.config_dir() / "training",
+                                 room=self.cfg.meeting_room)
         try:
             session.start()
         except Exception as exc:  # noqa: BLE001
@@ -1387,6 +1388,25 @@ class MurmrApp:
 
     def delete_meeting(self, meeting_id: str) -> None:
         self.meeting_store().delete(meeting_id)
+
+    def rename_live_speaker(self, old: str, new: str) -> None:
+        """Name someone during the meeting (live transcript)."""
+        if self._meeting is not None:
+            self._meeting.rename(old, new)
+            log.info("Named a speaker during the meeting")
+
+    def edit_live_line(self, index: int, text: str) -> None:
+        """Correct a line during the meeting; word fixes are learned like dictation edits."""
+        s = self._meeting
+        if s is None:
+            return
+        before = s.edit_line(index, text)
+        if before and self.cfg.learn_from_edits:
+            from .learn import find_corrections
+
+            learned = [c for c in find_corrections(before, text) if self.dictionary.learn(c)]
+            if learned:
+                self.bridge.learned.emit(", ".join(c.meant for c in learned))
 
     def rename_speaker(self, meeting_id: str, old: str, new: str) -> None:
         """Name a speaker: every line of theirs, and the summary, use the new name. Giving
@@ -1686,7 +1706,7 @@ class MurmrApp:
                     return err
             else:
                 self._stop_sync()
-        elif key in ("meeting_mic", "meeting_system", "auto_tune", "sync_models", "sync_voices",
+        elif key in ("meeting_mic", "meeting_system", "meeting_room", "auto_tune", "sync_models", "sync_voices",
                      "device_name"):
             pass  # used by the next meeting / sync
         elif key in ("read_voice", "read_speed"):
@@ -1832,7 +1852,9 @@ class MurmrApp:
         window_open = self.window is not None and self.window.isVisible()
         away = time.monotonic() - self.hotkeys.last_activity > 10 * 60
         return away and not (self.recording or self.pending or speaking or window_open
-                             or self._update_busy or self.tuning_active() or self.meeting_running())
+                             or self._update_busy or self.tuning_active()
+                             or self._meeting is not None  # notes or live captions
+                             or getattr(self, "_file_cancel", None) is not None)  # a file transcribing
 
     def _maybe_auto_restart(self) -> None:
         if not self.cfg.auto_update:

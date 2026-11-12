@@ -120,12 +120,32 @@ class Tracker:
     """Groups voiceprints into people as they come in (one tracker per audio channel)."""
 
     def __init__(self, prefix: str = "Person", known: dict[str, np.ndarray] | None = None,
-                 threshold: float = SAME_PERSON, start_at: int = 1):
+                 threshold: float = SAME_PERSON, start_at: int = 1, counter: list[int] | None = None):
         self.prefix, self.threshold = prefix, threshold
         self.known = dict(known or {})  # e.g. {"You": your voiceprint}
         self.people: list[tuple[str, np.ndarray, int]] = []  # (label, sum of voiceprints, count)
         self.last: str | None = None
-        self._next = start_at
+        # Shared by the trackers of one meeting (room mic + call audio): one Person 1.
+        self._counter = counter if counter is not None else [start_at]
+
+    def rename(self, old: str, new: str) -> None:
+        """You named a voice: new lines from it use the name. Two labels given the same name
+        become one person (their voiceprints are combined)."""
+        merged: dict[str, tuple[np.ndarray, int]] = {}
+        order: list[str] = []
+        for label, total, n in self.people:
+            label = new if label == old else label
+            if label in merged:
+                t, c = merged[label]
+                merged[label] = (t + total, c + n)
+            else:
+                merged[label] = (total, n)
+                order.append(label)
+        self.people = [(label, *merged[label]) for label in order]
+        if old in self.known:
+            self.known[new] = self.known.pop(old)
+        if self.last == old:
+            self.last = new
 
     def assign(self, emb: np.ndarray | None, fallback: str) -> str:
         if emb is None:
@@ -143,8 +163,8 @@ class Tracker:
             label, total, n = self.people[best_i]
             self.people[best_i] = (label, total + emb, n + 1)
         else:
-            label = f"{self.prefix} {self._next}"
-            self._next += 1
+            label = f"{self.prefix} {self._counter[0]}"
+            self._counter[0] += 1
             self.people.append((label, emb.copy(), 1))
         self.last = label
         return label

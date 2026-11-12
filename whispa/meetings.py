@@ -378,6 +378,7 @@ class Line:
     text: str
     end: float = 0.0
     channel: str = ""  # the source: "You" (mic) or "Others" (computer audio)
+    edited: bool = False  # corrected by hand during the meeting
 
 
 @dataclass
@@ -390,6 +391,7 @@ class MeetingSession:
     keep: bool = True
     embedder: Callable[[np.ndarray, int], np.ndarray | None] | None = None  # voiceprints
     profile_dir: Path | None = None  # your recordings, to recognise your voice (mic-only)
+    room: bool = False  # several people share the microphone (a meeting room)
     lines: list[Line] = field(default_factory=list)
     started: float = field(default_factory=time.time)
 
@@ -446,6 +448,31 @@ class MeetingSession:
                  self._trackers[ch.capture.who].last else ch.capture.who, ch.partial)
                 for ch in self.channels if ch.partial]
 
+    # -- your corrections while it runs ---------------------------------------
+    def rename(self, old: str, new: str) -> None:
+        """Name a speaker now: their lines so far, and new ones from that voice."""
+        new = " ".join(new.split())
+        if not new or new == old:
+            return
+        with self._lock:
+            for line in self.lines:
+                if line.who == old:
+                    line.who = new
+            for tracker in self._trackers.values():
+                tracker.rename(old, new)
+        self.on_update()
+
+    def edit_line(self, index: int, text: str) -> str | None:
+        """Correct a line's text. Returns what it said before (or None if it's gone)."""
+        text = " ".join(text.split())
+        with self._lock:
+            if not 0 <= index < len(self.lines) or not text:
+                return None
+            before = self.lines[index].text
+            self.lines[index].text, self.lines[index].edited = text, True
+        self.on_update()
+        return before
+
     # -- who's talking -----------------------------------------------------
     def _setup_speakers(self) -> None:
         """Tell voices apart in the computer's audio, and in the mic when it's the only
@@ -456,9 +483,10 @@ class MeetingSession:
         if self.embedder is None:
             return
         whos = [ch.capture.who for ch in self.channels]
+        counter = [1]  # one numbering for the room and the call: never two "Person 1"s
         if "Others" in whos:
-            self._trackers["Others"] = Tracker("Person")
-        if whos == ["You"]:
+            self._trackers["Others"] = Tracker("Person", counter=counter)
+        if whos == ["You"] or (self.room and "You" in whos):
             known = {}
             if self.profile_dir is not None:
                 from .speakers import voice_profile
@@ -469,7 +497,7 @@ class MeetingSession:
                         known["You"] = me
                 except Exception:  # noqa: BLE001
                     log.debug("No voice profile", exc_info=True)
-            self._trackers["You"] = Tracker("Person", known=known)
+            self._trackers["You"] = Tracker("Person", known=known, counter=counter)
 
     def _speaker(self, ch: Channel, audio: np.ndarray) -> str:
         tracker = self._trackers.get(ch.capture.who) if hasattr(self, "_trackers") else None

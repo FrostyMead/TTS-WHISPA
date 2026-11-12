@@ -50,21 +50,27 @@ def _browser(min_h: int = 120, fit: bool = False, max_h: int = 0) -> QTextBrowse
     return b
 
 
-def lines_html(lines, live=(), links: bool = False) -> str:
-    """The transcript. ``links``: speaker names are clickable (to rename them)."""
+def lines_html(lines, live=(), links: bool = False, edit_from: int | None = None) -> str:
+    """The transcript. ``links``: speaker names are clickable (to rename them).
+    ``edit_from``: lines are clickable to correct them; the first one shown is that index."""
     from urllib.parse import quote
 
     rows, order = [], []
-    for d in lines:
+    for i, d in enumerate(lines):
         d = d if isinstance(d, dict) else d.__dict__
         color = who_color(d["who"], order)
         name = html.escape(d["who"])
         if links:
             name = (f'<a href="speaker:{quote(d["who"])}" style="color:{color};text-decoration:none">'
                     f'{name}</a>')
+        text = html.escape(d["text"])
+        if edit_from is not None:
+            text = (f'<a href="line:{edit_from + i}" style="color:inherit;text-decoration:none">'
+                    f'{text}</a>')
+        mark = ' <span style="color:#999">· edited</span>' if d.get("edited") else ""
         rows.append(f'<p style="margin:0 0 6px 0"><span style="color:{color};font-weight:600">{name}'
-                    f'</span> <span style="color:#999">{fmt_time(d["t"])}</span>'
-                    f'<br>{html.escape(d["text"])}</p>')
+                    f'</span> <span style="color:#999">{fmt_time(d["t"])}</span>{mark}'
+                    f'<br>{text}</p>')
     for who, text in live:
         rows.append(f'<p style="margin:0 0 6px 0"><span style="color:{who_color(who, order)};'
                     f'font-weight:600">{html.escape(who)}</span> <span style="color:#999">now</span><br>'
@@ -104,6 +110,13 @@ class MeetingsPage(QScrollArea):
                 desc += (" macOS asks once for Screen & System Audio Recording: Murmr only uses "
                          "the sound, never the screen.")
             sec.addWidget(setting_row("Computer audio", desc, self.sys_sw))
+        self.room_sw = Switch(cfg.meeting_room)
+        self.room_sw.toggled.connect(lambda on: ctl.update_setting("meeting_room", on))
+        sec.addWidget(setting_row(
+            "Several people share my microphone",
+            "In a meeting room: voices on your microphone are told apart too (Person 1, Person 2…; "
+            "you're “You” if Murmr knows your voice from Voice training). People on the call stay "
+            "separate. Click a name in the live transcript to say who it is.", self.room_sw))
         self.start_btn = QPushButton("Start meeting notes")
         self.start_btn.setObjectName("primary")
         self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -144,7 +157,12 @@ class MeetingsPage(QScrollArea):
         lay.addWidget(self.live_head)
         self.live_card, live = self._card()
         self.live_view = _browser(220)
+        self.live_view.setOpenLinks(False)
+        self.live_view.anchorClicked.connect(self._live_clicked)
         live.addWidget(self.live_view)
+        tip = Label("Click a name to say who it is, or a line to correct it.")
+        tip.setObjectName("faint")
+        live.addWidget(tip)
         lay.addWidget(self.live_card)
 
         # -- a meeting's notes
@@ -242,7 +260,10 @@ class MeetingsPage(QScrollArea):
                             f"{fmt_time(s.elapsed)} · {words} words")
         bar = self.live_view.verticalScrollBar()
         at_end = bar.value() >= bar.maximum() - 4
-        self.live_view.setHtml(lines_html(s.lines[-200:], s.live()))
+        if getattr(self, "_editing", False):
+            return  # a correction dialog is open: don't redraw underneath it
+        first = max(0, len(s.lines) - 200)
+        self.live_view.setHtml(lines_html(s.lines[first:], s.live(), links=True, edit_from=first))
         if at_end:
             bar.setValue(bar.maximum())
 
@@ -299,6 +320,36 @@ class MeetingsPage(QScrollArea):
         if self._viewing == meeting_id:
             self.open_meeting(meeting_id)
         self._fill_list()
+
+    def _live_clicked(self, url) -> None:
+        """During the meeting: name a speaker, or correct a line."""
+        from urllib.parse import unquote
+
+        from PySide6.QtWidgets import QInputDialog
+
+        s = self.ctl.meeting_session()
+        if s is None:
+            return
+        self._editing = True
+        try:
+            if url.scheme() == "speaker":
+                old = unquote(url.path() or url.toString()[len("speaker:"):])
+                new, ok = QInputDialog.getText(
+                    self, "Who is this?", f"Name for “{old}” (the lines so far and from now on). "
+                    "The same name as someone else merges them.",
+                    text="" if old.startswith(("Person ", "Others", "You")) else old)
+                if ok and new.strip():
+                    self.ctl.rename_live_speaker(old, new.strip())
+            elif url.scheme() == "line":
+                index = int(url.path() or url.toString()[len("line:"):])
+                if 0 <= index < len(s.lines):
+                    text, ok = QInputDialog.getMultiLineText(self, "Correct this line",
+                                                             f"{s.lines[index].who}:", s.lines[index].text)
+                    if ok and text.strip():
+                        self.ctl.edit_live_line(index, text.strip())
+        finally:
+            self._editing = False
+        self._tick()
 
     def _speaker_clicked(self, url) -> None:
         from urllib.parse import unquote
