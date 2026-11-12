@@ -427,7 +427,15 @@ class MurmrApp:
                 "recommended": pretty(choice.model), "reason": choice.reason,
                 "size": size_label(choice.model),
                 "differs": lc.auto_model and current not in choice.models,
-                "apple_skipped": lc.apple_skipped if choice.model == "apple" and current != "apple" else ""}
+                "apple_skipped": (lc.apple_skipped if choice.model == "apple" and current != "apple"
+                                  else self._apple_too_old_short())}
+
+    @staticmethod
+    def _apple_too_old_short() -> str:
+        from . import ai_setup, applellm
+
+        return (f"it needs macOS 26 or later (this Mac has {applellm.os_version()})"
+                if ai_setup.apple_too_old() else "")
 
     def _recheck_apple_model(self) -> None:
         """Apple can change its model with a macOS update: check it still passes here."""
@@ -690,7 +698,12 @@ class MurmrApp:
         from .asr import BASE_MODEL, local_model_dir
 
         t = self.transcriber
+        from .asr import WHISPER_BEST, is_whisper
+
+        whisper = is_whisper(t.model_name)
+        best = t.model_name == WHISPER_BEST
         name = "Parakeet TDT 0.6B v3" if t.model_name == BASE_MODEL else (
+            ("Whisper large-v3 turbo" if best else "Whisper small") if whisper else
             "your tuned model" if local_model_dir(t.model_name) else t.model_name)
         where = {"CUDA": "your NVIDIA graphics card", "DirectML": "your graphics card",
                  "CoreML": "the Apple Neural Engine", "CPU": "the processor"}.get(t.backend, t.backend)
@@ -698,10 +711,44 @@ class MurmrApp:
         speeds = getattr(self, "_asr_speeds", [])
         return {"model": name, "where": where, "backend": t.backend, "ready": t.ready.is_set(),
                 "precision": "compact (int8)" if quant == "int8" else "full precision",
-                "size": "about 650 MB" if quant == "int8" else "about 2.4 GB",
+                "size": (("about 1.1 GB" if best else "about 250 MB") if whisper else "about 650 MB")
+                if quant == "int8" else "about 2.4 GB",
+                "languages": ("world_best" if best else "world") if whisper else "european",
                 "speed": statistics.median(speeds) if len(speeds) >= 3 else None,
                 "quality": (self.cfg.quantization or "auto").lower(),
                 "slow_choice": t.backend == "CPU" and (self.cfg.quantization or "").lower() in ("none", "fp32")}
+
+    def set_speech_languages(self, value: str) -> None:
+        """European (Parakeet, fastest) or World (Whisper: Chinese, Japanese, Korean and ~95
+        more). Downloads Whisper the first time, then reloads."""
+        from .asr import BASE_MODEL, LANGUAGE_MODELS, is_whisper
+
+        if value in ("world", "world_best"):
+            model = LANGUAGE_MODELS[value]
+        elif is_whisper(self.cfg.model):
+            model = BASE_MODEL
+        else:
+            return  # already European (Parakeet or your tuned Parakeet)
+        if model == self.cfg.model:
+            return
+        self.cfg.model = model
+        config_mod.save(self.cfg)
+        self.transcriber.model_name = model
+        self._asr_speeds = []
+        size = {"world": "about 250 MB", "world_best": "about 1.1 GB"}.get(value)
+        self._status(f"Getting the speech model for more languages ({size})…" if size
+                     else "Reloading the speech model…")
+        log.info("Speech languages: %s (%s)", value, model)
+
+        def work():
+            try:
+                self.transcriber.switch_device(self.transcriber.device)
+                self.bridge.model_ready.emit(self.transcriber.backend)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Loading the speech model failed")
+                self.bridge.model_failed.emit(str(exc))
+
+        threading.Thread(target=work, name="model-reload", daemon=True).start()
 
     def set_speech_quality(self, value: str) -> None:
         """Faster (int8) / Most accurate (full precision) / Automatic: reload the model."""
@@ -1079,7 +1126,10 @@ class MurmrApp:
         log.info("Pasting into %s (text field: %s)", f.app or "?",
                  {True: "yes", False: "no", None: "can't tell"}[f.is_text])
         self._before = f.read_text() if self.cfg.learn_from_edits else None
-        out = text + (" " if self.cfg.append_space else "")
+        from .asr import _cjk
+
+        space = self.cfg.append_space and not (text and _cjk(text[-1]))
+        out = text + (" " if space else "")
         self.injector.inject(out)
 
     def _watch_edits(self, text: str, sample: str | None) -> None:

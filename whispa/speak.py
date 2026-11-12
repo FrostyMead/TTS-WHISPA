@@ -181,6 +181,62 @@ class Espeak:
 
 
 # --------------------------------------------------------------------------- Kokoro
+def mostly_cjk(text: str) -> str | None:
+    """"zh" / "ja" / "ko" when most of the text is Chinese, Japanese or Korean (the natural
+    English voices can't read those), else None."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return None
+    han = sum(0x3400 <= ord(c) <= 0x9FFF or 0xF900 <= ord(c) <= 0xFAFF for c in letters)
+    kana = sum(0x3040 <= ord(c) <= 0x30FF for c in letters)
+    hangul = sum(0xAC00 <= ord(c) <= 0xD7AF or 0x1100 <= ord(c) <= 0x11FF for c in letters)
+    if (han + kana + hangul) / len(letters) < 0.3:
+        return None
+    return "ko" if hangul > han + kana else "ja" if kana else "zh"
+
+
+_MAC_VOICES: dict[str, str | None] = {}
+
+
+def mac_voice_for(lang: str) -> str | None:
+    """An installed macOS voice for ``lang`` ("zh" prefers mainland, then Taiwan, Hong Kong)."""
+    if lang in _MAC_VOICES:
+        return _MAC_VOICES[lang]
+    prefs = {"zh": ("zh_CN", "zh_TW", "zh_HK"), "ja": ("ja_JP",), "ko": ("ko_KR",)}.get(lang, ())
+    found: dict[str, str] = {}
+    try:
+        out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=10).stdout
+        for line in out.splitlines():
+            m = re.match(r"^(.+?)\s+([a-z]{2}_[A-Z]{2})\s+#", line)
+            if m:
+                found.setdefault(m.group(2), m.group(1).strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    voice = next((found[p] for p in prefs if p in found), None)
+    _MAC_VOICES[lang] = voice
+    return voice
+
+
+LANG_NAMES = {"zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
+_WIN_VOICES: dict[str, bool] = {}
+
+
+def _win_has_voice(lang: str) -> bool:
+    """Is a Windows (SAPI) voice for ``lang`` installed? Asked once."""
+    if lang not in _WIN_VOICES:
+        script = ("Add-Type -AssemblyName System.Speech;"
+                  "(New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices()|"
+                  "%{$_.VoiceInfo.Culture.Name}")
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                                 capture_output=True, text=True, timeout=20,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            _WIN_VOICES[lang] = any(c.strip().lower().startswith(lang) for c in out.splitlines())
+        except (OSError, subprocess.SubprocessError):
+            _WIN_VOICES[lang] = True  # can't tell: don't nag
+    return _WIN_VOICES[lang]
+
+
 def split_sentences(text: str) -> list[str]:
     text = re.sub(r"https?://\S+", "link", text)  # don't spell out URLs
     out = []
@@ -368,6 +424,12 @@ class Speaker:
 
     def _run(self, text: str, gen: int) -> None:
         try:
+            lang = mostly_cjk(text)
+            if lang:
+                # The natural voices only read English: the system's voice for the language.
+                log.info("Read aloud: %s text, system voice", LANG_NAMES[lang])
+                self._run_system(text, gen, lang=lang)
+                return
             if self.voice.startswith(MY_VOICE):
                 try:
                     self._run_piper(text, gen)
@@ -501,19 +563,36 @@ class Speaker:
                 self._last_used = time.monotonic()
         self._last_used = time.monotonic()
 
-    def _run_system(self, text: str, gen: int, announce: bool = True) -> None:
+    def _run_system(self, text: str, gen: int, announce: bool = True, lang: str | None = None) -> None:
         self.engine = "system"
         if announce:
             self.on_state("speaking")
         rate = self.speed
         if sys.platform == "darwin":
-            cmd = ["say", "-r", str(int(185 * rate)), text]
+            cmd = ["say", "-r", str(int(185 * rate))]  # the text goes in on stdin
+            if lang:
+                voice = mac_voice_for(lang)
+                if voice:
+                    cmd += ["-v", voice]
+                else:
+                    self.on_state(f"error:No {LANG_NAMES[lang]} voice on this Mac: add one in System "
+                                  "Settings > Accessibility > Spoken Content > System voice > "
+                                  "Manage Voices")
         elif sys.platform == "win32":
+            pick = ""
+            if lang:
+                culture = {"zh": "zh", "ja": "ja", "ko": "ko"}[lang]
+                pick = ("$v=$s.GetInstalledVoices()|?{$_.VoiceInfo.Culture.Name -like '%s*'}|"
+                        "select -First 1;if($v){$s.SelectVoice($v.VoiceInfo.Name)}"
+                        "else{[Console]::Error.WriteLine('novoice')};" % culture)
             script = ("Add-Type -AssemblyName System.Speech;"
                       "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
-                      f"$s.Rate={max(-10, min(10, round((rate - 1) * 10)))};"
+                      f"$s.Rate={max(-10, min(10, round((rate - 1) * 10)))};" + pick +
                       "$s.Speak([Console]::In.ReadToEnd())")
             cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
+            if lang and not _win_has_voice(lang):
+                self.on_state(f"error:No {LANG_NAMES[lang]} voice on this PC: add one in Settings > "
+                              "Time & language > Speech > Add voices")
         else:
             tool = shutil.which("spd-say") or shutil.which("espeak-ng") or shutil.which("espeak")
             if not tool:
@@ -523,7 +602,7 @@ class Speaker:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, creationflags=flags)
         self._system_proc = proc
-        if sys.platform == "win32":
+        if sys.platform in ("win32", "darwin"):
             proc.stdin.write(text.encode("utf-8", "replace"))
         proc.stdin.close()
         t = 0.0

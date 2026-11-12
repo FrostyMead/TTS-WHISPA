@@ -31,7 +31,7 @@ Screenshots use sample data. Light and dark mode follow your OS.
 | **Parakeet TDT 0.6B v3** (default) | ~6.3% avg WER on the Open ASR Leaderboard (better than Whisper large-v3 at ~7.4%), punctuation and capitalization built in, 25 European languages, CC-BY-4.0. ONNX builds run anywhere through [onnx-asr](https://github.com/istupakov/onnx-asr). |
 | Parakeet TDT 0.6B v2 | English only, slightly lower WER (~6.05%). Set `"model": "nemo-parakeet-tdt-0.6b-v2"`. |
 | Nemotron-Labs-Unified-ASR 0.6B / Nemotron 3.5 ASR Streaming | NVIDIA's newest models, built for streaming. NeMo/PyTorch only for now (no ONNX build), so not cross-platform yet. Likely future upgrade for live, as-you-speak text. |
-| Whisper large-v3-turbo | Works too (`"model": "onnx-community/whisper-large-v3-turbo"`), slower, more languages. |
+| Whisper small / large-v3-turbo | For Chinese, Japanese, Korean and ~95 more languages: **Settings > Languages you speak**. Detects the language by itself. Small: ~250 MB, about 2 s per dictation on a desktop CPU; turbo: ~1.1 GB, about 5 s, most accurate. Chinese, Japanese and Korean text is read aloud by the system voice for that language. |
 
 Measured on this dev box (RTX 3070 Ti / Ryzen 5 5600X), one 6.8 s sentence:
 **~45 ms on CUDA**, **~330 ms on CPU (int8)**. Even CPU-only machines feel instant.

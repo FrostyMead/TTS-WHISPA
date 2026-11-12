@@ -100,7 +100,22 @@ def plan() -> str:
     if choice.model == APPLE:
         text = ("Uses Apple's on-device model if it passes Murmr's checks (no download). "
                 "Otherwise: " + text[0].lower() + text[1:])
+    elif apple_too_old():
+        text += " " + apple_too_old()
     return text
+
+
+def apple_too_old() -> str:
+    """On an Apple Silicon Mac older than macOS 26: why Apple's on-device model isn't used."""
+    import platform
+
+    from . import applellm
+
+    if sys.platform != "darwin" or platform.machine() != "arm64" or applellm.supported():
+        return ""
+    return (f"Apple Intelligence's on-device model needs macOS 26 or later (this Mac has macOS "
+            f"{applellm.os_version() or 'an older version'}), so a small model is downloaded "
+            "instead. After updating macOS, press Check again to switch to Apple's.")
 
 
 # --------------------------------------------------------------------------- downloading
@@ -292,6 +307,11 @@ def setup(llm_cfg, progress: Callable[[str, float | None], None], cancel: thread
     log.info("AI model for %s: %s", hw.describe(), " > ".join(choice.models))
     previous = llm_cfg.model
     choice_had_apple = choice.model == APPLE
+    if not choice_had_apple and apple_too_old():
+        from . import applellm
+
+        llm_cfg.apple_skipped = f"it needs macOS 26 or later (this Mac has {applellm.os_version()})"
+        choice_had_apple = True  # so the result says why
     if choice.model == APPLE:
         took, why = try_apple(llm_cfg, progress, cancel)
         if why is None:

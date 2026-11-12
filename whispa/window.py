@@ -1130,6 +1130,22 @@ class SettingsPage(QScrollArea):
         speech_row = setting_row("Speech recognition", "Speed or accuracy. Runs on this computer; "
                                  "nothing you say is sent anywhere.", self.quality)
         speech_row.layout().itemAt(0).widget().layout().addWidget(self.speech_desc)
+        self.languages = QComboBox()
+        self.languages.addItem("English + 24 European · fastest", "european")
+        self.languages.addItem("Chinese, Japanese, Korean + 90 more", "world")
+        self.languages.addItem("Chinese, Japanese, Korean + 90 more · most accurate, slower", "world_best")
+        from .asr import LANGUAGE_MODELS, is_whisper
+
+        self.languages.setCurrentIndex(2 if cfg.model == LANGUAGE_MODELS["world_best"]
+                                       else 1 if is_whisper(cfg.model) else 0)
+        self.languages.currentIndexChanged.connect(self._languages_changed)
+        languages_row = setting_row(
+            "Languages you speak", "European languages use Parakeet, the fastest. For Chinese, "
+            "Japanese, Korean and about 90 more, Murmr uses Whisper, which works out the "
+            "language by itself: about 2 s per dictation and a 250 MB download, or the most "
+            "accurate one at about 5 s and 1.1 GB.", self.languages)
+        if hasattr(ctl, "set_speech_languages"):
+            sec.addWidget(languages_row)
         if hasattr(ctl, "speech_info"):
             sec.addWidget(speech_row)
         if capabilities.gpu_choice():  # macOS: always the built-in CPU path
@@ -1360,6 +1376,10 @@ class SettingsPage(QScrollArea):
             self.hotkey_msg.setText(err)
             self.hotkey_msg.setVisible(True)
 
+    def _languages_changed(self) -> None:
+        self.ctl.set_speech_languages(self.languages.currentData())
+        self.speech_desc.setText("Getting the speech model ready…")
+
     def _quality_changed(self) -> None:
         if hasattr(self.ctl, "set_speech_quality"):
             self.ctl.set_speech_quality(self.quality.currentData())
@@ -1375,6 +1395,8 @@ class SettingsPage(QScrollArea):
             self.speech_desc.setText("Loading the speech model…")
             return
         text = f"Now: {info['model']}, {info['precision']} ({info['size']}), on {info['where']}."
+        if info.get("languages") in ("world", "world_best"):
+            text += " Speed or accuracy doesn't apply to Whisper: it always uses the compact model."
         if info["speed"]:
             text += f" About {info['speed']:.0f}× faster than you speak, measured on your dictations."
         if info["slow_choice"]:

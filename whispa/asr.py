@@ -25,7 +25,21 @@ _PROVIDERS = {
 }
 
 LONG_AUDIO_S = 60.0  # beyond this, split on silence with Silero VAD
-BASE_MODEL = "nemo-parakeet-tdt-0.6b-v3"
+BASE_MODEL = "nemo-parakeet-tdt-0.6b-v3"  # English + 24 European languages
+# Chinese, Japanese, Korean and ~95 more languages (language detected by itself). Slower
+# than Parakeet, so it's a choice, not the default. Measured on a desktop CPU for a 5 s
+# dictation: small 1.9 s (~250 MB, int8), large-v3 turbo 5.4 s (~1.1 GB) but more accurate.
+WHISPER_MODEL = "onnx-community/whisper-small"
+WHISPER_BEST = "onnx-community/whisper-large-v3-turbo"
+LANGUAGE_MODELS = {"european": BASE_MODEL, "world": WHISPER_MODEL, "world_best": WHISPER_BEST}
+# Whisper makes these up from silence or noise (subtitle credits from its training data).
+_WHISPER_GHOSTS = ("字幕由amara.org社区提供", "amara.org", "请不吝点赞", "明镜与点点栏目",
+                   "subtitles by the amara.org community", "ご視聴ありがとうございました")
+WHISPER_MAX_S = 28.0  # Whisper hears at most 30 s at a time: longer audio is split first
+
+
+def is_whisper(model: str) -> bool:
+    return "whisper" in str(model or "").lower()
 
 
 def local_model_dir(model: str) -> Path | None:
@@ -79,6 +93,27 @@ def select_providers(device: str) -> tuple[list[str], str]:
     return ["CPUExecutionProvider"], "CPU"
 
 
+def _cjk(ch: str) -> bool:
+    o = ord(ch)
+    return 0x3000 <= o <= 0x30FF or 0x3400 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF or \
+        0xF900 <= o <= 0xFAFF or 0xFF00 <= o <= 0xFFEF
+
+
+def drop_ghosts(text: str) -> str:
+    """Whisper's made-up subtitle credits: never something you said."""
+    return "" if any(g in text.lower() for g in _WHISPER_GHOSTS) else text
+
+
+def join_pieces(parts: list[str]) -> str:
+    """Join recognized pieces: with a space, except between Chinese/Japanese/Korean text."""
+    out = ""
+    for p in parts:
+        if out and not (_cjk(out[-1]) or _cjk(p[0])):
+            out += " "
+        out += p
+    return out
+
+
 class _TurnTaking:
     """One recognition at a time, dictation first: a meeting or file waiting for its turn
     lets a dictation that arrives go ahead (it can't interrupt one that's running, but
@@ -124,6 +159,8 @@ class Transcriber:
         self.last_wait_ms = 0.0
 
     def _quant(self, label: str) -> str | None:
+        if is_whisper(self.model_name):
+            return "int8"  # full precision is ~4x the download for little gain
         q = (self.quantization or "auto").lower()
         if q == "auto":
             return "int8" if label == "CPU" else None
@@ -209,9 +246,15 @@ class Transcriber:
         try:
             if not self.ready.is_set() or self._model is None:
                 raise RuntimeError("Model is not loaded")
-            if audio.size / sample_rate > LONG_AUDIO_S:
-                return self._transcribe_long(audio, sample_rate)
-            return str(self._model.recognize(audio, sample_rate=sample_rate)).strip()
+            whisper = is_whisper(self.model_name)
+            if whisper and float(np.sqrt(np.mean(audio * audio))) < 0.002:
+                return ""  # silence: Whisper would invent something ("Thank you.")
+            limit = WHISPER_MAX_S if whisper else LONG_AUDIO_S
+            if audio.size / sample_rate > limit:
+                text = self._transcribe_long(audio, sample_rate)
+            else:
+                text = str(self._model.recognize(audio, sample_rate=sample_rate)).strip()
+            return drop_ghosts(text) if whisper else text
         finally:
             self._turns.release()
 
@@ -225,6 +268,8 @@ class Transcriber:
         if self._vad_model is None:
             self._vad_model = onnx_asr.load_vad("silero")
         segments = self._model.with_vad(
-            self._vad_model, max_speech_duration_s=30, min_silence_duration_ms=300,
+            self._vad_model, max_speech_duration_s=WHISPER_MAX_S if is_whisper(self.model_name) else 30,
+            min_silence_duration_ms=300,
             speech_pad_ms=200).recognize(audio, sample_rate=sample_rate)
-        return " ".join(s.text.strip() for s in segments if s.text.strip())
+        parts = [s.text.strip() for s in segments if s.text.strip()]
+        return join_pieces(parts)
