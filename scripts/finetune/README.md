@@ -31,8 +31,13 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=$R/bin UV_NO_MOD
 bin/uv venv --python 3.12 .venv && . .venv/bin/activate
 bin/uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 bin/uv pip install "nemo_toolkit[asr]" onnx onnxruntime onnx-asr soundfile
+bin/uv pip install "numba-cuda[cu12]" "numpy<2.5" "cuda-toolkit==12.8.1"   # NeMo's GPU loss
 python -c "import torch; print(torch.cuda.is_available())"     # must print True
 ```
+NeMo compiles its transducer loss with numba-cuda (Numba's own CUDA support can't find the
+pip CUDA compiler and mistypes NeMo's kernels); `train.py` installs it if it's missing.
+numba-cuda 0.30 needs NumPy below 2.5, and the CUDA packages must stay at PyTorch's pins:
+never `uv pip install -U` here, it moves them.
 This downloads about 4 GB and takes ~10 minutes. Tested with torch 2.11 (cu128), NeMo 3.0.0,
 Lightning 2.4 and Python 3.12. The first `import nemo` takes a few minutes; after that it's quick.
 

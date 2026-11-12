@@ -329,8 +329,9 @@ def show_dialog(ctl, parent=None) -> None:
             result.setVisible(True)
             return
         state["path"] = path
-        result.setText(f"Saved “{path.name}” to your {path.parent.name}. Check what's in it below, "
-                       "then send it to the developer or attach it to a GitHub issue.")
+        result.setText(f"Saved “{path.name}” to your {path.parent.name} ({path.parent}). Check "
+                       "what's in it below, then send it to the developer or attach it to a "
+                       "GitHub issue.")
         preview.setPlainText(contents(path))
         preview.setVisible(True)
         result.setVisible(True)
@@ -345,13 +346,20 @@ def show_dialog(ctl, parent=None) -> None:
     dlg.exec()
 
 
+def explorer_select(path: Path) -> str:
+    return f'explorer.exe /select,"{path}"'
+
+
 def reveal(path: Path) -> None:
     """Show the file in Explorer / Finder."""
     import subprocess
 
     try:
         if sys.platform == "win32":
-            subprocess.Popen(["explorer", f"/select,{path}"])
+            # One command line, quoted by hand: given a list, Python quotes the whole
+            # "/select,C:\...\Murmr report ....zip" (the name has spaces), which Explorer
+            # doesn't understand, so it opened Documents and the report seemed missing.
+            subprocess.Popen(explorer_select(path))
         elif sys.platform == "darwin":
             subprocess.Popen(["/usr/bin/open", "-R", str(path)])
         else:

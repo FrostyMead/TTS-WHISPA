@@ -154,15 +154,10 @@ class MicCapture(Capture):
             self._stream.start()
 
     def stop(self) -> None:
-        from .audio import PA_LOCK
+        from .audio import close_stream
 
-        if self._stream is not None:
-            with PA_LOCK:
-                try:
-                    self._stream.stop()
-                finally:
-                    self._stream.close()
-            self._stream = None
+        stream, self._stream = self._stream, None
+        close_stream(stream, what="meeting microphone")
 
 
 class WindowsSystemCapture(Capture):

@@ -217,6 +217,55 @@ def add_packages() -> None:
             site.addsitedir(path)  # also runs .pth files (e.g. NVIDIA DLL paths)
 
 
+STARTING_GRACE_S = 120  # a first start after an update can be slow (new packages, cold caches)
+
+
+def _alive(pid: int) -> bool:
+    if pid <= 0 or pid == os.getpid():
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = k32.GetExitCodeProcess(handle, ctypes.byref(code))
+        k32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def trial_state() -> str:
+    """For an update that hasn't reported a healthy start: "starting" if its process is
+    still alive and young, "stuck" if alive for longer than the grace period (it's ended
+    here), else "failed"."""
+    try:
+        with open(os.path.join(RUNTIME, "starting"), encoding="utf-8") as f:
+            starting = json.load(f)
+        pid = int(starting.get("pid", 0))
+        if starting.get("sha") != _full_version(CURRENT) or not _alive(pid):
+            return "failed"
+        if time.time() - float(starting.get("time", 0)) < STARTING_GRACE_S:
+            return "starting"
+        import signal
+
+        os.kill(pid, signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL)
+        return "stuck"
+    except (OSError, ValueError, TypeError):
+        return "failed"
+
+
 def main() -> None:
     # Never run from inside app/current: Windows can't rename a process's working folder,
     # which would stop the update from being applied (and the next one, from this process).
@@ -227,11 +276,17 @@ def main() -> None:
         args.remove("--rollback")
         rollback("requested")
     elif os.path.exists(TRIAL) and not os.path.isdir(NEXT):
-        # The last update was started but never reported a healthy start: undo it.
-        try:
-            rollback("the updated version did not start")
-        except OSError as exc:
-            log(f"rollback failed, starting the current version: {exc}")
+        # The last update was started but never reported a healthy start: undo it, unless
+        # it's still starting up in another process (you launched Murmr again meanwhile).
+        state = trial_state()
+        if state == "starting":
+            log("the updated version is still starting; leaving it")
+        else:
+            try:
+                rollback("the updated version did not start" if state != "stuck"
+                         else "the updated version got stuck starting")
+            except OSError as exc:
+                log(f"rollback failed, starting the current version: {exc}")
     try:
         if not probation_rollback:
             apply_update()
@@ -243,6 +298,12 @@ def main() -> None:
     except OSError:
         pass
     add_packages()
+    if os.path.exists(TRIAL):  # an update on trial: say which process is starting it
+        try:
+            _write_state("starting", {"sha": _full_version(CURRENT), "pid": os.getpid(),
+                                      "time": time.time()})
+        except OSError:
+            pass
     sys.path.insert(0, CURRENT)
     sys.argv = ["whispa", *args]
     from whispa.__main__ import main as whispa_main

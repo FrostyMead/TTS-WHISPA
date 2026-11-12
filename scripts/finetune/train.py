@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import BASE_MODEL, WORK, read_manifest, write_manifest  # noqa: E402
+from common import BASE_MODEL, WORK, ensure_numba_cuda, read_manifest, write_manifest  # noqa: E402
 
 
 def build_train_manifest(user: list[dict], replay: list[dict], ratio: float, seed: int,
@@ -71,6 +71,9 @@ def main() -> None:
     ap.add_argument("--cpu", action="store_true", help="train on CPU (slow; pipeline checks only)")
     ap.add_argument("--tiny", action="store_true", help="small validation set, for quick checks")
     args = ap.parse_args()
+
+    if not args.cpu:
+        ensure_numba_cuda()  # before NeMo: its transducer loss is compiled by Numba
 
     import lightning.pytorch as pl
     import torch
@@ -140,10 +143,15 @@ def main() -> None:
           f"(top {k}/{len(layers)} encoder layers + decoder + joint)")
 
     class KeepFrozenInEval(Callback):
-        """Lightning puts the whole model in train mode; keep frozen parts and all BatchNorm
-        statistics fixed so a small dataset can't skew them."""
+        """Train mode for what's trained; frozen parts and all BatchNorm statistics stay fixed
+        so a small dataset can't skew them.
+
+        Lightning 2.2+ keeps each submodule's mode instead of calling train() on the whole
+        model, so after freeze() the decoder's LSTM stayed in eval mode and the first
+        backward pass failed ("cudnn RNN backward can only be called in training mode")."""
 
         def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+            pl_module.train()
             for m in pl_module.modules():
                 if isinstance(m, torch.nn.modules.batchnorm._BatchNorm):
                     m.eval()

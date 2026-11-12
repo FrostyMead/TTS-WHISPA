@@ -76,16 +76,11 @@ class LevelMeter:
     def close(self) -> None:
         if self._stream is None:
             return
-        from .audio import PA_LOCK
+        from .audio import close_stream
 
-        with PA_LOCK:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:  # noqa: BLE001
-                pass
-        self._stream = None
+        stream, self._stream = self._stream, None
         self.level = 0.0
+        close_stream(stream, what="level meter")
 
 
 class WelcomeDialog(QDialog):

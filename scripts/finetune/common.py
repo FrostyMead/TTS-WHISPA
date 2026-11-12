@@ -36,6 +36,40 @@ def whispa_dir() -> Path:
         else base / "Murmr"
 
 
+def numba_cuda_install_command() -> list[str] | None:
+    """The install that NeMo's GPU loss needs, or None if it's already there.
+
+    NeMo compiles its transducer loss for the GPU with Numba, and on Linux expects the
+    separate numba-cuda package (nemo_toolkit's "cu12" extra), which also finds NVIDIA's
+    compiler in the pip packages. Without it Numba's own, older CUDA support is used: it
+    can't find libNVVM and then mistypes NeMo's kernels, so training stopped at its first
+    step. numba-cuda 0.30 still uses np.row_stack, which NumPy 2.5 removed, and the CUDA
+    packages must stay at the versions PyTorch was built with."""
+    try:
+        import numba_cuda  # noqa: F401
+        return None
+    except ImportError:
+        pass
+    from importlib import metadata
+
+    pins = ["numba-cuda[cu12]", "numpy<2.5"]
+    try:
+        pins.append(f"cuda-toolkit=={metadata.version('cuda-toolkit')}")
+    except metadata.PackageNotFoundError:
+        pass
+    uv = WORK.parent / "bin" / "uv"
+    cmd = ([str(uv), "pip", "install", "--python", sys.executable] if uv.exists()
+           else [sys.executable, "-m", "pip", "install"])
+    return [*cmd, *pins]
+
+
+def ensure_numba_cuda() -> None:
+    cmd = numba_cuda_install_command()
+    if cmd:
+        print("Installing numba-cuda, which training on the GPU needs (about 30 MB)…", flush=True)
+        subprocess.run(cmd, check=True)
+
+
 def read_whispa_manifest(path: Path) -> list[dict]:
     """Fold Murmr's append-only manifest into one record per clip (later rows update)."""
     clips: dict[str, dict] = {}

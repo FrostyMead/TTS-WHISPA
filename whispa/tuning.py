@@ -34,6 +34,31 @@ VOICE_MIN = 10.0
 VOICE_GOOD = 30.0
 
 
+_PROGRESS = re.compile(r"\d+%\|")  # a tqdm progress bar
+_ERROR = re.compile(r"\w(Error|Exception)\b|^Killed\b|Segmentation fault|No space left|"
+                    r"^error:|^ERROR\b|out of memory", re.IGNORECASE)
+
+
+def error_summary(lines: list[str], code: int | None = None) -> str:
+    """The line that says what went wrong. Progress bars redraw themselves after a crash,
+    so the last line is often just "Epoch 0: 0%|...", which says nothing."""
+    for line in reversed(lines):
+        if not _PROGRESS.search(line) and _ERROR.search(line):
+            return line
+    for line in reversed(lines):
+        if not _PROGRESS.search(line) and not line.startswith(("File ", "^", "~")):
+            return line
+    return f"exit {code}" if code is not None else "unknown error"
+
+
+def log_path(kind: str) -> Path:
+    """The whole output of the last run of this job (it can include words from your
+    recordings, so it stays on this computer and isn't added to problem reports)."""
+    from . import config as config_mod
+
+    return config_mod.config_dir() / "tuning" / f"{kind}.log"
+
+
 def to_wsl(path: Path) -> str:
     """C:/Users/me/x -> /mnt/c/Users/me/x (WSL's standard mount of Windows drives)."""
     p = Path(path).resolve()
@@ -115,7 +140,14 @@ class Job:
         threading.Thread(target=self._run, name=f"tune-{self.kind}", daemon=True).start()
 
     def _run(self) -> None:
+        out = None
         try:
+            try:
+                path = log_path(self.kind)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                out = open(path, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
+            except OSError:
+                out = None
             self._proc = subprocess.Popen(self.command(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           creationflags=CREATE_NO_WINDOW)
             buf = b""
@@ -129,17 +161,28 @@ class Job:
                 parts = re.split(rb"[\r\n]", buf)
                 buf = parts.pop()
                 for raw in parts:
-                    self._line(raw.decode("utf-8", "replace").strip())
+                    line = raw.decode("utf-8", "replace").strip()
+                    if out is not None and line and not _PROGRESS.search(line):
+                        out.write(line + "\n")
+                        out.flush()
+                    self._line(line)
+            if buf.strip():
+                self._line(buf.decode("utf-8", "replace").strip())
             code = self._proc.wait()
             self.ok = code == 0 and not self._cancelled
             if self._cancelled:
                 self.status = "Cancelled"
             elif not self.ok:
-                self.status = "Stopped with an error: " + (self.lines[-1][:120] if self.lines else f"exit {code}")
+                self.status = "Stopped with an error: " + error_summary(self.lines, code)[:160]
+                tail = [ln for ln in self.lines if not _PROGRESS.search(ln)][-12:]
+                log.warning("Tuning (%s) failed (exit %s). Last lines:\n  %s", self.kind, code,
+                            "\n  ".join(ln[:300] for ln in tail))
         except Exception as exc:  # noqa: BLE001
             log.exception("Tuning job failed")
             self.ok, self.status = False, f"Couldn't run: {exc}"
         finally:
+            if out is not None:
+                out.close()
             self.running = False
             log.info("Tuning (%s) finished: %s", self.kind, self.status)
             self.on_change(self)

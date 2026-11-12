@@ -126,7 +126,8 @@ class Updater:
             crash_log = crash_log.resolve()
             size = crash_log.stat().st_size if crash_log.exists() else 0
             self._write_state("running", {"sha": self.current_version().get("sha", ""),
-                                          "crash_log": str(crash_log), "size": size})
+                                          "crash_log": str(crash_log), "size": size,
+                                          "pid": os.getpid()})
         except Exception:
             log.exception("Couldn't record running marker")
 

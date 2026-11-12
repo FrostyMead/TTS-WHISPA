@@ -73,6 +73,42 @@ def quality(audio: np.ndarray, sr: int) -> dict:
             "clipped": round(float(np.mean(np.abs(a) > 0.99)), 5)}
 
 
+CLOSE_TIMEOUT_S = 2.0
+
+
+def close_stream(stream, timeout: float = CLOSE_TIMEOUT_S, what: str = "microphone") -> bool:
+    """Stop and close a PortAudio stream without ever hanging the caller.
+
+    On macOS, stopping a stream sometimes never returns (CoreAudio waits for a buffer that
+    never comes, typically after a Bluetooth or device switch). Murmr then sat on
+    "transcribing" forever, and couldn't quit or update. Here the stream is aborted (no
+    waiting for buffers to drain) on a throwaway thread; if that hangs, the stream is
+    abandoned and the caller carries on: the next recording opens a new one. True if it
+    closed in time."""
+    if stream is None:
+        return True
+
+    def work() -> None:
+        try:
+            stream.abort()  # not stop(): nothing left to drain, the audio is already taken
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Aborting the %s stream: %s", what, exc)
+        try:
+            with PA_LOCK:
+                stream.close()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Closing the %s stream: %s", what, exc)
+
+    t = threading.Thread(target=work, name=f"close-{what}", daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        log.warning("The %s didn't close within %.0f s (an audio driver hang); left it behind "
+                    "and carried on", what, timeout)
+        return False
+    return True
+
+
 class Recorder:
     """Captures mono float32 audio. ``level`` is the live RMS for the UI meter."""
 
@@ -92,6 +128,7 @@ class Recorder:
         self._preroll_samples = 0
         self._recording = False
         self._lock = threading.Lock()
+        self._gen = 0  # which stream's callbacks count
         self.limit_s = 3600.0  # hard cap, enforced as audio arrives (the app stops at its own limit first)
         if keep_open:
             self._open()
@@ -125,11 +162,18 @@ class Recorder:
         last_exc: Exception | None = None
         for sr in ((None, TARGET_SR) if self.high_quality else (TARGET_SR, None)):
             try:
+                self._gen += 1
+                gen = self._gen
+
+                def callback(indata, frames, time_info, status, gen=gen):
+                    if gen == self._gen:  # not a stream left behind by a driver hang
+                        self._callback(indata, frames, time_info, status)
+
                 with PA_LOCK:
                     if sr is None:  # device refuses 16 kHz: use its native rate, resample later
                         sr = int(sd.query_devices(device, "input")["default_samplerate"])
                     stream = sd.InputStream(samplerate=sr, channels=1, dtype="float32",
-                                            device=device, latency="low", callback=self._callback)
+                                            device=device, latency="low", callback=callback)
                     stream.start()
                 self._stream, self.samplerate = stream, sr
                 return
@@ -139,16 +183,10 @@ class Recorder:
         raise last_exc  # type: ignore[misc]
 
     def _close(self) -> None:
-        if self._stream is not None:
-            try:
-                with PA_LOCK:
-                    try:
-                        self._stream.stop()
-                    finally:
-                        self._stream.close()
-            finally:
-                self._stream = None
-                self.level = 0.0
+        stream, self._stream = self._stream, None
+        self._gen += 1  # whatever that stream still delivers is ignored from now on
+        self.level = 0.0
+        close_stream(stream)
 
     def _callback(self, indata, frames, time_info, status) -> None:
         mono = indata[:, 0].copy()
@@ -196,14 +234,16 @@ class Recorder:
         return audio[start - have:]
 
     def stop(self) -> tuple[np.ndarray, int]:
-        if not self.keep_open:
-            self._close()  # waits for the last callback
+        # The audio first: what you said never waits for the driver to let go of the mic.
         with self._lock:
             self._recording = False
             chunks, self._chunks = self._chunks, []
             self._samples = 0
+        samplerate = self.samplerate
+        if not self.keep_open:
+            self._close()
         audio = np.concatenate(chunks) if chunks else np.zeros(0, np.float32)
-        return audio, self.samplerate
+        return audio, samplerate
 
     def cancel(self) -> None:
         self.stop()
