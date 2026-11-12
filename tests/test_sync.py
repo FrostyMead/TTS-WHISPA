@@ -161,7 +161,7 @@ def test_discovery_reply():
         svc.start_pairing()
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.settimeout(3)
-            s.sendto(json.dumps({"murmr": "who", "id": "other"}).encode(), ("127.0.0.1", port))
+            s.sendto(json.dumps({"murmr": "who", "id": "0123456789abcdef0123456789abcdef"}).encode(), ("127.0.0.1", port))
             reply = json.loads(s.recvfrom(2048)[0])
         assert reply["name"] == "Desk" and reply["port"] == svc.port and reply["pairing"] is True
         assert "key" not in json.dumps(reply)

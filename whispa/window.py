@@ -344,7 +344,8 @@ class EntryRow(QFrame):
     def _copy(self) -> None:
         QGuiApplication.clipboard().setText(self.entry["text"])
         self.copy.setText("Copied")
-        QTimer.singleShot(1200, lambda: self.copy.setText("Copy"))
+        # Tied to the button: if the row is rebuilt first, the timer goes with it.
+        QTimer.singleShot(1200, self.copy, lambda: self.copy.setText("Copy"))
 
     def enterEvent(self, e):
         for b in self.buttons:
@@ -1503,15 +1504,21 @@ class SettingsPage(QScrollArea):
         if hasattr(self.ctl, "refresh_capabilities"):
             self.ctl.refresh_capabilities()
         self._refresh_model(ai)
+        self.show_llm_status(ai)
+        self.status.setText(f"Murmr {__version__} · {self.ctl.status_text()}")
+        self._refresh_speech()
+        self.refresh_updates()
+        self.refresh_permissions()
+
+    def show_llm_status(self, ai: bool | None = None) -> None:
+        """The local AI line (the app checks it in the background and calls this again)."""
+        if ai is None:
+            ai = self.llm_row.isVisibleTo(self)
         ok, text = self.ctl.llm_status() if ai else (False, "")
         self.llm_row_desc.setText(text)
         self.llm_row_desc.setObjectName("ok" if ok else "faint")
         self.llm_row_desc.style().unpolish(self.llm_row_desc)
         self.llm_row_desc.style().polish(self.llm_row_desc)
-        self.status.setText(f"Murmr {__version__} · {self.ctl.status_text()}")
-        self._refresh_speech()
-        self.refresh_updates()
-        self.refresh_permissions()
 
     def _refresh_model(self, ai: bool) -> None:
         info = self.ctl.ai_model_info() if ai and hasattr(self.ctl, "ai_model_info") else None

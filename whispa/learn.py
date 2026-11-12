@@ -652,15 +652,19 @@ class CorrectionWatcher:
             if region and similarity(region, s["inserted"]) >= 0.4:
                 s["last"] = region
             elif not text.strip() and s["last"] is not None:
-                self.finish()  # field cleared: message was sent
+                self.finish(s)  # field cleared: message was sent
                 return False
         if text is None or time.monotonic() > s["deadline"]:
-            self.finish()
+            self.finish(s)
             return False
         return True
 
-    def finish(self) -> None:
+    def finish(self, expected: dict | None = None) -> None:
+        """End the watch. With ``expected``, only if that's still the current one: a slow
+        look at an old field must never end the next dictation's watch."""
         with self._lock:
+            if expected is not None and self._session is not expected:
+                return
             s, self._session = self._session, None
             self._wake.set()
         if not s or not s["last"]:

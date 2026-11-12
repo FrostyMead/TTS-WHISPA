@@ -64,6 +64,7 @@ class Bridge(QObject):
     ai_setup = Signal(str, float)  # message, fraction (-1: unknown); "done:" / "error:" prefixes
     tuning_changed = Signal(str)  # job kind
     notice = Signal(str, bool)  # message, is_error
+    llm_status = Signal()  # a background check of the local AI finished
     sync_event = Signal(str, object)  # kind, info (sync.py)
 
 
@@ -157,6 +158,7 @@ class MurmrApp:
         b.ai_setup.connect(self._on_ai_setup)
         b.tuning_changed.connect(self._on_tuning_changed)
         b.notice.connect(lambda msg, err: self.overlay.flash(msg, error=err, seconds=3))
+        b.llm_status.connect(lambda: self.window is not None and self.window.settings.show_llm_status())
         b.sync_event.connect(self._on_sync_event)
         self.sync = None
         if cfg.sync_enabled:
@@ -258,7 +260,20 @@ class MurmrApp:
         if not capabilities.can_train():
             return "Tuning needs a Windows PC with an NVIDIA graphics card."
         if not hasattr(self, "_wsl_status"):
-            self._wsl_status = wsl_status()
+            # Asking WSL can take up to 30 s: never on the UI thread.
+            if not getattr(self, "_wsl_checking", False):
+                self._wsl_checking = True
+
+                def check():
+                    try:
+                        self._wsl_status = wsl_status()
+                    except Exception as exc:  # noqa: BLE001
+                        self._wsl_status = f"Couldn't check WSL: {exc}"
+                    self._wsl_checking = False
+                    self.bridge.tuning_changed.emit("recognition")
+
+                threading.Thread(target=check, name="wsl-check", daemon=True).start()
+            return "Checking WSL…"
         return self._wsl_status
 
     def start_tuning(self, kind: str, hours: float = 4.0) -> str | None:
@@ -273,7 +288,7 @@ class MurmrApp:
             return "Switch on Settings > Your voice > Create a voice that sounds like me first."
         if kind == "recognition" and not self.cfg.save_training_audio:
             return "Switch on Settings > Your voice > Improve recognition with my voice first."
-        self._free_gpu_for_training()
+        threading.Thread(target=self._free_gpu_for_training, name="free-gpu", daemon=True).start()
         job = Job(kind, on_change=lambda j: self.bridge.tuning_changed.emit(j.kind), hours=hours,
                   include_unedited=bool(self.cfg.train_on_unedited))
         self._tuning[kind] = job
@@ -956,6 +971,10 @@ class MurmrApp:
                 # Selected text you can't edit (a web page...): show the result to copy.
                 self.injector.copy(result)
                 self.bridge.show_card.emit(result, "")
+            elif why := self._moved_away(f):
+                log.info("Not pasting the command result: %s", why)
+                self.injector.copy(result)
+                self.bridge.show_card.emit(result, why)
             else:
                 self.injector.inject(result)  # replaces the selection, or inserts at the cursor
             self._remember(instruction, result, len(audio) / sr, command=instruction)
@@ -1007,6 +1026,8 @@ class MurmrApp:
             text = textproc.apply_terms(text, names, threshold=0.86, min_len=5, case_only=False)
         snippets = self.dictionary.snippets_snapshot()
         triggers = textproc.find_snippets(text, snippets)
+        if f.is_password:
+            style = "exact"  # a password: exactly what you said, never sent to the AI
         if style == "exact" or self.tuning_active():
             polished = text  # code & terminals: your words; while training: GPU is busy
         else:
@@ -1026,8 +1047,23 @@ class MurmrApp:
         # Never end with a newline: some apps treat it as Enter and send the message.
         return text.strip()
 
+    @staticmethod
+    def _moved_away(f) -> str:
+        """"" when the text can go to ``f``; otherwise why it's going on the clipboard.
+        You may switch windows while the AI polishes: the text then goes back to where you
+        dictated, or onto the clipboard, never into whatever is in front now."""
+        if focus.same_window(f) is not False:
+            return ""
+        log.info("You switched away from %s while Murmr was working; going back", f.app or "?")
+        if focus.restore(f):
+            return ""
+        return (f"You switched away from {f.app or 'the app'} while Murmr was working · "
+                "copied to clipboard")
+
     def _deliver(self, text: str) -> None:
         f = self._focus
+        if not getattr(self, "_card_reason", "") and f.is_text is not False:
+            self._card_reason = self._moved_away(f)
         if getattr(self, "_card_reason", ""):
             log.info("Not pasting: %s", self._card_reason)
             self.injector.copy(text)
@@ -1051,6 +1087,9 @@ class MurmrApp:
             self.watcher.watch(self._focus, self._before, text, sample)
 
     def _remember(self, raw: str, text: str, seconds: float, command: str | None = None) -> None:
+        if getattr(self._focus, "is_password", False):
+            log.info("Password field: not kept in History or Paste last")
+            return
         self.history.append(text)
         del self.history[:-10]
         if self.cfg.save_history:
@@ -1656,6 +1695,29 @@ class MurmrApp:
         return self._status_text
 
     def llm_status(self) -> tuple[bool, str]:
+        """The local AI's status for Settings. Checking can take seconds (it may start Ollama),
+        so it runs in the background: this returns the last answer and the Settings page
+        updates when the new one arrives."""
+        if self.cfg.llm_cleanup.enabled in (False, "off"):
+            return False, "Off."
+        if not getattr(self, "_llm_checking", False):
+            self._llm_checking = True
+            threading.Thread(target=self._check_llm_status, name="llm-status", daemon=True).start()
+        return getattr(self, "_llm_status", None) or (False, "Checking…")
+
+    def _check_llm_status(self) -> None:
+        try:
+            result = self._llm_status_now()
+        except Exception as exc:  # noqa: BLE001
+            result = (False, f"Couldn't check: {exc}")
+        finally:
+            self._llm_checking = False
+        changed = result != getattr(self, "_llm_status", None)
+        self._llm_status = result
+        if changed:
+            self.bridge.llm_status.emit()
+
+    def _llm_status_now(self) -> tuple[bool, str]:
         c = self.cfg.llm_cleanup
         if c.enabled in (False, "off"):
             return False, "Off."

@@ -58,6 +58,9 @@ def delete_everything(cfg: config_mod.Config) -> bool:
 
     for path in voice_dirs().values():
         shutil.rmtree(path, ignore_errors=True)
+    import threading
+
+    threading.Thread(target=delete_wsl_copies, name="wsl-delete", daemon=True).start()
     if remaining_voice_data():  # e.g. the tuned model is still loaded (Windows locks it)
         (config_mod.config_dir() / "delete-voice-data").write_text("pending", encoding="utf-8")
     tuned = cfg.model != BASE_MODEL
@@ -66,6 +69,32 @@ def delete_everything(cfg: config_mod.Config) -> bool:
     config_mod.save(cfg)
     log.info("Deleted all voice data%s", " and switched back to the base model" if tuned else "")
     return tuned
+
+
+# What training copied into WSL from your recordings, and what it made from them. The
+# general speech downloaded for comparison and the tools stay (nothing of yours in them).
+WSL_VOICE_PATHS = ("whispa-finetune/work/data/user", "whispa-finetune/work/models",
+                   "murmr-voice/work")
+
+
+def delete_wsl_copies() -> None:
+    """Windows: remove the copies tuning made inside WSL. Quietly does nothing without WSL."""
+    import subprocess
+    import sys
+
+    if sys.platform != "win32" or not shutil.which("wsl.exe"):
+        return
+    paths = " ".join(f'"$HOME/{p}"' for p in WSL_VOICE_PATHS)
+    try:
+        r = subprocess.run(["wsl.exe", "--", "bash", "-lc", f"rm -rf {paths}"],
+                           capture_output=True, timeout=60,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if r.returncode == 0:
+            log.info("Deleted the training copies in WSL")
+        else:
+            log.warning("Couldn't delete the training copies in WSL (exit %s)", r.returncode)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("Couldn't delete the training copies in WSL: %s", exc)
 
 
 def finish_pending_delete() -> None:

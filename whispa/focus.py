@@ -332,6 +332,24 @@ def _mac_inspect() -> Focus:
 
 
 # --------------------------------------------------------------------------- restoring a field
+def same_window(target: Focus) -> bool | None:
+    """Is ``target``'s window (Windows) or app (macOS) still the one in front? None when
+    that can't be told. A plain system call: no accessibility round trip."""
+    try:
+        if sys.platform == "win32" and target._window:
+            import ctypes
+
+            return ctypes.windll.user32.GetForegroundWindow() == target._window
+        if sys.platform == "darwin" and target._pid is not None:
+            from AppKit import NSWorkspace
+
+            front = NSWorkspace.sharedWorkspace().frontmostApplication()
+            return front is not None and front.processIdentifier() == target._pid
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def restore(target: Focus, settle_s: float = 0.25) -> bool:
     """Bring ``target``'s window to the front and focus its field again. True only when a
     fresh look confirms that exact field has the focus (never a guess)."""

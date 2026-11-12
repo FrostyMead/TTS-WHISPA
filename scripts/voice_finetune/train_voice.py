@@ -23,17 +23,29 @@ from pathlib import Path
 
 WORK = Path.home() / "murmr-voice" / "work"
 BASE_REPO = "rhasspy/piper-checkpoints"
-BASE_PREFIX = "en/en_US/lessac/medium/"
+# Pinned: this exact file at this exact revision, checked by its SHA-256 before it's opened.
+# A checkpoint is a pickle (it can run code when loaded), so a changed upstream file must
+# never be used just because it's newer.
+BASE_REVISION = "4037181dd0720c0e2961d0258cfa3ca798d4ec17"
+BASE_FILE = "en/en_US/lessac/medium/epoch=2164-step=1355540.ckpt"
+BASE_SHA256 = "ab7e5b8dab40f834b7cc58ae4ad7b7009c954b901e4ddbb784bbe11ce379a1cd"
+BASE_EPOCH = 2164
 
 
 def base_checkpoint() -> Path:
-    from huggingface_hub import hf_hub_download, list_repo_files
+    import hashlib
 
-    files = [f for f in list_repo_files(BASE_REPO, repo_type="dataset")
-             if f.startswith(BASE_PREFIX) and f.endswith(".ckpt")]
-    if not files:
-        raise SystemExit(f"No base checkpoint found under {BASE_REPO}/{BASE_PREFIX}")
-    return Path(hf_hub_download(BASE_REPO, sorted(files)[-1], repo_type="dataset"))
+    from huggingface_hub import hf_hub_download
+
+    path = Path(hf_hub_download(BASE_REPO, BASE_FILE, repo_type="dataset", revision=BASE_REVISION))
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    if h.hexdigest() != BASE_SHA256:
+        path.unlink(missing_ok=True)
+        raise SystemExit("The downloaded base voice doesn't match the expected file; not using it.")
+    return path
 
 
 def latest_checkpoint(root: Path) -> Path | None:
@@ -43,7 +55,11 @@ def latest_checkpoint(root: Path) -> Path | None:
 
 
 def checkpoint_epoch(ckpt: Path) -> int:
+    """Only for checkpoints this computer made itself (the base one is never unpickled here)."""
     import torch
+
+    if ckpt.name == Path(BASE_FILE).name:
+        return BASE_EPOCH
 
     return int(torch.load(ckpt, map_location="cpu", weights_only=False).get("epoch", 0))
 
@@ -68,7 +84,7 @@ def main() -> None:
     resume = latest_checkpoint(root)
     if resume is None:
         resume = base_checkpoint()
-        state = {"base_epoch": checkpoint_epoch(resume), "rounds": 0, "espeak_voice": args.espeak_voice}
+        state = {"base_epoch": BASE_EPOCH, "rounds": 0, "espeak_voice": args.espeak_voice}
         print(f"First round: starting from the Lessac voice (epoch {state['base_epoch']})")
     start = checkpoint_epoch(resume)
     trained = start - state["base_epoch"]

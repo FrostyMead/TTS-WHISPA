@@ -94,12 +94,21 @@ class Job:
                 env += "\nexport MURMR_INCLUDE_UNEDITED=1"
         else:
             folder, env = SCRIPTS / "voice_finetune", f"export HOURS={self.hours:g}"
+        # The pipeline runs in its own process group, whose id is written down, so Cancel
+        # stops exactly this job and nothing else running in WSL.
         script = "\n".join(["#!/usr/bin/env bash", "set -e", "export PYTHONUNBUFFERED=1", env,
-                            f"cd '{to_wsl(folder)}'", "bash ./pipeline.sh 2>&1", ""])
+                            f"cd '{to_wsl(folder)}'",
+                            "setsid bash ./pipeline.sh 2>&1 &",
+                            f'echo $! > "$HOME/{self.pid_file}"',
+                            "wait $!", ""])
         job = config_mod.config_dir() / "tuning" / f"{self.kind}.sh"
         job.parent.mkdir(parents=True, exist_ok=True)
         job.write_bytes(script.encode())  # LF line endings: bash needs them
         return ["wsl.exe", "--", "bash", to_wsl(job)]
+
+    @property
+    def pid_file(self) -> str:
+        return f".murmr-tune-{self.kind}.pid"
 
     def start(self) -> None:
         self.running = True
@@ -158,9 +167,10 @@ class Job:
     def cancel(self) -> None:
         self._cancelled = True
         if self._proc and self._proc.poll() is None:
-            pattern = "pipeline.sh" if self.kind == "recognition" else "train_voice.py|pipeline.sh"
             try:
-                _wsl(["--", "bash", "-lc", f"pkill -f '{pattern}'; pkill -f 'piper.train|train.py'"])
+                _wsl(["--", "bash", "-lc",
+                      f'p=$(cat "$HOME/{self.pid_file}" 2>/dev/null) && [ -n "$p" ] && '
+                      'kill -TERM -- "-$p"'])
             except (OSError, subprocess.SubprocessError):
                 pass
             self._proc.terminate()

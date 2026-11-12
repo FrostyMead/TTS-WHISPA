@@ -62,6 +62,12 @@ MAX_CONNECTIONS = 4  # at once; more are closed straight away
 HANDSHAKE_S = 10.0  # to say who you are and prove it, before the longer transfer timeout
 KINDS = ("models", "voices")
 _NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,120}$")
+_ID_OK = re.compile(r"^[0-9a-f]{32}$")  # a computer's id: uuid4().hex
+MAX_FOLDER_FILES = 20000
+
+
+def valid_id(value) -> bool:
+    return isinstance(value, str) and bool(_ID_OK.match(value))
 
 
 class SyncError(Exception):
@@ -262,7 +268,19 @@ def recv_folder(ch: Channel, root: Path, name: str) -> Path:
         raise SyncError(f"bad name {name!r}")
     head = ch.expect("folder")
     specs = head.get("files") or []
-    total = sum(int(s.get("size", 0)) for s in specs)
+    if not isinstance(specs, list) or len(specs) > MAX_FOLDER_FILES:
+        raise SyncError("bad file list")
+    seen: set[str] = set()
+    total = 0
+    for spec in specs:
+        size = spec.get("size") if isinstance(spec, dict) else None
+        if not isinstance(size, int) or isinstance(size, bool) or not 0 <= size <= MAX_FOLDER_BYTES:
+            raise SyncError("bad file size")
+        path = str(spec.get("path", ""))
+        if path in seen:
+            raise SyncError("the same file twice")
+        seen.add(path)
+        total += size
     if total > MAX_FOLDER_BYTES:
         raise SyncError("too large")
     root.mkdir(parents=True, exist_ok=True)
@@ -383,6 +401,8 @@ class SyncService:
         self.id = data.get("id") or uuid.uuid4().hex
         self.peers: dict[str, Peer] = {}
         for pid, p in (data.get("peers") or {}).items():
+            if not valid_id(pid):
+                continue  # never a file name we didn't make
             try:
                 self.peers[pid] = Peer(pid, p["name"], _unb64(p["key"]), p.get("addr", ""),
                                        p.get("last_sync", 0.0))
@@ -408,12 +428,14 @@ class SyncService:
             os.replace(tmp, self._path)
 
     def _base_path(self, peer_id: str) -> Path:
+        if not valid_id(peer_id):
+            raise SyncError("bad computer id")
         return self.cdir / "sync" / f"{peer_id}.json"
 
     def _base(self, peer_id: str) -> dict:
         try:
             return json.loads(self._base_path(peer_id).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, SyncError):
             return {}
 
     def _save_base(self, peer_id: str, state: dict, files: dict) -> None:
@@ -497,10 +519,14 @@ class SyncService:
                 msg = json.loads(data)
             except ValueError:
                 continue
+            # Anyone on the network can send anything here: only a well-formed question
+            # from a valid id gets looked at.
+            if not isinstance(msg, dict) or not valid_id(msg.get("id")):
+                continue
             # Only paired computers, or anyone while a pairing code is showing, get an answer:
             # the rest of the network doesn't learn this computer's name.
             pairing = bool(self.pairing and self.pairing["until"] > time.time())
-            if isinstance(msg, dict) and msg.get("murmr") == "who" and msg.get("id") != self.id \
+            if msg.get("murmr") == "who" and msg.get("id") != self.id \
                     and (pairing or msg.get("id") in self.peers):
                 try:
                     self._udp.sendto(json.dumps(self._hello()).encode(), addr)
@@ -531,9 +557,13 @@ class SyncService:
                     msg = json.loads(data)
                 except ValueError:
                     continue
-                if isinstance(msg, dict) and msg.get("murmr") == "here" and msg.get("id") != self.id:
+                if isinstance(msg, dict) and msg.get("murmr") == "here" and \
+                        valid_id(msg.get("id")) and msg.get("id") != self.id:
+                    port = msg.get("port", TCP_PORT)
+                    if not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
+                        continue
                     found[msg["id"]] = {"id": msg["id"], "name": str(msg.get("name", "?"))[:60],
-                                        "host": addr[0], "port": int(msg.get("port", TCP_PORT)),
+                                        "host": addr[0], "port": port,
                                         "pairing": bool(msg.get("pairing"))}
         return list(found.values())
 
@@ -622,6 +652,8 @@ class SyncService:
         nonce = secrets.token_bytes(16)
         ch.send({"t": "pair_ok", "id": self.id, "name": self.name(), "pub": _b64(mine),
                  "nonce": _b64(nonce)})
+        if not valid_id(msg.get("id")) or msg.get("id") == self.id:
+            raise SyncError("bad computer id")
         theirs = _unb64(msg["pub"])
         shared = priv.exchange(X25519PublicKey.from_public_bytes(theirs))
         transcript = theirs + mine + _unb64(msg["nonce"]) + nonce
@@ -664,6 +696,8 @@ class SyncService:
                     ch.send({"t": "pair", "v": VERSION, "id": self.id, "name": self.name(),
                              "pub": _b64(mine), "nonce": _b64(nonce), "port": self.port})
                     reply = ch.expect("pair_ok")
+                    if not valid_id(reply.get("id")) or reply.get("id") == self.id:
+                        raise SyncError("bad computer id")
                     theirs = _unb64(reply["pub"])
                     shared = priv.exchange(X25519PublicKey.from_public_bytes(theirs))
                     transcript = mine + theirs + nonce + _unb64(reply["nonce"])
@@ -684,6 +718,8 @@ class SyncService:
         raise SyncError(f"Pairing failed: {last}")
 
     def _add_peer(self, pid: str, name: str, key: bytes, addr: str) -> None:
+        if not valid_id(pid):
+            raise SyncError("bad computer id")
         self.peers[pid] = Peer(pid, name, key, addr)
         self.pairing = None
         self._save()
