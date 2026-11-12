@@ -2373,20 +2373,23 @@ class MurmrApp:
         from .shortcuts import mac_app_usable, open_mac_app
 
         background = self.window is None or not self.window.isVisible()
-        self.shutdown()
-        if mac_app_usable():  # through Murmr.app, so it keeps Murmr's permissions
+        try:
+            self.shutdown()
+            if mac_app_usable():  # through Murmr.app, so it keeps Murmr's permissions
+                self.instance.release()
+                if open_mac_app(background):
+                    return
+            exe, extra = launcher()  # same windowless launch as the Start Menu shortcut
+            args = [exe, *extra]
+            if background:
+                args.append("--background")
             self.instance.release()
-            if open_mac_app(background):
-                self.qapp.quit()
-                return
-        exe, extra = launcher()  # same windowless launch as the Start Menu shortcut
-        args = [exe, *extra]
-        if background:
-            args.append("--background")
-        self.instance.release()
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0) if sys.platform == "win32" else 0
-        subprocess.Popen(args, creationflags=flags, start_new_session=sys.platform != "win32")
-        self.qapp.quit()
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) if sys.platform == "win32" else 0
+            subprocess.Popen(args, creationflags=flags, start_new_session=sys.platform != "win32")
+        except Exception:  # noqa: BLE001
+            log.exception("Restart failed")
+        finally:
+            self._exit()
 
     def shutdown(self) -> None:
         """Stop everything that runs in the background. Safe to call more than once: it runs
@@ -2437,8 +2440,24 @@ class MurmrApp:
         self.updater.mark_clean_exit()
 
     def quit(self) -> None:
-        self.shutdown()
-        self.qapp.quit()
+        try:
+            self.shutdown()
+        finally:
+            self._exit()
+
+    def _exit(self) -> None:
+        """End Murmr once shutdown() has stopped and saved everything.
+
+        Up to 0.8.17 Murmr asked Qt to quit() and sometimes kept running after Quit or an
+        update restart: no tray icon or hotkey, but its pill still on screen and its models
+        still in memory. exit() can't be refused, the pill goes at once, and if the process
+        is somehow still here a few seconds later it ends itself."""
+        try:
+            self.overlay.hide()
+        except Exception:  # noqa: BLE001
+            pass
+        exit_backstop()
+        self.qapp.exit(0)
 
 
 def _quiet(audio) -> bool:
@@ -2448,6 +2467,77 @@ def _quiet(audio) -> bool:
     if not len(audio):
         return True
     return float(np.max(np.abs(audio))) < 0.01
+
+
+def exit_backstop(delay: float = 5.0) -> None:
+    """End the process in `delay` seconds unless it has already ended by then."""
+    def end() -> None:
+        try:  # not through logging: whatever stopped the exit may be holding its lock
+            with open(config_mod.config_dir() / "whispa.log", "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} WARNING whispa: "
+                        "still running after quitting; ending the process\n")
+        except OSError:
+            pass
+        os._exit(0)
+
+    t = threading.Timer(delay, end)
+    t.daemon = True
+    t.start()
+
+
+def leftover_pids(processes: list[tuple[int, str]], marker: str, mine: set[int]) -> list[int]:
+    """Processes, other than ours, whose command line starts Murmr through `marker`."""
+    m = os.path.normcase(marker)
+    return [pid for pid, cmd in processes
+            if pid not in mine and m in os.path.normcase(cmd or "")]
+
+
+def _python_processes() -> list[tuple[int, str]]:
+    import subprocess
+
+    if sys.platform == "win32":
+        script = ("Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
+                  "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                             capture_output=True, text=True, timeout=60,
+                             creationflags=0x08000000).stdout  # CREATE_NO_WINDOW
+    else:
+        out = subprocess.run(["ps", "-axww", "-o", "pid=,command="],
+                             capture_output=True, text=True, timeout=30).stdout
+    rows = []
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition("\t" if sys.platform == "win32" else " ")
+        if pid.isdigit():
+            rows.append((int(pid), cmd.strip()))
+    return rows
+
+
+def end_leftover_copies() -> int:
+    """End copies of Murmr that quit but never exited (0.8.17 and earlier, see _exit).
+
+    Only the running copy calls this, after taking the one-Murmr-per-user lock: a copy that
+    still had it would have stopped this one from starting, so any other process started
+    through this install's bootstrap has already shut down and is only holding on to its
+    pill and memory."""
+    import signal
+
+    from .updater import boot_command, runtime_dir
+
+    if getattr(sys, "frozen", False) or runtime_dir() is None:
+        return 0  # a development run: leave other Pythons alone
+    marker = next((a for a in boot_command() if a.endswith("boot.py")), "")
+    if not marker:
+        return 0
+    ended = 0
+    for pid in leftover_pids(_python_processes(), marker, {os.getpid(), os.getppid()}):
+        try:
+            os.kill(pid, signal.SIGTERM)  # TerminateProcess on Windows
+            ended += 1
+        except OSError:
+            pass
+    if ended:
+        log.info("Ended %d leftover copy(s) of Murmr that hadn't exited", ended)
+    return ended
 
 
 def relaunch_detached() -> None:
@@ -2649,6 +2739,16 @@ def run(background: bool = False) -> int:
     app = MurmrApp(qapp, cfg)
     app.instance = instance
     instance.listen(app.show_window)
+
+    def sweep() -> None:
+        try:
+            end_leftover_copies()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Couldn't check for leftover copies: %s", exc)
+
+    sweeper = threading.Timer(20, sweep)  # after start-up, off the UI thread
+    sweeper.daemon = True
+    sweeper.start()
     if not background:
         app.show_window()
     log.info("Murmr started; hotkey %s, config %s", app.hotkey.label(), config_mod.config_path())

@@ -87,6 +87,8 @@ def check_probation() -> bool:
                 os.remove(os.path.join(RUNTIME, "probation"))
                 shutil.rmtree(NEXT, ignore_errors=True)
                 return True
+    except FileNotFoundError:
+        pass  # no update on probation, or the last run exited cleanly
     except Exception as exc:
         log(f"probation check: {exc}")
     return rolled_back
