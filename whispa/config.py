@@ -102,6 +102,7 @@ class LLMCleanup:
 class Config:
     # Keys
     hotkey: str = field(default_factory=default_hotkey)
+    backup_hotkey: str = ""  # a second push-to-talk shortcut ("" = off)
     hands_free_key: str = "space"
     command_hotkey: str = field(default_factory=default_command_hotkey)  # "" disables Command Mode
     double_tap_to_lock: bool = True

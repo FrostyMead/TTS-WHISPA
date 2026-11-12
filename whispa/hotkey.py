@@ -73,7 +73,7 @@ class Hotkey:
 class PTTStateMachine:
     """Hold-to-talk with a hands-free lock, plus an optional Command Mode hotkey.
 
-    * Hold the hotkey: record; release: transcribe.
+    * Hold the hotkey (or the backup hotkey): record; release: transcribe.
     * While holding, tap the hands-free key (or double-tap the hotkey): lock.
       Press the hotkey again to finish.
     * Hold the command hotkey: record a spoken instruction (``mode == "command"``).
@@ -88,12 +88,14 @@ class PTTStateMachine:
 
     def __init__(self, hotkey: Hotkey, *, hands_free_key: str | None = "space",
                  double_tap: bool = True, command_hotkey: Hotkey | None = None,
+                 backup_hotkey: Hotkey | None = None,
                  on_start: Callable[[], None], on_stop: Callable[[], None],
                  on_cancel: Callable[[bool], None], on_lock: Callable[[], None],
                  clock: Callable[[], float] = time.monotonic,
                  double_tap_s: float = 0.35, shortcut_grace_s: float = 0.4):
         self.hotkey = hotkey
         self.command_hotkey = command_hotkey
+        self.backup_hotkey = backup_hotkey  # a second push-to-talk shortcut
         self.hands_free_key = normalize(hands_free_key) if hands_free_key else None
         self.double_tap = double_tap
         self.on_start, self.on_stop = on_start, on_stop
@@ -103,29 +105,48 @@ class PTTStateMachine:
         self.shortcut_grace_s = shortcut_grace_s
         self.state = self.IDLE
         self.mode = self.DICTATE
+        self._started: Hotkey | None = None  # the shortcut that started this recording
         self.held: set[str] = set()
         self._armed = True
         self._t_start = 0.0
         self._last_tap_end = -1e9
         self._lock = threading.RLock()
 
+    def _dictate_keys(self) -> list[Hotkey]:
+        keys = [self.hotkey]
+        if self.backup_hotkey is not None and self.backup_hotkey not in (self.hotkey, self.command_hotkey):
+            keys.append(self.backup_hotkey)
+        return keys
+
     def _hotkeys(self) -> list[tuple[str, Hotkey]]:
-        pairs = [(self.DICTATE, self.hotkey)]
+        pairs = [(self.DICTATE, hk) for hk in self._dictate_keys()]
         if self.command_hotkey is not None and self.command_hotkey != self.hotkey:
             pairs.append((self.COMMAND, self.command_hotkey))
         return pairs
 
     def _active(self) -> Hotkey:
-        return self.command_hotkey if self.mode == self.COMMAND and self.command_hotkey else self.hotkey
+        if self.mode == self.COMMAND and self.command_hotkey:
+            return self.command_hotkey
+        if self._started is not None and self._started in self._dictate_keys():
+            return self._started
+        return self.hotkey
 
     def _any_satisfied(self) -> bool:
         return any(hk.satisfied(self.held) for _, hk in self._hotkeys())
 
+    def _hit(self, new: set[str]) -> tuple[str, Hotkey] | None:
+        """The (mode, shortcut) this key press just completed (longest wins)."""
+        hits = [(len(hk.keys), mode, hk) for mode, hk in self._hotkeys()
+                if hk.satisfied(self.held) and new & hk.keys]
+        if not hits:
+            return None
+        _n, mode, hk = max(hits, key=lambda h: (h[0], h[1]))
+        return mode, hk
+
     def _completed(self, new: set[str]) -> str | None:
         """The mode whose shortcut this key press just completed (longest wins)."""
-        hits = [(len(hk.keys), mode) for mode, hk in self._hotkeys()
-                if hk.satisfied(self.held) and new & hk.keys]
-        return max(hits)[1] if hits else None
+        hit = self._hit(new)
+        return hit[0] if hit else None
 
     # -- keyboard events -------------------------------------------------
     def press(self, names: set[str]) -> None:
@@ -136,11 +157,12 @@ class PTTStateMachine:
                 return  # auto-repeat
             now = self.clock()
             if self.state == self.IDLE:
-                mode = self._completed(new) if self._armed else None
-                if mode is not None:
+                hit = self._hit(new) if self._armed else None
+                if hit is not None:
+                    mode, hk = hit
                     double = (mode == self.DICTATE and self.double_tap
                               and now - self._last_tap_end < self.double_tap_s)
-                    self._begin(now, mode)
+                    self._begin(now, mode, hk)
                     if double:
                         self._enter_lock()
             elif self.state == self.HOLDING:
@@ -151,7 +173,7 @@ class PTTStateMachine:
                       and self._completed(new) == self.COMMAND):
                     # Ctrl+Win fired first, then Alt arrived: it was Ctrl+Alt+Win all along.
                     self._cancel(silent=True)
-                    self._begin(now, self.COMMAND)
+                    self._begin(now, self.COMMAND, self.command_hotkey)
                 elif self.mode == self.DICTATE and self.hands_free_key and self.hands_free_key in new:
                     self._enter_lock()
                 elif not new & self._active().keys and early:
@@ -159,8 +181,8 @@ class PTTStateMachine:
             elif self.state == self.LOCKED:
                 if "esc" in new:
                     self._cancel(silent=False)
-                elif self.hotkey.satisfied(self.held) and new & self.hotkey.keys:
-                    self._finish()
+                elif any(hk.satisfied(self.held) and new & hk.keys for hk in self._dictate_keys()):
+                    self._finish()  # either push-to-talk shortcut finishes
 
     def release(self, names: set[str]) -> None:
         with self._lock:
@@ -178,7 +200,7 @@ class PTTStateMachine:
     def toggle_hands_free(self) -> None:
         with self._lock:
             if self.state == self.IDLE:
-                self._begin(self.clock(), self.DICTATE)
+                self._begin(self.clock(), self.DICTATE, self.hotkey)
                 self._enter_lock()
             else:
                 self._finish()
@@ -203,9 +225,10 @@ class PTTStateMachine:
         return bool(self.held & MODIFIERS)
 
     # -- internals -------------------------------------------------------
-    def _begin(self, now: float, mode: str) -> None:
+    def _begin(self, now: float, mode: str, hotkey: Hotkey | None = None) -> None:
         self.state = self.HOLDING
         self.mode = mode
+        self._started = hotkey
         self._t_start = now
         self._last_tap_end = -1e9
         self.on_start()
@@ -344,13 +367,17 @@ class HotkeyService:
             self._tap.stop()
 
     def set_hotkey(self, hotkey: Hotkey, hands_free_key: str | None,
-                   command_hotkey: Hotkey | None = ...) -> None:  # type: ignore[assignment]
-        """Swap shortcuts live. ``command_hotkey`` is kept unless passed (None disables it)."""
+                   command_hotkey: Hotkey | None = ...,  # type: ignore[assignment]
+                   backup_hotkey: Hotkey | None = ...) -> None:  # type: ignore[assignment]
+        """Swap shortcuts live. ``command_hotkey`` and ``backup_hotkey`` are kept unless
+        passed (None disables them)."""
         with self.sm._lock:
             self.sm.hotkey = hotkey
             self.sm.hands_free_key = normalize(hands_free_key) if hands_free_key else None
             if command_hotkey is not ...:
                 self.sm.command_hotkey = command_hotkey
+            if backup_hotkey is not ...:
+                self.sm.backup_hotkey = backup_hotkey
             self.sm.reset()
 
     def capture(self, on_done: Callable[[str | None, str | None], None], single: bool = False) -> None:

@@ -291,8 +291,9 @@ class HotkeyField(QWidget):
 
     change_requested = Signal()
     cancel_requested = Signal()
+    clear_requested = Signal()  # "Off" pressed (optional shortcuts only)
 
-    def __init__(self, labels: list[str]):
+    def __init__(self, labels: list[str], optional: bool = False):
         super().__init__()
         self._lay = QHBoxLayout(self)
         self._lay.setContentsMargins(0, 0, 0, 0)
@@ -303,7 +304,20 @@ class HotkeyField(QWidget):
         self._button.clicked.connect(self._clicked)
         self._lay.addWidget(self._caps)
         self._lay.addWidget(self._button)
+        self._off = None
+        if optional:  # an optional shortcut can be switched off again
+            self._off = QPushButton("Off")
+            self._off.setToolTip("Turn this shortcut off")
+            self._off.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._off.clicked.connect(self.clear_requested.emit)
+            self._lay.addWidget(self._off)
         self.recording = False
+        self._is_off = labels == ["Off"]
+        self._sync_off()
+
+    def _sync_off(self) -> None:
+        if self._off is not None:
+            self._off.setVisible(not self.recording and not self._is_off)
 
     def _clicked(self) -> None:
         (self.cancel_requested if self.recording else self.change_requested).emit()
@@ -311,6 +325,7 @@ class HotkeyField(QWidget):
     def set_recording(self, on: bool) -> None:
         self.recording = on
         self._caps.setVisible(not on)
+        self._sync_off()
         self._button.setText("Press keys…  (Esc to cancel)" if on else "Change")
         self._button.setObjectName("recording" if on else "")
         self._button.style().unpolish(self._button)
@@ -322,6 +337,8 @@ class HotkeyField(QWidget):
         self._lay.replaceWidget(old, self._caps)
         old.deleteLater()
         self._caps.setVisible(not self.recording)
+        self._is_off = labels == ["Off"]
+        self._sync_off()
 
 
 class StatCard(QFrame):

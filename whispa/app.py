@@ -98,6 +98,7 @@ class MurmrApp:
         self.sm = PTTStateMachine(
             hotkey, hands_free_key=cfg.hands_free_key or None, double_tap=cfg.double_tap_to_lock,
             command_hotkey=self._command_hotkey(cfg, hotkey),
+            backup_hotkey=self._parse_backup_hotkey(cfg.backup_hotkey),
             on_start=lambda: self.bridge.start.emit(self.sm.mode), on_stop=self.bridge.stop.emit,
             on_cancel=self.bridge.cancel.emit, on_lock=self.bridge.lock.emit)
         self.hotkeys = HotkeyService(self.sm)
@@ -459,6 +460,16 @@ class MurmrApp:
         if want != self.sm.command_hotkey:
             self.hotkeys.set_hotkey(self.hotkey, self.cfg.hands_free_key or None, want)
             log.info("Command Mode %s", "on" if want else "off (no local AI)")
+
+    @staticmethod
+    def _parse_backup_hotkey(spec: str) -> Hotkey | None:
+        if not spec:
+            return None
+        try:
+            return Hotkey.parse(spec)
+        except ValueError as exc:
+            log.error("Backup push-to-talk hotkey %r: %s", spec, exc)
+            return None
 
     @staticmethod
     def _parse_command_hotkey(spec: str, dictate: Hotkey) -> Hotkey | None:
@@ -1683,12 +1694,29 @@ class MurmrApp:
                 hk = Hotkey.parse(value)
             except ValueError as exc:
                 return str(exc)
+            if self.sm.backup_hotkey is not None and hk == self.sm.backup_hotkey:
+                return "That's already your backup push-to-talk shortcut."
             self.hotkey = hk
             self.hotkeys.set_hotkey(hk, cfg.hands_free_key or None)
             self.overlay.hint = self._hint(hk)
+        elif key == "backup_hotkey":
+            hk = None
+            if value:
+                try:
+                    hk = Hotkey.parse(value)
+                except ValueError as exc:
+                    return str(exc)
+                if hk == self.hotkey:
+                    return "That's already your push-to-talk shortcut."
+                if self.sm.command_hotkey is not None and hk == self.sm.command_hotkey:
+                    return "That's your Command Mode shortcut. Pick a different one."
+                if cfg.hands_free_key and cfg.hands_free_key in hk.keys:
+                    return "The hands-free key can't be part of a push-to-talk shortcut."
+            self.hotkeys.set_hotkey(self.hotkey, cfg.hands_free_key or None, backup_hotkey=hk)
         elif key == "hands_free_key":
-            if value and value in self.hotkey.keys:
-                return "The hands-free key can't be part of the push-to-talk shortcut."
+            if value and (value in self.hotkey.keys or (self.sm.backup_hotkey is not None
+                                                        and value in self.sm.backup_hotkey.keys)):
+                return "The hands-free key can't be part of a push-to-talk shortcut."
             self.hotkeys.set_hotkey(self.hotkey, value or None)
         elif key == "command_hotkey":
             if value:
@@ -1696,7 +1724,7 @@ class MurmrApp:
                     hk = Hotkey.parse(value)
                 except ValueError as exc:
                     return str(exc)
-                if hk == self.hotkey:
+                if hk == self.hotkey or hk == self.sm.backup_hotkey:
                     return "Command Mode needs a different shortcut from push to talk."
             self.hotkeys.set_hotkey(self.hotkey, cfg.hands_free_key or None,
                                     Hotkey.parse(value) if value else None)
@@ -1764,7 +1792,7 @@ class MurmrApp:
                     hk = Hotkey.parse(value)
                 except ValueError as exc:
                     return str(exc)
-                if hk == self.hotkey:
+                if hk == self.hotkey or hk == self.sm.backup_hotkey:
                     return "That's already your push-to-talk shortcut."
             setattr(cfg, key, value)
             self._apply_action_hotkeys()

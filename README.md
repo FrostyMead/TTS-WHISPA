@@ -140,6 +140,7 @@ snippets) stays the same on both, and a speech model tuned on the PC is copied t
 | Action | Default (Windows / Linux) | Default (macOS) |
 |---|---|---|
 | Push-to-talk | hold **Ctrl+Win** (Ctrl+Super), release to insert | hold **fn** |
+| Backup push-to-talk | off: set a second shortcut in Settings → Shortcuts (works exactly like the first) | same |
 | Hands-free | while holding, tap **Space**, or **double-tap** the hotkey. Press the hotkey again to finish | same |
 | Cancel | **Esc** | **Esc** |
 | Command Mode | select text, hold **Ctrl+Alt+Win** and say what to do | hold **fn+⌃** |
@@ -347,6 +348,7 @@ Windows `%APPDATA%\Murmr\config.json`, macOS `~/Library/Application Support/Murm
 | Key | Default | |
 |---|---|---|
 | `hotkey` | `ctrl+cmd` / `fn` | `+`-joined: `ctrl alt shift cmd(win/super) fn`, sides like `right_alt`, `ctrl_r`, keys like `f9` |
+| `backup_hotkey` | `""` | a second push-to-talk shortcut (`""` = off) |
 | `hands_free_key` | `space` | key that locks hands-free while the hotkey is held (`""` disables) |
 | `double_tap_to_lock` | `true` | |
 | `model` | `nemo-parakeet-tdt-0.6b-v3` | any [onnx-asr model name](https://istupakov.github.io/onnx-asr/usage/) |

@@ -755,13 +755,22 @@ class SettingsPage(QScrollArea):
         self.hotkey.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Push to talk", "Hold to dictate, release to insert the text.",
                                   self.hotkey, first=True))
-        self.hands = HotkeyField([hotkey_labels(cfg.hands_free_key)[0]] if cfg.hands_free_key else ["Off"])
+        self.backup = HotkeyField(hotkey_labels(cfg.backup_hotkey) if cfg.backup_hotkey else ["Off"],
+                                  optional=True)
+        self.backup.change_requested.connect(lambda: self._record("backup_hotkey"))
+        self.backup.cancel_requested.connect(self._cancel_record)
+        sec.addWidget(setting_row("Backup push to talk", "A second shortcut that works exactly the "
+                                  "same: handy when an app takes over the first one, or for "
+                                  "another keyboard.", self.backup))
+        self.hands = HotkeyField([hotkey_labels(cfg.hands_free_key)[0]] if cfg.hands_free_key else ["Off"],
+                                 optional=True)
         self.hands.change_requested.connect(lambda: self._record("hands_free_key"))
         self.hands.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Hands-free lock",
                                   "Tap while holding the shortcut to keep listening. Press the "
                                   "shortcut again to finish.", self.hands))
-        self.command = HotkeyField(hotkey_labels(cfg.command_hotkey) if cfg.command_hotkey else ["Off"])
+        self.command = HotkeyField(hotkey_labels(cfg.command_hotkey) if cfg.command_hotkey else ["Off"],
+                                   optional=True)
         self.command.change_requested.connect(lambda: self._record("command_hotkey"))
         self.command.cancel_requested.connect(self._cancel_record)
         self.command_row = setting_row("Command Mode",
@@ -770,26 +779,32 @@ class SettingsPage(QScrollArea):
                                        "writes what you ask for.", self.command)
         sec.addWidget(self.command_row)
         self.paste_last = HotkeyField(hotkey_labels(cfg.paste_last_hotkey) if cfg.paste_last_hotkey
-                                      else ["Off"])
+                                      else ["Off"], optional=True)
         self.paste_last.change_requested.connect(lambda: self._record("paste_last_hotkey"))
         self.paste_last.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Paste last dictation", "Pastes your last dictation again, "
                                   "wherever the cursor is.", self.paste_last))
-        self.read_key = HotkeyField(hotkey_labels(cfg.read_hotkey) if cfg.read_hotkey else ["Off"])
+        self.read_key = HotkeyField(hotkey_labels(cfg.read_hotkey) if cfg.read_hotkey else ["Off"],
+                                    optional=True)
         self.read_key.change_requested.connect(lambda: self._record("read_hotkey"))
         self.read_key.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Read aloud", "Select text anywhere and press this to hear it. "
                                   "Press it again to stop.", self.read_key))
-        self.mode_key = HotkeyField(hotkey_labels(cfg.mode_hotkey) if cfg.mode_hotkey else ["Off"])
+        self.mode_key = HotkeyField(hotkey_labels(cfg.mode_hotkey) if cfg.mode_hotkey else ["Off"],
+                                    optional=True)
         self.mode_key.change_requested.connect(lambda: self._record("mode_hotkey"))
         self.mode_key.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Switch mode", "Press to go to the next dictation mode (Message, "
                                   "Email, Notes…). The pill shows which one.", self.mode_key))
-        self.word_key = HotkeyField(hotkey_labels(cfg.add_word_hotkey) if cfg.add_word_hotkey else ["Off"])
+        self.word_key = HotkeyField(hotkey_labels(cfg.add_word_hotkey) if cfg.add_word_hotkey else ["Off"],
+                                    optional=True)
         self.word_key.change_requested.connect(lambda: self._record("add_word_hotkey"))
         self.word_key.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Add word", "Select a name or word anywhere and press this: it's "
                                   "added to your Dictionary, spelled exactly like that.", self.word_key))
+        for kind in ("backup_hotkey", "hands_free_key", "command_hotkey", "paste_last_hotkey",
+                     "read_hotkey", "mode_hotkey", "add_word_hotkey"):
+            self._field(kind).clear_requested.connect(lambda k=kind: self._turn_off(k))
         sec.addWidget(self._switch_row("double_tap_to_lock", "Double-tap for hands-free",
                                        "Double-tap the shortcut to start hands-free mode."))
         self.hotkey_msg = Label("")
@@ -1372,12 +1387,23 @@ class SettingsPage(QScrollArea):
 
     def _cancel_record(self) -> None:
         self.ctl.cancel_capture()
-        for field in (self.hotkey, self.hands, self.command, self.paste_last, self.read_key,
-                      self.mode_key, self.word_key):
+        for field in (self.hotkey, self.backup, self.hands, self.command, self.paste_last,
+                      self.read_key, self.mode_key, self.word_key):
             field.set_recording(False)
 
+    def _turn_off(self, kind: str) -> None:
+        self._cancel_record()
+        self.hotkey_msg.setVisible(False)
+        err = self.ctl.update_setting(kind, "")
+        if err:
+            self.hotkey_msg.setText(err)
+            self.hotkey_msg.setVisible(True)
+            return
+        self._field(kind).set_labels(["Off"])
+
     def _field(self, kind: str) -> HotkeyField:
-        return {"hotkey": self.hotkey, "hands_free_key": self.hands, "command_hotkey": self.command,
+        return {"hotkey": self.hotkey, "backup_hotkey": self.backup,
+                "hands_free_key": self.hands, "command_hotkey": self.command,
                 "paste_last_hotkey": self.paste_last, "read_hotkey": self.read_key,
                 "mode_hotkey": self.mode_key, "add_word_hotkey": self.word_key}[kind]
 
