@@ -345,8 +345,10 @@ def test_live_transcript_stays_put_while_you_read():
         app.processEvents()
     bar = page.live_view.verticalScrollBar()
     assert bar.value() >= bar.maximum() - 4 and not page.live_btn.isVisibleTo(page)
-    bar.setValue(bar.maximum() // 3)  # you scroll up to read
-    app.processEvents()
+    bar.setValue(bar.maximum() // 3)  # you scroll up to read (as a drag would)
+    bar.sliderReleased.emit()
+    for _ in range(5):
+        app.processEvents()
     assert page.live_btn.isVisibleTo(page)
     where = bar.value()
     session.lines.append(Line(61, "Person 1", "someone keeps talking"))
@@ -357,5 +359,23 @@ def test_live_transcript_stays_put_while_you_read():
     for _ in range(5):
         app.processEvents()
     assert bar.value() >= bar.maximum() - 4 and not page.live_btn.isVisibleTo(page)
+    # a mouse wheel / trackpad scroll up also stops following
+    from PySide6.QtCore import QPoint, QPointF, Qt as QtNS
+    from PySide6.QtGui import QWheelEvent
+
+    vp = page.live_view.viewport()
+    ev = QWheelEvent(QPointF(50, 50), QPointF(vp.mapToGlobal(QPoint(50, 50))), QPoint(0, 0),
+                     QPoint(0, 360), QtNS.MouseButton.NoButton, QtNS.KeyboardModifier.NoModifier,
+                     QtNS.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(vp, ev)
+    for _ in range(5):
+        app.processEvents()
+    assert bar.value() < bar.maximum() - 4 and page.live_btn.isVisibleTo(page)
+    session.lines.append(Line(62, "Person 2", "and more"))
+    held = bar.value()
+    page._tick()
+    for _ in range(5):
+        app.processEvents()
+    assert bar.value() == held
     assert "someone keeps talking" in page.live_view.toPlainText()
     page.close()

@@ -183,7 +183,14 @@ class MeetingsPage(QScrollArea):
         self._live_first = 0
         self._live_html = ""
         self._rendering = False
-        self.live_view.verticalScrollBar().valueChanged.connect(self._live_scrolled)
+        self._held = 0  # where you scrolled to, while not following
+        bar = self.live_view.verticalScrollBar()
+        # Only your scrolling (wheel, dragging, keys) changes whether it follows; anything else
+        # moving the view (redraws, the text laying out, Qt's own cursor jumps) is undone.
+        bar.actionTriggered.connect(lambda _a: QTimer.singleShot(0, self._live_scrolled))
+        bar.sliderReleased.connect(self._live_scrolled)
+        bar.valueChanged.connect(self._view_moved)
+        bar.rangeChanged.connect(lambda _lo, _hi: self._view_moved())
         under = QHBoxLayout()
         under.setContentsMargins(0, 0, 0, 0)
         tip = Label("Click a name to say who it is, or a line to correct it.")
@@ -306,31 +313,38 @@ class MeetingsPage(QScrollArea):
         if html_text == self._live_html:
             return  # nothing new: no redraw, no flicker
         self._live_html = html_text
-        keep = bar.value()
         self._rendering = True
         try:
             self.live_view.setHtml(html_text)
-            bar.setValue(bar.maximum() if self._follow else min(keep, bar.maximum()))
+            bar.setValue(bar.maximum() if self._follow else min(self._held, bar.maximum()))
         finally:
             self._rendering = False
-        if self._follow:  # the text finishes laying out a moment later (macOS): follow it down
-            QTimer.singleShot(0, self._to_bottom)
+        QTimer.singleShot(0, self._restore_view)  # after the text has laid out
 
-    def _to_bottom(self) -> None:
-        if self._follow:
-            self._rendering = True
-            try:
-                bar = self.live_view.verticalScrollBar()
-                bar.setValue(bar.maximum())
-            finally:
-                self._rendering = False
-
-    def _live_scrolled(self, value: int) -> None:
-        if self._rendering:
-            return
+    def _live_scrolled(self, *_args) -> None:
+        """You scrolled: follow along at the bottom, or stay where you are."""
         bar = self.live_view.verticalScrollBar()
-        self._follow = value >= bar.maximum() - 4  # at the bottom again: follow along
+        self._follow = bar.value() >= bar.maximum() - 4
+        self._held = bar.value()
         self.live_btn.setVisible(not self._follow)
+
+    def _view_moved(self, *_args) -> None:
+        bar = self.live_view.verticalScrollBar()
+        if self._rendering or bar.isSliderDown():
+            return
+        want = bar.maximum() if self._follow else min(self._held, bar.maximum())
+        if bar.value() != want:
+            QTimer.singleShot(0, self._restore_view)
+
+    def _restore_view(self) -> None:
+        bar = self.live_view.verticalScrollBar()
+        if bar.isSliderDown():
+            return
+        self._rendering = True
+        try:
+            bar.setValue(bar.maximum() if self._follow else min(self._held, bar.maximum()))
+        finally:
+            self._rendering = False
 
     def _back_to_live(self) -> None:
         self._follow = True
@@ -339,8 +353,7 @@ class MeetingsPage(QScrollArea):
         s = self.ctl.meeting_session()
         if s is not None:
             self._render_live(s)
-        self._to_bottom()
-        QTimer.singleShot(0, self._to_bottom)
+        self._restore_view()
 
     def _fill_list(self) -> None:
         from .window import clear_layout
