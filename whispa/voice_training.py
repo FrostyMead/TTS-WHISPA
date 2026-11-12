@@ -30,7 +30,9 @@ log = logging.getLogger(__name__)
 
 TARGET_MINUTES = 60  # enough for a solid personal fine-tune; 30 already helps
 MAX_TAKE_S = 30.0
+TRAIN_MAX_S = 20.0  # fine-tuning skips clips longer than this (scripts/finetune/train.py)
 MIN_TAKE_S = 0.8
+PARAGRAPH_MAX_WORDS = 34  # sentences joined into a paragraph: about 15 s of reading
 SILENCE_RMS = 0.004  # loudest 50 ms frame below this: the mic heard nothing
 MAX_WER = 0.35  # more than about one word in three wrong: probably misread
 
@@ -92,6 +94,9 @@ class Verdict:
 def precheck(audio: np.ndarray, sr: int) -> Verdict | None:
     """Problems you can spot without running the model (too short, silent)."""
     seconds = len(audio) / sr if sr else 0.0
+    if seconds > TRAIN_MAX_S:
+        return Verdict(False, f"That took {seconds:.0f} seconds: fine-tuning only uses clips up to "
+                              f"{TRAIN_MAX_S:.0f}. Try again a little quicker, or skip this one.", 1.0)
     if seconds < MIN_TAKE_S:
         return Verdict(False, "That was too short. Hold the button (or Space) for the whole "
                               "sentence.", 1.0)
@@ -165,6 +170,48 @@ def builtin_sentences() -> list[str]:
     except ImportError:  # pragma: no cover
         return []
     return list(SENTENCES)
+
+
+def builtin_passages() -> list[str]:
+    try:
+        from .reading_passages import PASSAGES
+    except ImportError:  # pragma: no cover
+        return []
+    return list(PASSAGES)
+
+
+def join_sentences(sentences: list[str], max_words: int = PARAGRAPH_MAX_WORDS,
+                   per: int = 3) -> list[str]:
+    """Group sentences, in order, into short paragraphs of up to ``per`` sentences and
+    ``max_words`` words."""
+    out, cur, words = [], [], 0
+    for s in sentences:
+        n = len(s.split())
+        if cur and (words + n > max_words or len(cur) >= per):
+            out.append(" ".join(cur))
+            cur, words = [], 0
+        cur.append(s)
+        words += n
+    if cur:
+        out.append(" ".join(cur))
+    return out
+
+
+def paragraph_prompts(sentences: list[str], done: set[str]) -> list[str]:
+    """Paragraph mode: the written passages, then the built-in sentences not read yet (alone
+    or inside a paragraph) joined into paragraphs. Each take is several times longer, so the
+    minutes add up much faster for the same number of presses."""
+    order = list(dict.fromkeys(sentences))
+    random.Random(1234).shuffle(order)
+    known = set(order)
+    longer = [d for d in done if d not in known]  # paragraphs read before
+    unread = [x for x in order if x not in done and not any(x in d for d in longer)]
+    return builtin_passages() + join_sentences(unread)
+
+
+def dictionary_paragraphs(words: list[str]) -> list[str]:
+    """Paragraph mode: each Dictionary word's sentences read as one paragraph."""
+    return [" ".join(dictionary_sentences([w])) for w in words]
 
 
 @dataclass
@@ -322,9 +369,25 @@ class VoiceTrainingPage(QScrollArea):
             lay.addWidget(self.tuning)
 
         # The sentence
-        sec = _section(lay, "Read this sentence")
+        sec = _section(lay, "Read this aloud")
         sec.setContentsMargins(18, 16, 18, 16)
         sec.setSpacing(10)
+        from PySide6.QtWidgets import QComboBox
+
+        length_row = QHBoxLayout()
+        length_row.setSpacing(8)
+        length_row.addWidget(_label("Read", "muted", wrap=False))
+        self.length = QComboBox()
+        self.length.addItem("Short paragraphs (faster)", "paragraphs")
+        self.length.addItem("Single sentences", "sentences")
+        self.length.setToolTip("Paragraphs record about three times as much speech per take, so "
+                               "you reach your target sooner.")
+        self.length.setCurrentIndex(0 if getattr(ctl.cfg, "training_prompts", "paragraphs")
+                                    != "sentences" else 1)
+        self.length.currentIndexChanged.connect(self._length_changed)
+        length_row.addWidget(self.length)
+        length_row.addStretch(1)
+        sec.addLayout(length_row)
         self.tag = _label("", "faint", wrap=False)
         sec.addWidget(self.tag)
         self.sentence = _label("")
@@ -355,7 +418,7 @@ class VoiceTrainingPage(QScrollArea):
         meter.addWidget(self.level)
         controls.addLayout(meter, 1)
         self.skip = QPushButton("Skip")
-        self.skip.setToolTip("Skip this sentence for now (it comes back later)")
+        self.skip.setToolTip("Skip this one for now (it comes back later)")
         self.skip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.skip.clicked.connect(self.skip_prompt)
         controls.addWidget(self.skip)
@@ -395,7 +458,9 @@ class VoiceTrainingPage(QScrollArea):
         tips = _section(lay, "Tips")
         tips.setContentsMargins(18, 12, 18, 12)
         for t in ("Use the microphone and room you normally dictate in, at your usual distance.",
-                  "Short sessions are fine: progress is saved after every sentence.",
+                  "Short sessions are fine: progress is saved after every recording.",
+                  "Short paragraphs get you there about three times faster than single sentences. "
+                  "Keep each one under 20 seconds: that's the longest clip training uses.",
                   "About 30 minutes already helps; 60 minutes or more gives the best results. "
                   "Then run the fine-tuning steps in scripts/finetune/README.md.",
                   "Sentences built from your Dictionary words are mixed in, because those are "
@@ -452,10 +517,33 @@ class VoiceTrainingPage(QScrollArea):
         if self._queue is None:
             done = self.store().read_prompts()
             words = dictionary_words(self.ctl.dictionary)
-            self._queue = PromptQueue(builtin_sentences(), dictionary_sentences(words), done)
+            if self._paragraphs():
+                self._queue = PromptQueue(paragraph_prompts(builtin_sentences(), done),
+                                          dictionary_paragraphs(words), done)
+            else:
+                self._queue = PromptQueue(builtin_sentences(), dictionary_sentences(words), done)
         self._update_progress()
         if self._state in ("idle", "flagged"):
             self._show_prompt()
+
+    def _paragraphs(self) -> bool:
+        return getattr(self.ctl.cfg, "training_prompts", "paragraphs") != "sentences"
+
+    def _length_changed(self) -> None:
+        value = self.length.currentData()
+        if value == getattr(self.ctl.cfg, "training_prompts", "paragraphs"):
+            return
+        if hasattr(self.ctl, "update_setting"):
+            self.ctl.update_setting("training_prompts", value)
+        else:
+            self.ctl.cfg.training_prompts = value
+        if self._state in ("recording", "checking"):
+            return  # applied after this take
+        self._queue = None
+        self._take = None
+        self._state = "idle"
+        self.result.setVisible(False)
+        self.refresh()
 
     def _update_progress(self) -> None:
         seconds = self.store().read_seconds()
@@ -463,7 +551,7 @@ class VoiceTrainingPage(QScrollArea):
         self.minutes.setText(f"{minutes:.1f} of {TARGET_MINUTES} min recorded")
         self.progress.set_value(minutes / TARGET_MINUTES)
         n, s = self._session
-        self.session_info.setText(f"This session: {n} sentence{'s' if n != 1 else ''} · "
+        self.session_info.setText(f"This session: {n} recording{'s' if n != 1 else ''} · "
                                   f"{s / 60:.1f} min" if n else "")
         left = len(self._queue) if self._queue else 0
         if minutes >= TARGET_MINUTES:
@@ -473,8 +561,8 @@ class VoiceTrainingPage(QScrollArea):
         else:
             note = f"About {max(1, round((30 - minutes)))} more minutes for a first fine-tune."
         if self._queue and self._queue.round > 1:
-            note += " You've read every sentence once; this is a second round."
-        self.progress_note.setText(f"{note}  {left} sentences in the queue.")
+            note += " You've read everything once; this is a second round."
+        self.progress_note.setText(f"{note}  {left} to read in the queue.")
 
     def _consented(self) -> bool:
         cfg = self.ctl.cfg
@@ -499,6 +587,9 @@ class VoiceTrainingPage(QScrollArea):
         self.record.setEnabled(True)
         self.skip.setEnabled(len(self._queue) > 1)
         self.sentence.setText(p.text)
+        # A paragraph is easier to read a little smaller.
+        size = 21 if len(p.text.split()) <= 20 else 18
+        self.sentence.setStyleSheet(f"font-size: {size}px; font-weight: 600;")
         self.tag.setText("From your Dictionary" if p.source == "dictionary" else "")
         self.tag.setVisible(p.source == "dictionary")
 
@@ -531,7 +622,8 @@ class VoiceTrainingPage(QScrollArea):
             return
         self.level.set_value(min(1.0, (self._recorder.level or 0.0) * 12))
         elapsed = time.monotonic() - self._t0
-        self.hint.setText(f"Listening · {elapsed:.1f}s")
+        self.hint.setText(f"Listening · {elapsed:.1f}s" + (f" of {TRAIN_MAX_S:.0f}s max"
+                                                             if elapsed > TRAIN_MAX_S - 5 else ""))
         if elapsed >= MAX_TAKE_S:
             self.stop_take()
 
@@ -605,7 +697,7 @@ class VoiceTrainingPage(QScrollArea):
         self._take = None
         self._queue.advance()
         log.info("Voice training: saved %s (%.1fs)", sid, seconds)
-        self._show_result("saved", f"Saved the previous sentence ({seconds:.1f}s).",
+        self._show_result("saved", f"Saved ({seconds:.1f}s).",
                           f"Heard: “{take.heard}”" if take.heard else "")
         self._update_progress()
         self._show_prompt()

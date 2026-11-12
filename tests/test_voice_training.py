@@ -250,3 +250,53 @@ def test_page_records_nothing_without_consent(tmp_path):
     ctl.cfg.voice_clone = True  # either opt-in is enough
     p.refresh()
     assert p.record.isEnabled()
+
+
+# --- paragraphs (faster) ---------------------------------------------------------------------
+def test_passages_are_clean_and_short_enough_to_train_on():
+    from whispa.voice_training import builtin_passages
+
+    passages = builtin_passages()
+    assert len(passages) >= 80 and len(set(passages)) == len(passages)
+    for p in passages:
+        assert p[-1] in ".?!", p
+        assert not any(c in p for c in "/&#@()[];…\n"), p
+        assert 20 <= len(p.split()) <= 36, p  # ~15 s: under the 20 s training limit
+
+
+def test_join_sentences_respects_limits():
+    from whispa.voice_training import join_sentences
+
+    sents = [f"Word {i} " + "x " * 8 + "end." for i in range(10)]  # 11 words each
+    out = join_sentences(sents, max_words=34, per=3)
+    assert all(len(p.split()) <= 34 for p in out)
+    assert " ".join(out).split() == " ".join(sents).split()  # nothing lost or reordered
+
+
+def test_paragraph_prompts_skip_sentences_already_read():
+    from whispa.voice_training import builtin_passages, paragraph_prompts
+
+    sents = builtin_sentences()
+    first = paragraph_prompts(sents, set())
+    joined = first[len(builtin_passages())]
+    single = sents[5]
+    again = paragraph_prompts(sents, {joined, single})
+    rest = " ".join(again)
+    for s in sents:
+        if s in joined or s == single:
+            assert s not in rest
+    assert len(again) < len(first)
+
+
+def test_too_long_take_is_flagged_without_save():
+    v = check_take("Some paragraph.", "some paragraph", speech(21.0), SR)
+    assert not v.ok and "20" in v.reason
+
+
+def test_page_paragraph_mode_and_switching(page):
+    assert page._paragraphs() and len(page._queue.current.text.split()) > 15
+    page.length.setCurrentIndex(1)  # single sentences
+    assert page.fake.cfg.training_prompts == "sentences"
+    assert len(page._queue.current.text.split()) <= 30
+    page.length.setCurrentIndex(0)
+    assert page.fake.cfg.training_prompts == "paragraphs"
