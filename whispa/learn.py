@@ -257,10 +257,68 @@ class Dictionary:
             if self.snippets.pop(trigger, None) is not None:
                 self.save()
 
+    # -- import / export (Dictionary page) ------------------------------
+    def export_data(self) -> dict:
+        """Your words, corrections and snippets, as written by Export (and read by Import)."""
+        with self._lock:
+            self.snapshot()
+            return {"murmr_dictionary": 1, "terms": list(self.terms),
+                    "corrections": dict(self.corrections), "snippets": dict(self.snippets)}
+
+    def import_data(self, data: dict) -> dict[str, int]:
+        """Merge an export (or the same shape) in. Returns how many of each were new."""
+        added = {"terms": 0, "corrections": 0, "snippets": 0}
+        with self._lock:
+            self.snapshot()
+            for term in data.get("terms") or []:
+                term = str(term).strip()
+                if term and term not in self.terms:
+                    self.terms.append(term)
+                    added["terms"] += 1
+            for heard, meant in (data.get("corrections") or {}).items():
+                heard, meant = " ".join(str(heard).lower().split()), str(meant).strip()
+                if heard and meant and self.corrections.get(heard) != meant:
+                    self.corrections[heard] = meant
+                    self.pending.pop(heard, None)
+                    added["corrections"] += 1
+            for trigger, text in (data.get("snippets") or {}).items():
+                trigger = " ".join(str(trigger).lower().split())
+                if trigger and str(text).strip() and self.snippets.get(trigger) != text:
+                    self.snippets[trigger] = str(text)
+                    added["snippets"] += 1
+            self.save()
+        return added
+
     def remove_correction(self, heard: str) -> None:
         with self._lock:
             if self.corrections.pop(heard.lower(), None) is not None:
                 self.save()
+
+
+def parse_vocabulary(text: str) -> dict:
+    """A vocabulary file: Murmr's JSON export, or plain text with one entry per line:
+    ``Kubernetes`` (a word), ``cooper netties -> Kubernetes`` or ``cooper netties, Kubernetes``
+    (a correction). Lines starting with # are comments."""
+    stripped = text.lstrip("\ufeff").strip()
+    if stripped.startswith("{"):
+        data = json.loads(stripped)
+        if not isinstance(data, dict):
+            raise ValueError("not a vocabulary file")
+        return data
+    terms, corrections = [], {}
+    for line in stripped.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        for sep in ("->", "→", "\t", ","):
+            if sep in line:
+                heard, _, meant = line.partition(sep)
+                if heard.strip() and meant.strip():
+                    corrections[heard.strip()] = meant.strip()
+                break
+        else:
+            terms.append(line)
+    return {"terms": terms, "corrections": corrections}
 
 
 HQ_SUFFIX = ".24k.wav"

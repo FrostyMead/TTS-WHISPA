@@ -80,3 +80,40 @@ def test_scratch_that_and_terms():
     assert process("Send it Friday. Scratch that. Send it Monday.") == "Send it Monday."
     assert process("We deploy on kubernetis.", terms=["Kubernetes"]) == "We deploy on Kubernetes."
     assert process("The data is fine.", terms=["Dana"]) == "The data is fine."
+
+
+def test_vocabulary_import_export_round_trip(tmp_path):
+    from whispa.learn import Dictionary, parse_vocabulary
+
+    a = Dictionary(tmp_path / "a.json")
+    a.add_term("Kubernetes")
+    a.set_correction("cooper netties", "Kubernetes")
+    a.set_snippet("my address", "1 Example St")
+    b = Dictionary(tmp_path / "b.json")
+    added = b.import_data(a.export_data())
+    assert added == {"terms": 1, "corrections": 1, "snippets": 1}
+    assert b.import_data(a.export_data()) == {"terms": 0, "corrections": 0, "snippets": 0}
+    data = parse_vocabulary("# my words\nSiobhan\nPyTorch\nopen ai -> OpenAI\nget hub, GitHub\n")
+    assert data == {"terms": ["Siobhan", "PyTorch"],
+                    "corrections": {"open ai": "OpenAI", "get hub": "GitHub"}}
+    b.import_data(data)
+    terms, corrections = b.snapshot()
+    assert "Siobhan" in terms and corrections["open ai"] == "OpenAI"
+
+
+def test_big_dictionary_stays_fast():
+    import random
+    import string
+    import time
+
+    from whispa import textproc
+
+    random.seed(3)
+    word = lambda: "".join(random.choice(string.ascii_lowercase) for _ in range(8)).capitalize()  # noqa: E731
+    terms = [word() for _ in range(5000)] + ["Siobhan"]
+    corr = {f"{word().lower()} {word().lower()}": word() for _ in range(5000)}
+    text = "I asked siobhan and then siobhan said the kubernetes thing was fine " * 3
+    textproc.process(text, replacements=corr, terms=terms)  # first call builds the pattern
+    t0 = time.perf_counter()
+    out = textproc.process(text, replacements=corr, terms=terms)
+    assert time.perf_counter() - t0 < 0.4 and out.count("Siobhan") == 6

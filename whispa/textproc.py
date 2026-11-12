@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import re
 
 _CAP = "\x00"  # marks a position whose next letter should be capitalized
@@ -61,27 +62,56 @@ def apply_terms(text: str, terms: list[str], threshold: float = 0.84, min_len: i
     """
     import difflib
 
-    for term in sorted(terms, key=len, reverse=True):
-        n = len(term.split())
-        key = re.sub(r"\W", "", term.lower())
-        if len(key) < min_len:
-            continue
-        words = list(re.finditer(r"[\w'’-]+", text))
-        for size in {max(1, n - 1), n, n + 1}:
-            for i in range(len(words) - size, -1, -1):
-                span = words[i:i + size]
-                cand = text[span[0].start():span[-1].end()]
-                ckey = re.sub(r"\W", "", cand.lower())
-                if cand == term or not ckey or ckey[0] != key[0]:
+    prepared = []
+    for term in terms:
+        key = _KEY_RE.sub("", term.lower())
+        if len(key) >= min_len:
+            prepared.append((term, key, len(term.split())))
+    if not prepared or not text:
+        return text
+    prepared.sort(key=lambda t: len(t[0]), reverse=True)
+    sizes = sorted({s for _, _, n in prepared for s in (max(1, n - 1), n, n + 1)})
+    index = _span_index(text, sizes)
+    for term, key, n in prepared:
+        for size in (max(1, n - 1), n, n + 1) if n > 1 else (1, 2):
+            changed = False
+            guard = len(text) + 1  # a replaced span: nothing overlapping it is touched
+            for start, end, cand, ckey in index.get((key[0], size), ()):
+                if cand == term or end > guard:
                     continue
+                total = len(ckey) + len(key)
+                if 2 * min(len(ckey), len(key)) < threshold * total:
+                    continue  # lengths alone rule it out (cheap, and most candidates stop here)
                 if not case_only and (ckey == key or not cand[:1].isupper()
                                       or ckey.startswith(key) or key.startswith(ckey)):
                     continue  # same word, not heard as a name, or just "Gather"/"gathers"
-                if difflib.SequenceMatcher(None, ckey, key).ratio() >= threshold:
-                    text = text[:span[0].start()] + term + text[span[-1].end():]
-                    words = list(re.finditer(r"[\w'’-]+", text))
-                    break
+                m = difflib.SequenceMatcher(None, ckey, key)
+                if m.real_quick_ratio() >= threshold and m.quick_ratio() >= threshold and \
+                        m.ratio() >= threshold:
+                    text = text[:start] + term + text[end:]  # spans run from the end: safe
+                    changed = True
+                    guard = start
+            if changed:  # every occurrence of this term is fixed; re-read the text once
+                index = _span_index(text, sizes)
     return text
+
+
+_KEY_RE = re.compile(r"\W")
+_WORD_RE = re.compile(r"[\w'’-]+")
+
+
+def _span_index(text: str, sizes: list[int]) -> dict[tuple[str, int], list]:
+    """Runs of 1, 2... words in ``text``, by (first letter, number of words), last first."""
+    words = list(_WORD_RE.finditer(text))
+    out: dict[tuple[str, int], list] = {}
+    for size in sizes:
+        for i in range(len(words) - size, -1, -1):
+            start, end = words[i].start(), words[i + size - 1].end()
+            cand = text[start:end]
+            ckey = _KEY_RE.sub("", cand.lower())
+            if ckey:
+                out.setdefault((ckey[0], size), []).append((start, end, cand, ckey))
+    return out  # each list runs from the end of the text to the start
 
 
 _NAME_STOP = {
@@ -146,14 +176,23 @@ def expand_snippets(text: str, snippets: dict[str, str]) -> str:
 
 
 def apply_replacements(text: str, replacements: dict[str, str]) -> str:
-    # Longest phrases first so "open ai api" wins over "open ai".
-    for src in sorted(replacements, key=len, reverse=True):
-        dst = replacements[src]
-        if not src:
-            continue
-        pattern = rf"(?<!\w){re.escape(src)}(?!\w)"
-        text = re.sub(pattern, lambda _m, d=dst: d, text, flags=re.IGNORECASE)
-    return text
+    """Your corrections, in one pass however many there are. Longest phrases first, so
+    "open ai api" wins over "open ai"."""
+    if not replacements or not text:
+        return text
+    pattern, lookup = _replacement_pattern(tuple(sorted(replacements.items())))
+    if pattern is None:
+        return text
+    return pattern.sub(lambda m: lookup.get(m.group(0).lower(), m.group(0)), text)
+
+
+@functools.lru_cache(maxsize=8)
+def _replacement_pattern(items: tuple[tuple[str, str], ...]):
+    lookup = {src.lower(): dst for src, dst in items if src}
+    if not lookup:
+        return None, {}
+    alternatives = "|".join(re.escape(src) for src in sorted(lookup, key=len, reverse=True))
+    return re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", re.IGNORECASE), lookup
 
 
 def tidy(text: str) -> str:

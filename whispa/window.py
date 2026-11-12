@@ -427,6 +427,24 @@ class DictionaryPage(QScrollArea):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setWidget(area.takeWidget())
 
+        io_row = QHBoxLayout()
+        io_row.setContentsMargins(0, 0, 0, 0)
+        imp = QPushButton("Import…")
+        imp.setToolTip("Add words and corrections from a file: a Murmr export, or a text file with "
+                       "one word per line, or \"heard -> meant\" for corrections.")
+        imp.clicked.connect(self._import)
+        exp = QPushButton("Export…")
+        exp.setToolTip("Save your words, corrections and snippets to a file (to back up or move to "
+                       "another computer).")
+        exp.clicked.connect(self._export)
+        self.io_note = Label("")
+        self.io_note.setObjectName("faint")
+        self.io_note.setWordWrap(True)
+        io_row.addWidget(imp)
+        io_row.addWidget(exp)
+        io_row.addWidget(self.io_note, 1)
+        lay.addLayout(io_row)
+
         words = _section(lay, "Your words")
         desc = Label("Names, products and jargon. Near-misses snap to your spelling.")
         desc.setObjectName("muted")
@@ -572,6 +590,40 @@ class DictionaryPage(QScrollArea):
         self.pending.setText(f"{n} more fix{'es' if n != 1 else ''} waiting to be seen a second time."
                              if n else "")
 
+    def _import(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from .learn import parse_vocabulary
+
+        path, _ = QFileDialog.getOpenFileName(self, "Import vocabulary", "",
+                                              "Vocabulary (*.json *.txt *.csv);;All files (*)")
+        if not path:
+            return
+        try:
+            data = parse_vocabulary(Path(path).read_text(encoding="utf-8"))
+            added = self.ctl.dictionary.import_data(data)
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            self.io_note.setText(f"Couldn't import that file: {exc}")
+            return
+        self.io_note.setText(f"Imported {added['terms']} words, {added['corrections']} corrections "
+                             f"and {added['snippets']} snippets.")
+        self.refresh()
+
+    def _export(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getSaveFileName(self, "Export vocabulary", "Murmr dictionary.json",
+                                              "Murmr dictionary (*.json)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(json.dumps(self.ctl.dictionary.export_data(), indent=2,
+                                             ensure_ascii=False) + "\n", encoding="utf-8")
+        except OSError as exc:
+            self.io_note.setText(f"Couldn't save: {exc}")
+            return
+        self.io_note.setText(f"Saved to {Path(path).name}.")
+
     def _add_term(self) -> None:
         self.ctl.dictionary.add_term(self.term_in.text())
         self.term_in.clear()
@@ -654,6 +706,11 @@ class SettingsPage(QScrollArea):
         self.mode_key.cancel_requested.connect(self._cancel_record)
         sec.addWidget(setting_row("Switch mode", "Press to go to the next dictation mode (Message, "
                                   "Email, Notes…). The pill shows which one.", self.mode_key))
+        self.word_key = HotkeyField(hotkey_labels(cfg.add_word_hotkey) if cfg.add_word_hotkey else ["Off"])
+        self.word_key.change_requested.connect(lambda: self._record("add_word_hotkey"))
+        self.word_key.cancel_requested.connect(self._cancel_record)
+        sec.addWidget(setting_row("Add word", "Select a name or word anywhere and press this: it's "
+                                  "added to your Dictionary, spelled exactly like that.", self.word_key))
         sec.addWidget(self._switch_row("double_tap_to_lock", "Double-tap for hands-free",
                                        "Double-tap the shortcut to start hands-free mode."))
         self.hotkey_msg = Label("")
@@ -1195,13 +1252,13 @@ class SettingsPage(QScrollArea):
     def _cancel_record(self) -> None:
         self.ctl.cancel_capture()
         for field in (self.hotkey, self.hands, self.command, self.paste_last, self.read_key,
-                      self.mode_key):
+                      self.mode_key, self.word_key):
             field.set_recording(False)
 
     def _field(self, kind: str) -> HotkeyField:
         return {"hotkey": self.hotkey, "hands_free_key": self.hands, "command_hotkey": self.command,
                 "paste_last_hotkey": self.paste_last, "read_hotkey": self.read_key,
-                "mode_hotkey": self.mode_key}[kind]
+                "mode_hotkey": self.mode_key, "add_word_hotkey": self.word_key}[kind]
 
     def sync_pill_anchor(self, anchor: str) -> None:
         """The pill was dragged: show its new spot without re-triggering a move."""

@@ -126,6 +126,7 @@ class Config:
     mode: str = "auto"  # dictation mode: auto (per app, from styles) or one for everything (styles.py)
     custom_mode_prompt: str = ""  # instructions for the Custom mode
     mode_hotkey: str = ""  # press to switch to the next mode ("" = off)
+    add_word_hotkey: str = ""  # press with a word selected to add it to your Dictionary ("" = off)
     output_language: str = ""  # write dictations in this language (translation; "" = as spoken)
     screen_context: bool = True  # spell names the way they appear in the window you dictate into
     llm_cleanup: LLMCleanup = field(default_factory=LLMCleanup)

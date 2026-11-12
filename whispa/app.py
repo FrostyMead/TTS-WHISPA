@@ -54,6 +54,7 @@ class Bridge(QObject):
     update_auto = Signal()  # an update is downloading for an automatic restart
     paste_last = Signal()
     cycle_mode = Signal()
+    add_word = Signal()
     read_aloud = Signal()
     speak_state = Signal(str)
     meeting_changed = Signal(str)  # meeting id (saved, summary progress or done)
@@ -145,6 +146,7 @@ class MurmrApp:
         b.learned.connect(lambda words: self.overlay.flash(f"Learned: {words}", seconds=2.5))
         b.paste_last.connect(self.paste_last)
         b.cycle_mode.connect(self.cycle_mode)
+        b.add_word.connect(self.add_selection_to_dictionary)
         b.read_aloud.connect(self.read_aloud)
         b.speak_state.connect(self._on_speak_state)
         b.meeting_changed.connect(self._on_meeting_changed)
@@ -629,6 +631,36 @@ class MurmrApp:
         self.sounds.play("start")
         self.max_timer.start()
 
+    def _add_word_from_tray(self) -> None:
+        if sys.platform == "win32":
+            # Clicking the tray moves the focus to the taskbar, so the selection can't be read:
+            # open the Dictionary with the box ready instead (or use the Add word shortcut).
+            self.show_window(page=1)
+            self.window.dictionary.term_in.setFocus()
+            return
+        self.add_selection_to_dictionary()
+
+    def add_selection_to_dictionary(self) -> None:
+        """Tray: the word or short phrase selected in the app you were in becomes one of
+        your words (spelled exactly like that from now on)."""
+        def work():
+            f = focus.inspect()
+            text = f.read_selection()
+            if text is None and not f.is_terminal:
+                text = self.injector.copy_selection()
+            text = " ".join((text or "").split()).strip(" .,;:!?\"'")
+            if not text:
+                self.bridge.notice.emit("Select a word or name first, then choose Add to Dictionary",
+                                        True)
+            elif len(text) > 60 or len(text.split()) > 5:
+                self.bridge.notice.emit("Select just a word or a short name (5 words at most)", True)
+            else:
+                self.dictionary.add_term(text)
+                self.bridge.notice.emit(f"Added to your words: {text}", False)
+                self.bridge.history_changed.emit()
+
+        threading.Thread(target=work, name="add-term", daemon=True).start()
+
     # -- dictation modes (styles.py) ----------------------------------------
     def set_mode(self, mode: str, announce: bool = True) -> None:
         self.update_setting("mode", mode)
@@ -947,6 +979,7 @@ class MurmrApp:
         self.read_action = QAction("Read selection aloud", menu)
         self.read_action.triggered.connect(self.read_aloud)
         menu.addAction(self.read_action)
+        menu.addAction("Add selected text to Dictionary", self._add_word_from_tray)
         self.mode_menu = menu.addMenu("Mode")
         self.mode_actions = {}
         group = QActionGroup(self.mode_menu)
@@ -1039,7 +1072,8 @@ class MurmrApp:
     def _apply_action_hotkeys(self) -> None:
         for name, spec, signal in (("paste_last", self.cfg.paste_last_hotkey, self.bridge.paste_last),
                                    ("read", self.cfg.read_hotkey, self.bridge.read_aloud),
-                                   ("mode", self.cfg.mode_hotkey, self.bridge.cycle_mode)):
+                                   ("mode", self.cfg.mode_hotkey, self.bridge.cycle_mode),
+                                   ("add_word", self.cfg.add_word_hotkey, self.bridge.add_word)):
             hk = None
             if spec:
                 try:
@@ -1492,7 +1526,7 @@ class MurmrApp:
                 return f"Unknown mode {value}"
             setattr(cfg, key, value)
             self._sync_mode_menu()
-        elif key in ("paste_last_hotkey", "read_hotkey", "mode_hotkey"):
+        elif key in ("paste_last_hotkey", "read_hotkey", "mode_hotkey", "add_word_hotkey"):
             if value:
                 try:
                     hk = Hotkey.parse(value)
