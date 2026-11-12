@@ -120,6 +120,89 @@ class Correction:
     meant: str
 
 
+@dataclass
+class EditReview:
+    """What you did to a dictation after it was pasted."""
+    kind: str  # "unchanged" | "fixed" (only word swaps) | "edited" (words added/removed) | "rewrite"
+    swaps: list[Correction]  # every word swap, learnable or not
+
+
+def review_edit(inserted: str, final: str) -> EditReview:
+    a = _WORD.findall(inserted)
+    b = _WORD.findall(final)
+    if a == b:
+        return EditReview("unchanged", [])  # punctuation only, or nothing at all
+    if not a or not b or difflib.SequenceMatcher(
+            None, [w.lower() for w in a], [w.lower() for w in b]).ratio() < 0.5:
+        return EditReview("rewrite", [])
+    swaps, clean = [], True
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            continue
+        if op == "replace" and i2 - i1 <= 3 and j2 - j1 <= 3:
+            swaps.append(Correction(" ".join(a[i1:i2]), " ".join(b[j1:j2])))
+        else:
+            clean = False
+    return EditReview("fixed" if clean else "edited", swaps)
+
+
+def _polish_changed_words(raw: str, inserted: str) -> bool:
+    """AI polish swapped some of what Parakeet heard for other words. Dropping fillers or
+    adding a sign-off is fine (the audio still matches ``raw``); a swap means we can't tell
+    whether ``raw`` or the polish was right."""
+    a = [w.lower() for w in _WORD.findall(raw)]
+    b = [w.lower() for w in _WORD.findall(inserted)]
+    return any(op == "replace" for op, *_ in
+               difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes())
+
+
+def training_label(raw: str, inserted: str, final: str) -> tuple[str, str]:
+    """(status, label) for a dictation's audio once you've had the chance to fix it.
+
+    ``unedited``: you left it as it was, the label is what Parakeet heard.
+    ``corrected``: you swapped words, the label is what Parakeet heard with your fixes.
+    ``edited`` / ``polished``: you rewrote it, added or removed words, or AI polish changed
+    words; the right label isn't known, so the clip is never trained on.
+    """
+    review = review_edit(inserted, final)
+    if review.kind in ("edited", "rewrite"):
+        return "edited", ""
+    if _polish_changed_words(raw, inserted):
+        return "polished", ""
+    label = raw
+    for c in review.swaps:
+        pat = re.compile(rf"(?<!\w){re.escape(c.heard)}(?!\w)", re.IGNORECASE)
+        if len(pat.findall(label)) != 1:
+            return "edited", ""  # can't tell which one you fixed
+        label = pat.sub(lambda _m, m=c.meant: m, label)
+    return ("corrected", label) if label != raw else ("unedited", raw)
+
+
+def edit_feedback(review: EditReview, learned: list[Correction], pending: list[Correction],
+                  saved: str) -> str | None:
+    """The line the pill shows after you fix a dictation (None: say nothing)."""
+    for_training = saved == "corrected"
+    if learned:
+        words = ", ".join(c.meant for c in learned)
+        return f"Learned: {words}" + (" · saved for voice training" if for_training else "")
+    if pending:
+        c = pending[0]
+        more = f" and {len(pending) - 1} more" if len(pending) > 1 else ""
+        return f"Got it: {c.heard} → {c.meant}{more} (fix it once more to learn it)"
+    if review.kind == "unchanged":
+        return None
+    if review.kind == "rewrite":
+        return "That looked like a rewrite, so nothing was learned"
+    if review.kind == "edited":
+        return "You added or removed words, so nothing was learned"
+    if for_training:
+        return "Saved your fix for voice training"
+    c = review.swaps[0] if review.swaps else None
+    if c and c.heard.lower() != c.meant.lower():
+        return f"{c.heard} → {c.meant} looks like an edit, not a mishearing, so it wasn't learned"
+    return None
+
+
 def find_corrections(inserted: str, final: str) -> list[Correction]:
     """Word-level replacements that look like fixes of misrecognized words."""
     a = _WORD.findall(inserted)
@@ -196,6 +279,11 @@ class Dictionary:
             except OSError:
                 pass
             return list(self.terms), dict(self.corrections)
+
+    def is_pending(self, c: Correction) -> bool:
+        """Seen once: one more identical fix and it's learned."""
+        entry = self.pending.get(c.heard.lower())
+        return bool(entry) and entry.get("meant") == c.meant
 
     def learn(self, c: Correction) -> bool:
         """Record a correction. Returns True when it became active."""
@@ -331,8 +419,9 @@ class TrainingStore:
     contain) plus any word fixes you made afterwards. Each sample gets a status:
     ``read`` (a reading-session sentence: the label is exactly the text you read),
     ``corrected`` (you fixed words: the most valuable dictations), ``unedited`` (you left it
-    as is: probably right) or ``unknown`` (couldn't watch the field). Re-recorded reading
-    clips are marked ``deleted``. When the folder reaches its size limit, the oldest
+    as is: probably right), ``edited``/``polished`` (rewritten, words added or removed, or
+    changed by AI polish: the right label isn't known, never trained on) or ``unknown``
+    (couldn't watch the field). Re-recorded reading clips are marked ``deleted``. When the folder reaches its size limit, the oldest
     clips that aren't ``read`` or ``corrected`` are deleted first.
     """
 
@@ -467,17 +556,20 @@ class TrainingStore:
         self._raw.pop(sample_id, None)
         self._append({"id": sample_id, "status": "deleted"})
 
-    def record_review(self, sample_id: str, corrections: list[Correction]) -> None:
-        """You had a chance to fix the text: apply your word fixes to the transcript label."""
+    def record_review(self, sample_id: str, inserted: str, final: str) -> str:
+        """You had a chance to fix the text (``inserted`` became ``final``): label the audio
+        with your fixed wording, or keep it out of training when that isn't clear. Returns
+        the status."""
         raw = self._raw.get(sample_id)
         if raw is None:
-            return
-        label = apply_corrections(raw, corrections)
-        if label != raw:
+            return ""
+        status, label = training_label(raw, inserted, final)
+        if status == "corrected":
             self._corrected.add(sample_id)
             self._append({"id": sample_id, "text": label, "status": "corrected"})
         else:
-            self._append({"id": sample_id, "status": "unedited"})
+            self._append({"id": sample_id, "status": status})
+        return status
 
     def _enforce_cap(self) -> None:
         """Over the limit: delete the oldest clips, read and corrected ones last."""
@@ -513,11 +605,14 @@ class CorrectionWatcher:
     MAX_POLL_S = 2.0  # backs off to this while nothing changes
     WATCH_S = 45.0
 
-    def __init__(self, dictionary: Dictionary, on_learned: Callable[[list[Correction]], None],
-                 on_final: Callable[[str, list[Correction]], None] | None = None):
+    def __init__(self, dictionary: Dictionary,
+                 on_learned: Callable[[list[Correction]], None] | None = None,
+                 on_final: Callable[[str, str, str], str | None] | None = None,
+                 on_feedback: Callable[[str], None] | None = None):
         self.dictionary = dictionary
         self.on_learned = on_learned
-        self.on_final = on_final  # (sample_id, corrections the user made; [] = left as is)
+        self.on_final = on_final  # (sample_id, inserted, final) -> training status
+        self.on_feedback = on_feedback  # a line for the pill: what your fix did
         self._session: dict | None = None
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -573,10 +668,25 @@ class CorrectionWatcher:
         inserted = s["inserted"]
         # Only the words that were dictated: drop anything typed or dictated around them.
         final = align_to_inserted(inserted, s["last"])
-        corrections = find_corrections(inserted, final) if final else []
-        if s["sample"] and self.on_final and final:
-            self.on_final(s["sample"], corrections)
-        learned = [c for c in corrections if self.dictionary.learn(c)]
+        if not final:
+            return
+        saved = ""
+        if s["sample"] and self.on_final:
+            saved = self.on_final(s["sample"], inserted, final) or ""
+        learned, pending = [], []
+        for c in find_corrections(inserted, final):
+            if self.dictionary.learn(c):
+                learned.append(c)
+            elif self.dictionary.is_pending(c) and c.heard.lower() != c.meant.lower():
+                pending.append(c)  # (a capital letter alone is often just a sentence start)
         if learned:
             log.info("Learned %d correction(s)", len(learned))
-            self.on_learned(learned)
+            if self.on_learned:
+                self.on_learned(learned)
+        review = review_edit(inserted, final)
+        if review.kind != "unchanged":
+            log.info("Edit after dictation: %s (training: %s, learned %d, pending %d)",
+                     review.kind, saved or "-", len(learned), len(pending))
+        msg = edit_feedback(review, learned, pending, saved)
+        if msg and self.on_feedback:
+            self.on_feedback(msg)

@@ -548,6 +548,11 @@ class VoiceTrainingPage(QScrollArea):
     def _update_progress(self) -> None:
         seconds = self.store().read_seconds()
         minutes = seconds / 60
+        if hasattr(self.ctl, "recorded_minutes"):  # dictations you fixed (or kept) count too
+            try:
+                minutes = max(minutes, float(self.ctl.recorded_minutes()["recognition"]))
+            except Exception:  # noqa: BLE001 - a test controller, or the folder went away
+                pass
         self.minutes.setText(f"{minutes:.1f} of {TARGET_MINUTES} min recorded")
         self.progress.set_value(minutes / TARGET_MINUTES)
         n, s = self._session

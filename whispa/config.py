@@ -137,6 +137,7 @@ class Config:
     learn_from_edits: bool = True
     # Your voice (all of it stays on this computer). Opt-in: off until you switch it on.
     save_training_audio: bool = False  # "Improve recognition with my voice": keep dictation audio
+    train_on_unedited: bool = False  # also train on dictations you left exactly as they were
     voice_clone: bool = False  # "Create a voice that sounds like me" from Voice training reads
     training_excluded_apps: list[str] = field(default_factory=lambda: list(_EXCLUDED_APPS))
     training_max_mb: int = 2000

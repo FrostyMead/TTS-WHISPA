@@ -78,6 +78,7 @@ class Job:
     ok: bool | None = None  # None while running
     started: float = field(default_factory=time.time)
     result: str = ""  # e.g. the installed model's name
+    include_unedited: bool = False  # recognition: dictations you left as they were count too
 
     def __post_init__(self):
         self._proc: subprocess.Popen | None = None
@@ -89,6 +90,8 @@ class Job:
 
         if self.kind == "recognition":
             folder, env = SCRIPTS / "finetune", "source ~/whispa-finetune/.venv/bin/activate"
+            if self.include_unedited:
+                env += "\nexport MURMR_INCLUDE_UNEDITED=1"
         else:
             folder, env = SCRIPTS / "voice_finetune", f"export HOURS={self.hours:g}"
         script = "\n".join(["#!/usr/bin/env bash", "set -e", "export PYTHONUNBUFFERED=1", env,
@@ -167,9 +170,10 @@ class Job:
         return time.time() - self.started
 
 
-def recorded_minutes(training_dir: Path) -> dict[str, float]:
-    """Minutes usable for each job: recognition (reading + dictations you corrected) and
-    voice (reading with a high-quality copy)."""
+def recorded_minutes(training_dir: Path, include_unedited: bool = False) -> dict[str, float]:
+    """Minutes usable for each job: recognition (reading + dictations you corrected, plus
+    the ones you left as they were with ``include_unedited``) and voice (reading with a
+    high-quality copy)."""
     import json
 
     rows: dict[str, dict] = {}
@@ -186,7 +190,8 @@ def recorded_minutes(training_dir: Path) -> dict[str, float]:
         if not (training_dir / f"{sid}.wav").exists():
             continue
         secs = float(r.get("duration", 0) or 0)
-        if r.get("status") in ("read", "corrected"):
+        if r.get("status") in ("read", "corrected") or \
+                (include_unedited and r.get("status") == "unedited"):
             rec += secs
         if r.get("status") == "read" and r.get("hq") and (training_dir / r["hq"]).exists():
             voice += secs

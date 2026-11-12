@@ -2,7 +2,8 @@ import json
 
 import numpy as np
 
-from whispa.learn import Correction, TrainingStore, align_to_inserted, find_corrections
+from whispa.learn import (Correction, TrainingStore, align_to_inserted, edit_feedback,
+                          find_corrections, review_edit, training_label)
 
 
 # --- labels only cover the dictated words (real cases from early recordings) ----------
@@ -42,7 +43,8 @@ def _rows(store):
 def test_label_is_raw_transcript_plus_fixes(tmp_path):
     store = TrainingStore(tmp_path)
     sid = store.add(np.zeros(16000, np.float32), 16000, "um can you ping sara about it")
-    store.record_review(sid, [Correction("Sara", "Sarah")])
+    assert store.record_review(sid, "Can you ping Sara about it?",
+                               "Can you ping Sarah about it?") == "corrected"
     assert _rows(store)[-1] == {"id": sid, "text": "um can you ping Sarah about it", "status": "corrected"}
     assert store.stats()["corrected"] == 1
 
@@ -50,7 +52,7 @@ def test_label_is_raw_transcript_plus_fixes(tmp_path):
 def test_unedited_is_recorded(tmp_path):
     store = TrainingStore(tmp_path)
     sid = store.add(np.zeros(16000, np.float32), 16000, "sounds good")
-    store.record_review(sid, [])
+    assert store.record_review(sid, "Sounds good.", "Sounds good") == "unedited"
     assert _rows(store)[-1] == {"id": sid, "status": "unedited"}
 
 
@@ -172,5 +174,77 @@ def test_recorded_minutes_for_tuning(tmp_path):
     sid = store.add(np.zeros(16000 * 90, np.float32), 16000, "a dictation")  # unknown: not counted
     m = recorded_minutes(tmp_path)
     assert abs(m["recognition"] - 1.5) < 0.01 and abs(m["voice"] - 0.5) < 0.01
-    store.record_review(sid, [])  # left as is: still not counted ("corrected" counts)
+    store.record_review(sid, "A dictation.", "A dictation.")  # left as is: not counted...
     assert abs(recorded_minutes(tmp_path)["recognition"] - 1.5) < 0.01
+    # ...unless "Also learn from dictations I don't change" is on
+    assert abs(recorded_minutes(tmp_path, include_unedited=True)["recognition"] - 3.0) < 0.01
+
+
+# --- training labels follow what you actually did -----------------------------------------
+def test_everyday_word_fix_is_still_a_training_label():
+    """their -> there is never learned as a Dictionary rule, but the audio said "there"."""
+    assert training_label("put it over their", "Put it over their.", "Put it over there.") ==         ("corrected", "put it over there")
+
+
+def test_rewrite_is_kept_out_of_training():
+    assert training_label("send the report to tom", "Send the report to Tom.",
+                          "Can you ask Jess when she's free tomorrow?")[0] == "edited"
+
+
+def test_added_or_removed_words_are_kept_out():
+    assert training_label("call me back later", "Call me back later.",
+                          "Call me back a bit later.")[0] == "edited"
+
+
+def test_polish_that_changed_words_is_kept_out():
+    """AI polish fixed a word: Parakeet's version may be wrong, so it can't be the label."""
+    assert training_label("ship it to the murmer repo", "Ship it to the Murmr repo.",
+                          "Ship it to the Murmr repo.")[0] == "polished"
+
+
+def test_polish_dropping_fillers_or_adding_a_sign_off_is_fine():
+    signed = "So the build passed.\n\nThanks,"
+    assert training_label("um so the build passed", signed, signed) == \
+        ("unedited", "um so the build passed")
+
+
+def test_ambiguous_fix_is_kept_out():
+    """Two "the"s in what was heard: we can't tell which one you changed."""
+    assert training_label("the cat and the dog", "The cat and the dog.", "The cat and a dog.")[0] == "edited"
+
+
+# --- what the pill says after you fix something ------------------------------------------
+def test_feedback_lines():
+    r = review_edit("ping Sara", "ping Sarah")
+    assert edit_feedback(r, [Correction("Sara", "Sarah")], [], "corrected") ==         "Learned: Sarah · saved for voice training"
+    r = review_edit("the deploy step", "the deployed step")
+    assert edit_feedback(r, [], [Correction("deploy", "deployed")], "") ==         "Got it: deploy → deployed (fix it once more to learn it)"
+    r = review_edit("over their", "over there")
+    assert edit_feedback(r, [], [], "corrected") == "Saved your fix for voice training"
+    assert "not a mishearing" in edit_feedback(r, [], [], "")
+    assert edit_feedback(review_edit("call me later", "call me a bit later"), [], [], "edited") ==         "You added or removed words, so nothing was learned"
+    assert "rewrite" in edit_feedback(review_edit("send it to tom", "ask Jess about Friday"), [], [], "")
+    assert edit_feedback(review_edit("Sounds good.", "Sounds good"), [], [], "unedited") is None
+
+
+def test_watcher_reports_a_fix(tmp_path):
+    from whispa.learn import CorrectionWatcher, Dictionary
+
+    class F:
+        readable = True
+        text = "hi ping Sara now"
+
+        def read_text(self):
+            return self.text
+
+    said = []
+    reviewed = []
+    w = CorrectionWatcher(Dictionary(tmp_path / "d.json"), on_feedback=said.append,
+                          on_final=lambda sid, a, b: reviewed.append((sid, a, b)) or "corrected")
+    w.watch(F(), "hi  now", "ping Sara", "s1")
+    f = w._session["focus"]
+    f.text = "hi ping Sarah now"
+    w._poll(w._session)
+    w.finish()
+    assert reviewed == [("s1", "ping Sara", "ping Sarah")]
+    assert said == ["Learned: Sarah · saved for voice training"]

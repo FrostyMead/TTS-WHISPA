@@ -118,9 +118,8 @@ class MurmrApp:
         self.training = (TrainingStore(cdir / "training", cfg.training_max_mb)
                          if cfg.save_training_audio and capabilities.can_train() else None)
         self.watcher = CorrectionWatcher(
-            self.dictionary,
-            on_learned=lambda cs: self.bridge.learned.emit(", ".join(c.meant for c in cs)),
-            on_final=self._review_sample)
+            self.dictionary, on_final=self._review_sample,
+            on_feedback=lambda msg: self.bridge.notice.emit(msg, False))
         self.mode = "dictate"
         self.card = CopyCard()
 
@@ -248,7 +247,8 @@ class MurmrApp:
     def recorded_minutes(self) -> dict[str, float]:
         from .tuning import recorded_minutes
 
-        return recorded_minutes(config_mod.config_dir() / "training")
+        return recorded_minutes(config_mod.config_dir() / "training",
+                                include_unedited=bool(getattr(self.cfg, "train_on_unedited", False)))
 
     def tuning_blocker(self) -> str:
         """Why tuning can't start here, or ""."""
@@ -274,7 +274,8 @@ class MurmrApp:
         if kind == "recognition" and not self.cfg.save_training_audio:
             return "Switch on Settings > Your voice > Improve recognition with my voice first."
         self._free_gpu_for_training()
-        job = Job(kind, on_change=lambda j: self.bridge.tuning_changed.emit(j.kind), hours=hours)
+        job = Job(kind, on_change=lambda j: self.bridge.tuning_changed.emit(j.kind), hours=hours,
+                  include_unedited=bool(self.cfg.train_on_unedited))
         self._tuning[kind] = job
         self._models_before = {p.name for p in self._models_dir().iterdir()} \
             if self._models_dir().exists() else set()
@@ -482,9 +483,10 @@ class MurmrApp:
             return None
         return None if hk == dictate else hk
 
-    def _review_sample(self, sample_id: str, corrections) -> None:
-        if self.training is not None:
-            self.training.record_review(sample_id, corrections)
+    def _review_sample(self, sample_id: str, inserted: str, final: str) -> str:
+        if self.training is None:
+            return ""
+        return self.training.record_review(sample_id, inserted, final)
 
     @staticmethod
     def _hint(hotkey: Hotkey) -> str:
@@ -1766,6 +1768,10 @@ class MurmrApp:
                 self.recorder.shutdown()
                 if value:
                     self._safe_open_mic()
+        elif key == "train_on_unedited":
+            value = bool(value)
+            cfg.train_on_unedited = value
+            self.bridge.tuning_changed.emit("recognition")  # the minutes counted just changed
         elif key == "training_excluded_apps":
             if isinstance(value, str):
                 value = [a.strip() for a in value.split(",") if a.strip()]

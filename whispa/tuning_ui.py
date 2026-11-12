@@ -80,9 +80,12 @@ class TuneSection(QWidget):
 
         rec = mins["recognition"]
         job = ctl.tuning_job("recognition")
-        desc = (f"{rec:.0f} of {RECOGNITION_GOOD:.0f} minutes recorded (reading and dictations you "
-                "corrected). Takes about 30-60 minutes on your graphics card; you can keep "
-                "dictating meanwhile, a little slower.")
+        counted = ("reading, and dictations you corrected or kept as they were"
+                   if getattr(ctl.cfg, "train_on_unedited", False)
+                   else "reading and dictations you corrected")
+        desc = (f"{rec:.0f} of {RECOGNITION_GOOD:.0f} minutes recorded ({counted}). Takes about "
+                "30-60 minutes on your graphics card; you can keep dictating meanwhile, a little "
+                "slower.")
         if rec < RECOGNITION_MIN:
             desc += f" Record at least {RECOGNITION_MIN:.0f} minutes first."
         elif rec < RECOGNITION_GOOD:

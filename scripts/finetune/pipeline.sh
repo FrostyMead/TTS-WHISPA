@@ -9,7 +9,7 @@ WORK="${WHISPA_FT_WORK:-$HOME/whispa-finetune/work}"
 NAME="tuned-$(date +%Y%m%d-%H%M)"
 
 echo "== 1/6 Preparing your recordings"
-python prepare_data.py
+python prepare_data.py ${MURMR_INCLUDE_UNEDITED:+--include-unedited}
 echo "== 2/6 Getting general speech for comparison"
 python get_general_data.py
 echo "== 3/6 Training on your voice"

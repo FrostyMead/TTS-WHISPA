@@ -1015,6 +1015,11 @@ class SettingsPage(QScrollArea):
                                            "Keep your dictations' audio (and your Voice training "
                                            "reading) to tune the speech model to your voice and "
                                            "accent."))
+            sec.addWidget(self._switch_row("train_on_unedited", "Also learn from dictations I don't change",
+                                           "Dictations you leave exactly as they were count toward "
+                                           "training too, so you reach enough minutes much sooner. "
+                                           "Works best if you fix mistakes as you go: anything "
+                                           "left unfixed is learned as right."))
             sec.addWidget(self._switch_row("voice_clone", "Create a voice that sounds like me",
                                            "Use your Voice training reading to build a read-aloud "
                                            "voice like yours. Only from sentences you read live, "

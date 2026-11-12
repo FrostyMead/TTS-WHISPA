@@ -364,6 +364,7 @@ Windows `%APPDATA%\Murmr\config.json`, macOS `~/Library/Application Support/Murm
 | `llm_cleanup.keep_alive`, `timeout_s`, `prompt` | `30m`, `6`, built-in | |
 | `learn_from_edits` | `true` | watch your edits after pasting and learn corrections |
 | `save_training_audio`, `training_max_mb` | `true`, `2000` | keep audio + final text pairs for fine-tuning |
+| `train_on_unedited` | `false` | also train on dictations you left exactly as they were (Settings > Your voice) |
 | `no_text_field` | `popup` | `popup` (copy card) · `paste` (paste anyway) |
 | `paste_method` | `auto` | `clipboard` · `type` (simulated keystrokes) |
 | `paste_shortcut` | platform default | e.g. `ctrl+shift+v` for Linux terminals |
