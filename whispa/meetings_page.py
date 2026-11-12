@@ -313,6 +313,17 @@ class MeetingsPage(QScrollArea):
             bar.setValue(bar.maximum() if self._follow else min(keep, bar.maximum()))
         finally:
             self._rendering = False
+        if self._follow:  # the text finishes laying out a moment later (macOS): follow it down
+            QTimer.singleShot(0, self._to_bottom)
+
+    def _to_bottom(self) -> None:
+        if self._follow:
+            self._rendering = True
+            try:
+                bar = self.live_view.verticalScrollBar()
+                bar.setValue(bar.maximum())
+            finally:
+                self._rendering = False
 
     def _live_scrolled(self, value: int) -> None:
         if self._rendering:
@@ -328,8 +339,8 @@ class MeetingsPage(QScrollArea):
         s = self.ctl.meeting_session()
         if s is not None:
             self._render_live(s)
-        bar = self.live_view.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self._to_bottom()
+        QTimer.singleShot(0, self._to_bottom)
 
     def _fill_list(self) -> None:
         from .window import clear_layout

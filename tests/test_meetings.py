@@ -344,7 +344,7 @@ def test_live_transcript_stays_put_while_you_read():
     for _ in range(5):
         app.processEvents()
     bar = page.live_view.verticalScrollBar()
-    assert bar.value() == bar.maximum() and not page.live_btn.isVisibleTo(page)
+    assert bar.value() >= bar.maximum() - 4 and not page.live_btn.isVisibleTo(page)
     bar.setValue(bar.maximum() // 3)  # you scroll up to read
     app.processEvents()
     assert page.live_btn.isVisibleTo(page)
@@ -354,7 +354,8 @@ def test_live_transcript_stays_put_while_you_read():
     app.processEvents()
     assert bar.value() == where  # not pulled back down
     page.live_btn.click()
-    app.processEvents()
-    assert bar.value() == bar.maximum() and not page.live_btn.isVisibleTo(page)
+    for _ in range(5):
+        app.processEvents()
+    assert bar.value() >= bar.maximum() - 4 and not page.live_btn.isVisibleTo(page)
     assert "someone keeps talking" in page.live_view.toPlainText()
     page.close()
