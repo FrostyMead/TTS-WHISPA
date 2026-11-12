@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QPlainTextEdit, 
                                QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import theme
-from .widgets import HotkeyField, Label, Switch, card, setting_row
+from .widgets import HotkeyField, Label, Switch, card, guard_wheel, setting_row
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +89,10 @@ class LevelMeter:
 
 
 class WelcomeDialog(QDialog):
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        guard_wheel(self)  # scrolling past the microphone list never changes it
+
     def __init__(self, ctl, mic_options: list[tuple[str, str]] | None = None, parent=None):
         super().__init__(parent)
         self.ctl = ctl

@@ -26,7 +26,7 @@ from .config import config_dir as config_mod_dir
 from .hotkey import Hotkey
 from .icons import app_icon, app_pixmap
 from .learn import Dictionary
-from .widgets import HotkeyField, Label, StatCard, Switch, card, nav_icon, setting_row
+from .widgets import HotkeyField, Label, StatCard, Switch, card, guard_wheel, nav_icon, setting_row
 
 TYPING_WPM = 40  # average typing speed, for the "time saved" estimate
 
@@ -1588,6 +1588,10 @@ class SettingsPage(QScrollArea):
 
 # --------------------------------------------------------------------------- window
 class MainWindow(QWidget):
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        guard_wheel(self)
+
     def __init__(self, ctl: Controller, mic_options: list[tuple[str, str]] | None = None):
         super().__init__()
         self.ctl = ctl
@@ -1743,6 +1747,7 @@ class MainWindow(QWidget):
         self.pages.setCurrentIndex(index)
         page = self.pages.currentWidget()
         page.refresh()
+        guard_wheel(page)  # scrolling past a drop-down never changes it
         QTimer.singleShot(0, lambda: self._relayout(page))
 
     @staticmethod

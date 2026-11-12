@@ -72,3 +72,27 @@ def test_settings_jumps_to_updates(window):
     settle(app, 60)
     bar = w.settings.verticalScrollBar()
     assert bar.value() > bar.maximum() // 2
+
+
+def test_scrolling_past_a_dropdown_never_changes_it(window):
+    """The mouse wheel over Settings scrolls the page; it doesn't flip the microphone or the
+    dictation mode the pointer passes over (that switched people to Email mode by accident)."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QComboBox
+
+    app, w = window
+    w.resize(900, 600)
+    w.show_page(w.pages.indexOf(w.settings))
+    settle(app)
+    combos = [c for c in w.settings.findChildren(QComboBox) if c.count() > 1]
+    assert combos
+    bar = w.settings.verticalScrollBar()
+    for combo in combos:
+        before, top = combo.currentIndex(), bar.value()
+        ev = QWheelEvent(QPointF(5, 5), QPointF(combo.mapToGlobal(QPoint(5, 5))), QPoint(0, 0),
+                         QPoint(0, -120), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                         Qt.ScrollPhase.NoScrollPhase, False)
+        app.sendEvent(combo, ev)
+        assert combo.currentIndex() == before, combo
+    assert bar.value() >= top  # the page scrolled instead (or was already at the bottom)

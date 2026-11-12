@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import (QTimer, Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt,
-                            Signal)
+from PySide6.QtCore import (QEvent, QObject, QTimer, Property, QEasingCurve, QPointF, QPropertyAnimation,
+                            QRectF, QSize, Qt, Signal)
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import (QBoxLayout, QAbstractButton, QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
-                               QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSlider, QAbstractSpinBox, QApplication,
+                               QBoxLayout, QAbstractButton, QComboBox, QFrame, QHBoxLayout, QLabel,
+                               QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 from . import theme
 
@@ -252,7 +253,10 @@ class SettingRow(QFrame):
 
     def _arrange(self) -> None:
         self._pending = False
-        need = self._control_width(preferred=True) + TEXT_MIN + 16
+        try:
+            need = self._control_width(preferred=True) + TEXT_MIN + 16
+        except RuntimeError:  # the row (or its control) was deleted before this ran
+            return
         width = self.width()
         # A little slack either way, so a width right at the edge doesn't flip back and forth.
         stack = width < need if not self.stacked else width < need + 24
@@ -359,3 +363,38 @@ class StatCard(QFrame):
 
     def set(self, value: str) -> None:
         self.value.setText(value)
+
+
+class _WheelGuard(QObject):
+    """Scrolling a page with the mouse wheel never changes a drop-down, number box or slider
+    the pointer happens to pass over: the wheel only changes one you've clicked into.
+    Otherwise the page scrolls as if the control wasn't there."""
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() != QEvent.Type.Wheel or obj.hasFocus():
+            return False
+        w = obj.parentWidget()
+        while w is not None and not isinstance(w, QAbstractScrollArea):
+            w = w.parentWidget()
+        if w is not None:
+            bar = w.verticalScrollBar()
+            if bar is not None and bar.isVisible():
+                QApplication.sendEvent(bar, event)
+        return True
+
+
+_wheel_guard: _WheelGuard | None = None
+
+
+def guard_wheel(root: QWidget) -> None:
+    """Apply the wheel guard to every drop-down, number box and slider inside ``root``."""
+    global _wheel_guard
+    if _wheel_guard is None:
+        _wheel_guard = _WheelGuard()
+    for w in root.findChildren(QWidget):
+        if isinstance(w, (QComboBox, QAbstractSpinBox, QAbstractSlider)) \
+                and not w.property("_wheel_guarded"):
+            w.setProperty("_wheel_guarded", True)
+            if w.focusPolicy() == Qt.FocusPolicy.WheelFocus:
+                w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # the wheel alone doesn't focus it
+            w.installEventFilter(_wheel_guard)
