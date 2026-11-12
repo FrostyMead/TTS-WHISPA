@@ -90,10 +90,17 @@ def plan() -> str:
     """A sentence about what setting up will download."""
     from .llm import find_ollama
 
-    model = recommended_model()
+    from .ai_choice import APPLE, detect, recommend
+
+    choice = recommend(detect())
+    model = choice.models[1] if choice.model == APPLE else choice.model
     app = "" if find_ollama() else ("Ollama (~180 MB) and " if sys.platform == "darwin"
                                     else "Ollama (~1.7 GB) and ")
-    return f"Downloads {app}the {model} model ({model_size_label(model)}). Runs on this computer only."
+    text = f"Downloads {app}the {model} model ({model_size_label(model)}). Runs on this computer only."
+    if choice.model == APPLE:
+        text = ("Uses Apple's on-device model if it passes Murmr's checks (no download). "
+                "Otherwise: " + text[0].lower() + text[1:])
+    return text
 
 
 # --------------------------------------------------------------------------- downloading
@@ -230,6 +237,27 @@ def pull(base: str, model: str, progress, cancel: threading.Event) -> None:
                 progress(msg["status"].capitalize() + "…", None)
 
 
+def try_apple(llm_cfg, progress, cancel: threading.Event) -> tuple[float, str | None]:
+    """(seconds per clean-up, None) if Apple's on-device model is available and good enough
+    here, else (0, why not)."""
+    from . import applellm
+    from .ai_choice import APPLE, SLOW_S, quality_check, speed_check
+
+    progress("Checking Apple's on-device model…", None)
+    ok, reason = applellm.shared().availability()
+    if not ok:
+        return 0.0, applellm.reason_text(reason)
+    if cancel.is_set():
+        raise Cancelled()
+    problem = quality_check(llm_cfg, APPLE)
+    if problem:
+        return 0.0, problem
+    took = speed_check(llm_cfg, APPLE, cancel)
+    if took > SLOW_S:
+        return 0.0, f"it took {took:.1f} s per clean-up here"
+    return took, None
+
+
 def remove_model(base: str, model: str) -> None:
     """Delete a model Murmr installed earlier (frees its disk space)."""
     try:
@@ -246,12 +274,12 @@ def setup(llm_cfg, progress: Callable[[str, float | None], None], cancel: thread
     """Install Ollama if needed, start it, download the best model for this computer (or the
     one you chose) and check it's quick enough here. Returns the model name; the measured
     time goes to ``llm_cfg.measured_s``."""
-    from .ai_choice import KNOWN, SLOW_S, detect, recommend, smaller, speed_check
+    from .ai_choice import APPLE, KNOWN, SLOW_S, detect, recommend, smaller, speed_check
     from .llm import find_ollama
 
-    exe = find_ollama() or install_ollama(progress, cancel)
-    ensure_server(exe, llm_cfg.base_url, progress, cancel)
     if not getattr(llm_cfg, "auto_model", True):
+        exe = find_ollama() or install_ollama(progress, cancel)
+        ensure_server(exe, llm_cfg.base_url, progress, cancel)
         pull(llm_cfg.base_url, llm_cfg.model, progress, cancel)
         progress("Local AI ready", 1.0)
         return llm_cfg.model
@@ -259,6 +287,23 @@ def setup(llm_cfg, progress: Callable[[str, float | None], None], cancel: thread
     choice = recommend(hw)
     log.info("AI model for %s: %s", hw.describe(), " > ".join(choice.models))
     previous = llm_cfg.model
+    if choice.model == APPLE:
+        took, why = try_apple(llm_cfg, progress, cancel)
+        if why is None:
+            from . import applellm
+
+            llm_cfg.provider, llm_cfg.measured_s = "apple", round(took, 2)
+            llm_cfg.apple_os = applellm.os_version()
+            if previous in KNOWN and previous != APPLE and find_ollama():
+                remove_model(llm_cfg.base_url, previous)  # Murmr's Ollama model isn't needed now
+            progress(f"Local AI ready: Apple's on-device model, {took:.1f} s per clean-up", 1.0)
+            return APPLE
+        log.info("Apple's on-device model not used: %s", why)
+        progress(f"Apple's model: {why}. Setting up Ollama instead…", None)
+        choice.models = [m for m in choice.models if m != APPLE]
+    exe = find_ollama() or install_ollama(progress, cancel)
+    ensure_server(exe, llm_cfg.base_url, progress, cancel)
+    llm_cfg.provider = "ollama"
     had = installed_models(llm_cfg.base_url)  # never remove a model that was already here
     model: str | None = choice.model
     last_error: Exception | None = None
@@ -281,7 +326,7 @@ def setup(llm_cfg, progress: Callable[[str, float | None], None], cancel: thread
         step = smaller(choice.models, model) if took > SLOW_S else None
         if step is None:
             llm_cfg.measured_s = round(took, 2)
-            if previous != model and previous in KNOWN:
+            if previous != model and previous in KNOWN and previous != APPLE:
                 remove_model(llm_cfg.base_url, previous)
             for other in choice.models:  # one downloaded now, then dropped (too slow, broken)
                 if other not in (model, previous) and other not in had and                         other in installed_models(llm_cfg.base_url):

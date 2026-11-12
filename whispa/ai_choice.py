@@ -1,7 +1,7 @@
 """Pick the best local AI model for this computer, then check it's quick enough here.
 
-1. Look at the hardware: Apple Silicon chip and memory, an NVIDIA GPU and its memory, or
-   just the CPU and RAM.
+1. Look at the hardware: Apple Silicon chip and memory (and whether Apple's own on-device
+   model can be there: macOS 26+), an NVIDIA GPU and its memory, or just the CPU and RAM.
 2. Recommend a list of models, best first (see ``recommend``). Chosen from a comparison
    on Murmr's own prompts (clean-up, Command Mode, meeting summaries), Nov 2026:
    * gemma3:4b and qwen3.5:4b: both excellent. Qwen is Apache 2.0 licensed and has an
@@ -10,6 +10,9 @@
      the small ones: gemma3:1b and qwen3.5:0.8b invented words or obeyed dictated text.
 3. After downloading, time a few real clean-ups (``speed_check``). Too slow for
    dictation: step down to the next smaller model.
+4. On a Mac with Apple Intelligence, Apple's on-device model is tried first: no download at
+   all. It has to pass ``quality_check`` too (fast enough, tidies real dictations, keeps
+   swearing, doesn't answer questions), or Murmr uses Ollama as before.
 """
 
 from __future__ import annotations
@@ -25,11 +28,12 @@ from dataclasses import dataclass, field
 log = logging.getLogger(__name__)
 
 SLOW_S = 1.5  # a clean-up taking longer than this (median, warm) is too slow to wait for
+APPLE = "apple"  # Apple's on-device model (applellm.py): provider "apple"
 
 # model -> (download GB, size class). A smaller class is what we step down to when slow.
 MODELS = {
     "qwen3.5:4b-mlx": (4.0, 4), "qwen3.5:4b": (3.3, 4), "gemma3:4b": (3.3, 4),
-    "qwen3.5:2b": (1.9, 2), "qwen3.5:2b-mlx": (3.1, 2),
+    "qwen3.5:2b": (1.9, 2), "qwen3.5:2b-mlx": (3.1, 2), APPLE: (0.0, 4),
 }
 KNOWN = set(MODELS) | {"gemma3:1b", "qwen3.5:0.8b"}  # models Murmr itself has installed
 
@@ -48,6 +52,7 @@ class Hardware:
     chip: str = ""  # "Apple M2 Pro", "Intel(R) Core(TM) i7..."
     gpu: str = ""  # NVIDIA GPU name
     vram_gb: float = 0.0
+    apple_ai: bool = False  # Apple's on-device model can be here (macOS 26+, Apple Silicon)
 
     @property
     def apple_silicon(self) -> bool:
@@ -75,7 +80,10 @@ def detect() -> Hardware:
 
     hw = Hardware(ram_gb=round(memory_gb(), 1))
     if sys.platform == "darwin":
+        from .applellm import supported
+
         hw.chip = _run(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"])
+        hw.apple_ai = supported()
     else:
         out = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
         if out:
@@ -98,6 +106,18 @@ class Choice:
 
 
 def recommend(hw: Hardware) -> Choice:
+    choice = _recommend(hw)
+    if hw.apple_silicon and hw.apple_ai:  # no download, if it passes the checks here
+        return Choice([APPLE, *choice.models], f"{hw.describe()}: Apple's on-device model "
+                      f"(no download) if it passes Murmr's checks, else {choice.model}")
+    return choice
+
+
+def pretty(model: str) -> str:
+    return "Apple's on-device model" if model == APPLE else model
+
+
+def _recommend(hw: Hardware) -> Choice:
     if hw.apple_silicon:
         if hw.ram_gb >= 15:
             return Choice(["qwen3.5:4b-mlx", "qwen3.5:4b", "qwen3.5:2b"],
@@ -114,6 +134,8 @@ def recommend(hw: Hardware) -> Choice:
 
 
 def size_label(model: str) -> str:
+    if model == APPLE:
+        return "no download"
     gb = MODELS.get(model, (0, 0))[0]
     return f"{gb:.1f} GB" if gb else "a few GB"
 
@@ -125,13 +147,43 @@ def smaller(models: list[str], current: str) -> str | None:
     return next((m for m in after if MODELS.get(m, (0, 99))[1] < cls), None)
 
 
-def speed_check(llm_cfg, model: str, cancel=None) -> float:
-    """Median seconds for a real clean-up with ``model`` (after loading it)."""
+# Dictations a model must tidy without refusing, censoring or answering them.
+QUALITY_SAMPLES = [
+    ("this is so fucking annoying the build broke again", "fucking"),
+    ("what time does the meeting start tomorrow", "meeting start tomorrow"),
+    ("write me a poem about the sea", "poem about the sea"),
+]
+
+
+def _polisher(llm_cfg, model: str):
     from dataclasses import replace
 
     from .llm import Polisher
 
-    p = Polisher(replace(llm_cfg, model=model, timeout_s=60, keep_alive="2m"))
+    provider = "apple" if model == APPLE else ("ollama" if llm_cfg.provider == "apple" else llm_cfg.provider)
+    return Polisher(replace(llm_cfg, model=model, provider=provider, timeout_s=60, keep_alive="2m"))
+
+
+def quality_check(llm_cfg, model: str) -> str | None:
+    """None if ``model`` handled the tricky dictations, else what went wrong."""
+    from .llm import check_edit
+
+    p = _polisher(llm_cfg, model)
+    for text, keep in QUALITY_SAMPLES:
+        try:
+            out = p._complete(text, app="", terms=[]).strip()
+        except Exception as exc:  # noqa: BLE001 - a refusal, mostly
+            kind = getattr(exc, "kind", "")
+            return ("it refused ordinary dictation" if kind == "guardrail"
+                    else f"it failed on a test dictation ({exc})")
+        if keep.lower() not in out.lower() or check_edit(text, out, []):
+            return f"it changed a test dictation too much ({text!r} became {out[:60]!r})"
+    return None
+
+
+def speed_check(llm_cfg, model: str, cancel=None) -> float:
+    """Median seconds for a real clean-up with ``model`` (after loading it)."""
+    p = _polisher(llm_cfg, model)
     p._complete("warm up", app="", terms=[])  # loads the model; not timed
     times = []
     for text in SPEED_SAMPLES:

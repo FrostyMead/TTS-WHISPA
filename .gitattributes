@@ -3,3 +3,6 @@
 *.png binary
 *.so binary
 whispa/resources/WhispaLauncher binary
+whispa/resources/MurmrLauncher binary
+whispa/resources/murmr-audiotap binary
+whispa/resources/murmr-applellm binary

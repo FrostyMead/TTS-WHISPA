@@ -202,6 +202,8 @@ class MurmrApp:
         self.hotkeys.start()
         threading.Thread(target=self._load_model, name="model-load", daemon=True).start()
         self._welcome = None
+        if cfg.llm_cleanup.provider == "apple":
+            QTimer.singleShot(20_000, self._recheck_apple_model)
         self._prune_history()
         self.history_timer = QTimer()
         self.history_timer.setInterval(24 * 3600 * 1000)
@@ -383,16 +385,42 @@ class MurmrApp:
 
     def ai_model_info(self) -> dict:
         """The model in use, the best one for this computer, and why."""
-        from .ai_choice import detect, recommend, size_label
+        from .ai_choice import detect, pretty, recommend, size_label
 
         if getattr(self, "_hardware", None) is None:
             self._hardware = detect()  # a sysctl / nvidia-smi call: once per run
         choice = recommend(self._hardware)
         lc = self.cfg.llm_cleanup
-        return {"model": lc.model, "measured_s": lc.measured_s, "auto": lc.auto_model,
-                "recommended": choice.model, "reason": choice.reason,
+        current = "apple" if lc.provider == "apple" else lc.model
+        # Apple's model is tried first but may not pass the checks here: then the Ollama model
+        # Murmr fell back to is just as "recommended". Only a model outside the list differs.
+        return {"model": pretty(current), "measured_s": lc.measured_s, "auto": lc.auto_model,
+                "recommended": pretty(choice.model), "reason": choice.reason,
                 "size": size_label(choice.model),
-                "differs": lc.auto_model and lc.model not in choice.models}
+                "differs": lc.auto_model and current not in choice.models}
+
+    def _recheck_apple_model(self) -> None:
+        """Apple can change its model with a macOS update: check it still passes here."""
+        from . import applellm
+
+        lc = self.cfg.llm_cleanup
+        if lc.provider != "apple" or lc.apple_os == applellm.os_version():
+            return
+
+        def work():
+            from . import ai_setup
+
+            took, why = ai_setup.try_apple(lc, lambda *a: None, threading.Event())
+            if why is None:
+                lc.apple_os, lc.measured_s = applellm.os_version(), round(took, 2)
+                config_mod.save(self.cfg)
+                log.info("Apple's on-device model still passes after the macOS update")
+            else:
+                log.warning("Apple's on-device model no longer passes: %s", why)
+                self.bridge.notice.emit("Apple's AI model changed with macOS: Settings > AI model "
+                                        "> Check again", True)
+
+        threading.Thread(target=work, name="apple-recheck", daemon=True).start()
 
     def cancel_ai_setup(self) -> None:
         if getattr(self, "_ai_cancel", None) is not None:
@@ -1226,7 +1254,15 @@ class MurmrApp:
             return False, "Off."
         self.polisher.available = None  # re-check now
         if self.polisher.active(wait=True):
+            if c.provider == "apple":
+                return True, "Active · Apple's on-device model"
             return True, f"Active · {c.model} via {c.provider}"
+        if c.provider == "apple":
+            from . import applellm
+
+            ok, reason = applellm.shared().availability() if applellm.supported() else (False, "osTooOld")
+            return False, (f"Apple's on-device model isn't available: {applellm.reason_text(reason)}. "
+                           "AI model > Check again switches to another model.")
         return False, ("Not available. Install Ollama (winget install Ollama.Ollama) and run "
                        f"“ollama pull {c.model}”; it switches on by itself.")
 
@@ -1709,6 +1745,12 @@ class MurmrApp:
                     "lines": [line.__dict__ for line in lines],
                     "summary_error": "Murmr closed before summarizing. Click Summarize again."})
 
+        try:
+            from .applellm import close_shared
+
+            close_shared()
+        except Exception:  # noqa: BLE001
+            pass
         faulthandler.cancel_dump_traceback_later()
         if getattr(self, "watchdog", None):
             self.watchdog.stop()

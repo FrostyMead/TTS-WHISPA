@@ -223,6 +223,20 @@ class Polisher:
     def is_ollama(self) -> bool:
         return self.cfg.provider == "ollama"
 
+    @property
+    def is_apple(self) -> bool:
+        """Apple's on-device model (applellm.py), not an HTTP server."""
+        return self.cfg.provider == "apple"
+
+    @property
+    def context_chars(self) -> int | None:
+        """How much text one request can take, when that's less than meetings assume."""
+        if self.is_apple:
+            from .applellm import CONTEXT_CHARS
+
+            return CONTEXT_CHARS
+        return None
+
     def active(self, wait: bool = False) -> bool:
         """Is polishing on? In auto mode, availability is re-checked in the background
         every 2 minutes so a dictation never waits on the check (``wait`` forces it)."""
@@ -258,7 +272,10 @@ class Polisher:
             return json.load(resp)
 
     def endpoint_allowed(self) -> bool:
-        """Local server, or a remote one you explicitly allowed (llm_cleanup.allow_remote)."""
+        """Local server, or a remote one you explicitly allowed (llm_cleanup.allow_remote).
+        Apple's model runs on the Mac itself."""
+        if self.is_apple:
+            return True
         return is_local_url(self.cfg.base_url) or bool(getattr(self.cfg, "allow_remote", False))
 
     def _probe(self) -> bool:
@@ -267,6 +284,15 @@ class Polisher:
                         "llm_cleanup.allow_remote to true in config.json to allow it.",
                         self.cfg.base_url)
             return False
+        if self.is_apple:
+            from . import applellm
+
+            if not applellm.supported():
+                return False
+            ok, reason = applellm.shared().availability()
+            if not ok:
+                log.warning("Apple's on-device model: %s", applellm.reason_text(reason))
+            return ok
         path = "/api/tags" if self.is_ollama else "/models"
         try:
             data = self._fetch(path)
@@ -327,12 +353,17 @@ class Polisher:
     def prewarm(self) -> None:
         """Load the model into memory in the background (called when dictation starts),
         so it's ready by the time the transcript is. Cheap if it's already loaded."""
-        if not self.is_ollama or not self.active() or self.cfg.when == "off":
+        if not (self.is_ollama or self.is_apple) or not self.active() or self.cfg.when == "off":
             return
         now = time.monotonic()
         if now - self._prewarmed_at < 60:
             return
         self._prewarmed_at = now
+        if self.is_apple:
+            from . import applellm
+
+            threading.Thread(target=applellm.shared().prewarm, name="llm-prewarm", daemon=True).start()
+            return
 
         def load():
             body = json.dumps({"model": self.cfg.model, "keep_alive": self.cfg.keep_alive}).encode()
@@ -424,6 +455,12 @@ class Polisher:
         if not self.endpoint_allowed():
             raise RuntimeError("The AI server isn't on this computer and sending text to it "
                                "isn't allowed (llm_cleanup.allow_remote)")
+        if self.is_apple:
+            from . import applellm
+
+            instructions, prompt = applellm.flatten(msgs)
+            budget = 1200 if num_ctx else max(200, len(prompt) // 2 + 150)  # tokens to answer
+            return applellm.shared().generate(instructions, prompt, temperature, budget, timeout).strip()
         base = self.cfg.base_url.rstrip("/")
         if self.is_ollama:
             url = base + "/api/chat"
@@ -508,7 +545,8 @@ def summarize_meeting(polisher: "Polisher", transcript: str,
                       progress: Callable[[str], None] = lambda s: None) -> tuple[str, str]:
     """Title and Markdown summary of a meeting transcript, with the local AI. Long
     transcripts are summarized in parts first, then combined (fits a small model's context)."""
-    chunks = split_transcript(transcript)
+    chunks = split_transcript(transcript, min(CHUNK_CHARS, getattr(polisher, "context_chars", None)
+                                              or CHUNK_CHARS))
     if len(chunks) > 1:
         notes = []
         for i, chunk in enumerate(chunks, 1):
@@ -517,5 +555,11 @@ def summarize_meeting(polisher: "Polisher", transcript: str,
         material = "Notes from each part of the meeting, in order:\n\n" + "\n\n".join(notes)
     else:
         material = "Transcript:\n\n" + transcript
+    limit = getattr(polisher, "context_chars", None)
+    while limit and len(material) > limit:  # a smaller model (Apple's): combine notes in rounds
+        parts = split_transcript(material, limit // 2)
+        progress("Combining the notes…")
+        material = "Notes from each part of the meeting, in order:\n\n" + "\n\n".join(
+            polisher.chat_once(MEETING_CHUNK_PROMPT, part, timeout=180) for part in parts)
     progress("Writing the summary…")
     return parse_summary(polisher.chat_once(MEETING_SUMMARY_PROMPT, material, timeout=240))

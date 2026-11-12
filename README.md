@@ -392,6 +392,13 @@ smaller model if it's too slow there (`whispa/ai_choice.py`):
 | NVIDIA GPU with 6 GB+ | `gemma3:4b` |
 | Anything else | `qwen3.5:2b` |
 
+**Apple's on-device model (Macs with macOS 26+ and Apple Intelligence on):** tried first, with
+no download at all. It's used only if it passes Murmr's checks on your Mac: under 1.5 s per
+clean-up, and it tidies test dictations (one with swearing, a question, a "write me a poem")
+without refusing, censoring or answering them. Otherwise Murmr sets up Ollama as above. It's
+re-checked after macOS updates. The model takes about 4,000 tokens per request, so meeting
+summaries are made in smaller parts. Built from `mac/applellm.swift` (`murmr-applellm`).
+
 Chosen from a comparison on Murmr's own prompts (Nov 2026): the 4B models were equally good
 at clean-up, Command Mode and summaries; `qwen3.5:2b` was the only small model that never
 mangled text (`gemma3:1b` and `qwen3.5:0.8b` invented words or obeyed dictated text).

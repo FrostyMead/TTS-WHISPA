@@ -26,6 +26,10 @@ def local_ai_installed(llm_cfg) -> bool:
     """Ollama is installed (or you pointed Murmr at another AI server). Checked at most every
     30 s: it's a few file lookups."""
     global _ai_cache
+    if llm_cfg.provider == "apple":  # Apple's on-device model (applellm.py)
+        from .applellm import supported
+
+        return supported()
     if llm_cfg.provider != "ollama" or not any(h in llm_cfg.base_url for h in ("127.0.0.1", "localhost")):
         return True  # a server you configured yourself
     now = time.monotonic()
