@@ -55,6 +55,9 @@ def lines_html(lines, live=(), links: bool = False, edit_from: int | None = None
     ``edit_from``: lines are clickable to correct them; the first one shown is that index."""
     from urllib.parse import quote
 
+    from . import theme
+
+    text_color = theme.current().text
     rows, order = [], []
     for i, d in enumerate(lines):
         d = d if isinstance(d, dict) else d.__dict__
@@ -65,7 +68,8 @@ def lines_html(lines, live=(), links: bool = False, edit_from: int | None = None
                     f'{name}</a>')
         text = html.escape(d["text"])
         if edit_from is not None:
-            text = (f'<a href="line:{edit_from + i}" style="color:inherit;text-decoration:none">'
+            # Qt's rich text has no "inherit": links need the theme's text colour spelled out.
+            text = (f'<a href="line:{edit_from + i}" style="color:{text_color};text-decoration:none">'
                     f'{text}</a>')
         mark = ' <span style="color:#999">· edited</span>' if d.get("edited") else ""
         rows.append(f'<p style="margin:0 0 6px 0"><span style="color:{color};font-weight:600">{name}'

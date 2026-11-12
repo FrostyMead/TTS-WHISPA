@@ -296,3 +296,12 @@ def test_regroup_after_the_meeting_keeps_your_names():
         s._voiceprints[id(ln)] = [e]
     s.regroup_speakers()
     assert [ln.who for ln in lines] == ["Person 1", "Priya", "Person 1", "Priya"]
+
+
+def test_clickable_lines_use_the_theme_text_colour():
+    from whispa import theme
+    from whispa.meetings import Line
+    from whispa.meetings_page import lines_html
+
+    out = lines_html([Line(0, "Ben", "hello")], links=True, edit_from=0)
+    assert "inherit" not in out and theme.current().text in out
