@@ -448,7 +448,8 @@ class MurmrApp:
 
     def refresh_capabilities(self) -> None:
         """Ollama installed (or removed) since start: switch Command Mode's shortcut to match."""
-        want = self._command_hotkey(self.cfg, self.hotkey) if self.ai_available() else None
+        want = self._command_hotkey(self.cfg, self.hotkey) \
+            if self.ai_available() or self.cfg.computer_commands else None
         if want != self.sm.command_hotkey:
             self.hotkeys.set_hotkey(self.hotkey, self.cfg.hands_free_key or None, want)
             log.info("Command Mode %s", "on" if want else "off (no local AI)")
@@ -593,7 +594,7 @@ class MurmrApp:
             self.sm.reset()
             self.overlay.flash("Command Mode is paused while Murmr trains on your voice", seconds=3)
             return
-        if mode == "command" and not self.polisher.reachable():
+        if mode == "command" and not self.polisher.reachable() and not self.cfg.computer_commands:
             self.sm.reset()
             self.sounds.play("error")
             self.overlay.flash("Command Mode needs the local AI: Settings > Smart features",
@@ -887,6 +888,23 @@ class MurmrApp:
             if not instruction:
                 self.bridge.done.emit("")
                 return
+            if self.cfg.computer_commands:  # "open Spotify", "volume down": no AI, no text
+                from . import commands
+
+                action = commands.parse(instruction)
+                if action is not None:
+                    log.info("Computer command: %s", action.kind)
+                    try:
+                        said = commands.run(action)
+                    except RuntimeError as exc:
+                        self.bridge.failed.emit(str(exc))
+                        return
+                    self.bridge.notice.emit(said, False)
+                    self.bridge.done.emit(said)
+                    return
+                if not self.polisher.reachable():
+                    self.bridge.failed.emit("That needs the local AI: Settings > Smart features")
+                    return
             self.hotkeys.wait_for_modifiers_released()
             self._focus = f = focus.inspect()
             selection = f.read_selection()

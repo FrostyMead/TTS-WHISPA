@@ -932,6 +932,11 @@ class SettingsPage(QScrollArea):
         self.ai_row.layout().itemAt(0).widget().layout().addWidget(self.ai_note)
         self.ai_btn.setVisible(ai_setup.supported())
         sec.addWidget(self.ai_row)
+        sec.addWidget(self._switch_row(
+            "computer_commands", "Computer commands",
+            "In Command Mode, say “open Spotify”, “switch to Chrome”, “open Downloads”, "
+            "“open youtube.com” or “volume down”. Only these: nothing is ever deleted or sent. "
+            "Works without the local AI."))
         sec.addWidget(self._switch_row("learn_from_edits", "Learn from my corrections",
                                        "After pasting, notice when you fix a word and remember it."))
         sec.addWidget(self._switch_row("screen_context", "Spell names from the screen",
@@ -1441,7 +1446,8 @@ class SettingsPage(QScrollArea):
             self.speech_model.refresh()
         self._refresh_voices()
         ai = self.ctl.ai_available() if hasattr(self.ctl, "ai_available") else True
-        self.command_row.setVisible(ai)  # Command Mode and AI clean-up need the local AI
+        # Command Mode needs the local AI, except for computer commands ("open Spotify")
+        self.command_row.setVisible(ai or self.ctl.cfg.computer_commands)
         self.llm_row.setVisible(ai)
         self.ai_row.setVisible(not ai or bool(self.ai_note.text()))
         if hasattr(self.ctl, "refresh_capabilities"):
