@@ -40,6 +40,7 @@ PAUSE_S = 0.6  # a gap this long ends a line (comma pauses are shorter)
 JOIN_GAP_S = 1.2  # a piece that continues the same sentence this soon joins the line before
 SILENT_RMS = 0.004  # quieter than this (90th percentile): nobody is talking
 ECHO_WINDOW_S = 15.0
+ROOM_SAME_PERSON = 0.5  # live, on a shared room mic (the call keeps the usual 0.45)
 
 
 AUDIOTAP = Path(__file__).resolve().parent / "resources" / "murmr-audiotap"
@@ -398,6 +399,9 @@ class MeetingSession:
     def __post_init__(self):
         self.channels = [Channel(c) for c in self.captures]
         self._trackers: dict = {}  # channel -> speakers.Tracker (set up at start)
+        self._voiceprints: dict[int, list] = {}  # id(line) -> its voiceprints (memory only)
+        self._last_print: dict[str, object] = {}  # channel -> the voiceprint of the next line
+        self._named: set[str] = set()  # names you gave during the meeting
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -434,6 +438,10 @@ class MeetingSession:
             self._thread.join(timeout=60)
         for ch in self.channels:
             self._finish(ch)
+        try:
+            self.regroup_speakers()
+        except Exception:  # noqa: BLE001 - keep the live labels
+            log.exception("Regrouping speakers failed")
         self.running = False
         self.on_update()
         return self.lines
@@ -460,6 +468,7 @@ class MeetingSession:
                     line.who = new
             for tracker in self._trackers.values():
                 tracker.rename(old, new)
+            self._named.add(new)
         self.on_update()
 
     def edit_line(self, index: int, text: str) -> str | None:
@@ -477,7 +486,7 @@ class MeetingSession:
     def _setup_speakers(self) -> None:
         """Tell voices apart in the computer's audio, and in the mic when it's the only
         source (a room). Your own voice is recognised there from your recordings."""
-        from .speakers import Tracker
+        from .speakers import SAME_PERSON, Tracker
 
         self._trackers: dict = {}
         if self.embedder is None:
@@ -497,7 +506,9 @@ class MeetingSession:
                         known["You"] = me
                 except Exception:  # noqa: BLE001
                     log.debug("No voice profile", exc_info=True)
-            self._trackers["You"] = Tracker("Person", known=known, counter=counter)
+            # A room mic: lean towards telling voices apart (naming merges; nothing splits).
+            self._trackers["You"] = Tracker("Person", known=known, counter=counter,
+                                            threshold=ROOM_SAME_PERSON if self.room else SAME_PERSON)
 
     def _speaker(self, ch: Channel, audio: np.ndarray) -> str:
         tracker = self._trackers.get(ch.capture.who) if hasattr(self, "_trackers") else None
@@ -507,6 +518,7 @@ class MeetingSession:
             emb = self.embedder(audio, ch.capture.samplerate)
         except Exception:  # noqa: BLE001
             emb = None
+        self._last_print[ch.capture.who] = emb  # kept with the line, to regroup at the end
         return tracker.assign(emb, "You" if ch.capture.who == "You" and tracker.known else ch.capture.who)
 
     # -- work ------------------------------------------------------------
@@ -586,6 +598,7 @@ class MeetingSession:
         t, end = start_sample / sr, (start_sample + length) / sr
         channel = ch.capture.who
         who = speaker or channel
+        emb = self._last_print.pop(channel, None) if hasattr(self, "_last_print") else None
         with self._lock:
             if self._is_echo(channel, t, text):
                 log.debug("Dropped echoed line: %s", text)
@@ -598,14 +611,80 @@ class MeetingSession:
                 # The same sentence, split at a short pause: continue the line.
                 last.text = f"{last.text.rstrip()} {text[0].lower() + text[1:] if text[1:2].islower() else text}"
                 last.end = round(end, 1)
+                self._keep_print(last, emb)
                 return
             if last is not None and last is self.lines[-1] and t - last.end <= JOIN_GAP_S \
                     and last.text.rstrip().endswith(".") and text[:1].islower():
                 last.text = last.text.rstrip()[:-1] + " " + text  # "ship on the 20th." + "if ..."
                 last.end = round(end, 1)
+                self._keep_print(last, emb)
                 return
-            self.lines.append(Line(round(t, 1), who, text, round(end, 1), channel))
+            line = Line(round(t, 1), who, text, round(end, 1), channel)
+            self.lines.append(line)
+            self._keep_print(line, emb)
             self.lines.sort(key=lambda line: line.t)
+
+    def _keep_print(self, line: Line, emb) -> None:
+        if emb is not None and hasattr(self, "_voiceprints"):
+            self._voiceprints.setdefault(id(line), []).append(emb)
+
+    def regroup_speakers(self) -> None:
+        """After the meeting: tell voices apart again using every line at once. Names you
+        gave are kept (and anchor their group); the rest are numbered Person 1, 2... in
+        order of who spoke first. Voiceprints are then dropped."""
+        from .speakers import regroup_lines
+
+        prints = getattr(self, "_voiceprints", {})
+        with self._lock:
+            by_id = {id(line): line for line in self.lines}
+            new_label: dict[int, str] = {}  # id(line) -> label
+            for channel, tracker in self._trackers.items():
+                lines = [ln for ln in self.lines if (ln.channel or ln.who) == channel
+                         and id(ln) in prints]
+                if len(lines) < 2:
+                    continue
+                embs = [np.mean(prints[id(ln)], axis=0) for ln in lines]
+                groups, stats = regroup_lines(embs, [max(0.0, ln.end - ln.t) for ln in lines])
+                live = len({ln.who for ln in lines})
+                for g in set(groups):
+                    members = [ln for ln, gg in zip(lines, groups) if gg == g]
+                    names = [ln.who for ln in members if ln.who in self._named]
+                    keep = max(set(names), key=names.count) if names else (
+                        "You" if sum(ln.who == "You" for ln in members) * 2 > len(members) else None)
+                    for ln in members:
+                        if ln.who not in self._named:
+                            new_label[id(ln)] = keep or f"\0group:{channel}:{g}"
+                log.info("Speakers on %s: %d lines with voiceprints, %d voices live, %d after "
+                         "regrouping (similarity: loosest same %s, closest different %s)",
+                         channel, len(lines), live, len(set(groups)), stats["loosest_same"],
+                         stats["closest_different"])
+            # Unnamed groups: Person 1, 2... in order of first line, across the whole meeting.
+            numbered: dict[str, str] = {}
+            counter = 1
+            taken = {ln.who for ln in self.lines if ln.who in self._named}
+            old_to_new: dict[str, dict[str, int]] = {}
+            for ln in self.lines:
+                label = new_label.get(id(ln))
+                if label is None:
+                    continue
+                if label.startswith("\0group:"):
+                    if label not in numbered:
+                        while f"Person {counter}" in taken:
+                            counter += 1
+                        numbered[label] = f"Person {counter}"
+                        counter += 1
+                    label = numbered[label]
+                old_to_new.setdefault(ln.who, {}).setdefault(label, 0)
+                old_to_new[ln.who][label] += 1
+                ln.who = label
+            # Short lines without a voiceprint follow where most of their old label went.
+            for ln in self.lines:
+                if id(ln) in new_label or ln.who in self._named or ln.who not in old_to_new:
+                    continue
+                votes = old_to_new[ln.who]
+                ln.who = max(votes, key=votes.get)
+            self._voiceprints = {}
+            del by_id
 
     def _is_echo(self, who: str, t: float, text: str) -> bool:
         """Your mic picking up the other people: drop that copy (or replace a mic copy that

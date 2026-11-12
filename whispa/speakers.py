@@ -170,6 +170,73 @@ class Tracker:
         return label
 
 
+REGROUP_SAME = 0.5  # average similarity for two groups of lines to be one person (after the meeting)
+SHORT_LINE_S = 3.0  # shorter lines give weak voiceprints: they join the nearest group instead
+JOIN_SHORT = 0.25  # ...if they're at least this close to it,
+JOIN_MARGIN = 0.05  # ...and clearly closer to it than to anyone else
+
+
+def regroup_lines(embs: list[np.ndarray], seconds: list[float]) -> tuple[list[int], dict]:
+    """Groups for every line: the longer lines decide who's who (``regroup``); each short
+    line joins the group it's clearly closest to, else is someone new. Also returns the
+    numbers behind it (for the log: no text or audio)."""
+    unit = [e / (np.linalg.norm(e) or 1.0) for e in embs]
+    strong = [i for i, s in enumerate(seconds) if s >= SHORT_LINE_S]
+    if len(strong) < 2:
+        strong = list(range(len(unit)))
+    groups = dict(zip(strong, regroup([unit[i] for i in strong])))
+    centroids = {}
+    for i, g in groups.items():
+        centroids.setdefault(g, []).append(unit[i])
+    cent = {g: np.mean(v, axis=0) / (np.linalg.norm(np.mean(v, axis=0)) or 1.0) for g, v in centroids.items()}
+    next_g = max(groups.values(), default=-1) + 1
+    for i in range(len(unit)):
+        if i in groups:
+            continue
+        sims = sorted(((float(unit[i] @ c), g) for g, c in cent.items()), reverse=True)
+        if sims and sims[0][0] >= JOIN_SHORT and (len(sims) == 1 or sims[0][0] - sims[1][0] >= JOIN_MARGIN):
+            groups[i] = sims[0][1]
+        else:
+            groups[i] = next_g
+            next_g += 1
+    out = [groups[i] for i in range(len(unit))]
+    within = [float(unit[a] @ unit[b]) for a in range(len(unit)) for b in range(a + 1, len(unit))
+              if out[a] == out[b]]
+    between = [float(cent[a] @ cent[b]) for a in cent for b in cent if a < b]
+    stats = {"loosest_same": round(min(within), 2) if within else None,
+             "closest_different": round(max(between), 2) if between else None}
+    return out, stats
+
+
+def regroup(embs: list[np.ndarray], threshold: float = REGROUP_SAME) -> list[int]:
+    """Group voiceprints into people using all of them at once (average linkage): far
+    steadier than deciding line by line. Returns a group number per voiceprint."""
+    n = len(embs)
+    if n == 0:
+        return []
+    x = np.stack([e / (np.linalg.norm(e) or 1.0) for e in embs])
+    sums = x @ x.T  # summed similarity between groups (each starts as one line)
+    sizes = np.ones(n)
+    alive = np.ones(n, bool)
+    group = list(range(n))
+    np.fill_diagonal(sums, -np.inf)
+    while alive.sum() > 1:
+        avg = sums / np.outer(sizes, sizes)
+        avg[~alive, :] = -np.inf
+        avg[:, ~alive] = -np.inf
+        i, j = np.unravel_index(int(np.argmax(avg)), avg.shape)
+        if avg[i, j] < threshold:
+            break
+        sums[i, :] += sums[j, :]
+        sums[:, i] += sums[:, j]
+        sums[i, i] = -np.inf
+        sizes[i] += sizes[j]
+        alive[j] = False
+        group = [i if g == j else g for g in group]
+    order: dict[int, int] = {}
+    return [order.setdefault(g, len(order)) for g in group]
+
+
 def voice_profile(embedder: Embedder, training_dir, max_clips: int = 12) -> np.ndarray | None:
     """Your own voiceprint, from recordings Murmr already has of you (Voice training reads
     first). Kept in memory only. None if there aren't any."""

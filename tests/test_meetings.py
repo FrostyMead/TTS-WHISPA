@@ -270,3 +270,29 @@ def test_live_view_links_names_and_lines():
                      edit_from=40)
     assert 'href="speaker:Person%201"' in out and 'href="line:40"' in out and 'href="line:41"' in out
     assert "edited" in out
+
+
+def test_regroup_uses_long_lines_and_attaches_short_ones():
+    from whispa.speakers import regroup_lines
+
+    a, b = np.array([1.0, 0.1, 0]), np.array([0.1, 1.0, 0])
+    near_b = np.array([0.4, 0.75, 0.55])  # a short, noisy line: closest to b
+    groups, stats = regroup_lines([a, b, a * 0.9, b * 1.1, near_b], [5, 6, 4, 5, 1.5])
+    assert groups[0] == groups[2] != groups[1] == groups[3] == groups[4]
+    assert stats["closest_different"] < 0.5
+
+
+def test_regroup_after_the_meeting_keeps_your_names():
+    from whispa.meetings import Line, MeetingSession
+
+    a, b = np.array([1.0, 0, 0]), np.array([0, 1.0, 0])
+    s = MeetingSession([], lambda x, sr: "")
+    s._trackers = {"You": object()}
+    lines = [Line(0, "Person 1", "x", 5, "You"), Line(6, "Person 2", "y", 11, "You"),
+             Line(12, "Person 3", "z", 17, "You"), Line(18, "Priya", "w", 23, "You")]
+    s.lines = lines
+    s._named = {"Priya"}
+    for ln, e in zip(lines, (a, b, a, b)):  # live, Person 3 was really Person 1
+        s._voiceprints[id(ln)] = [e]
+    s.regroup_speakers()
+    assert [ln.who for ln in lines] == ["Person 1", "Priya", "Person 1", "Priya"]
