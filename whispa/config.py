@@ -92,6 +92,7 @@ class LLMCleanup:
     auto_model: bool = True  # Murmr picks the model for this computer (ai_choice.py)
     measured_s: float = 0.0  # how long a clean-up took here when the model was chosen
     apple_os: str = ""  # macOS version Apple's model was checked on (re-checked after updates)
+    apple_skipped: str = ""  # why Apple's model wasn't used here, last time it was checked
     keep_alive: str = "10m"  # how long Ollama keeps the model in GPU memory between uses
     timeout_s: float = 6.0
     prompt: str = ""  # empty = built-in prompt

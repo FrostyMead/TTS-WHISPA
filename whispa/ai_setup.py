@@ -287,18 +287,21 @@ def setup(llm_cfg, progress: Callable[[str, float | None], None], cancel: thread
     choice = recommend(hw)
     log.info("AI model for %s: %s", hw.describe(), " > ".join(choice.models))
     previous = llm_cfg.model
+    choice_had_apple = choice.model == APPLE
     if choice.model == APPLE:
         took, why = try_apple(llm_cfg, progress, cancel)
         if why is None:
             from . import applellm
 
             llm_cfg.provider, llm_cfg.measured_s = "apple", round(took, 2)
+            llm_cfg.apple_skipped = ""
             llm_cfg.apple_os = applellm.os_version()
             if previous in KNOWN and previous != APPLE and find_ollama():
                 remove_model(llm_cfg.base_url, previous)  # Murmr's Ollama model isn't needed now
             progress(f"Local AI ready: Apple's on-device model, {took:.1f} s per clean-up", 1.0)
             return APPLE
         log.info("Apple's on-device model not used: %s", why)
+        llm_cfg.apple_skipped = why
         progress(f"Apple's model: {why}. Setting up Ollama instead…", None)
         choice.models = [m for m in choice.models if m != APPLE]
     exe = find_ollama() or install_ollama(progress, cancel)
@@ -331,7 +334,8 @@ def setup(llm_cfg, progress: Callable[[str, float | None], None], cancel: thread
             for other in choice.models:  # one downloaded now, then dropped (too slow, broken)
                 if other not in (model, previous) and other not in had and                         other in installed_models(llm_cfg.base_url):
                     remove_model(llm_cfg.base_url, other)
-            progress(f"Local AI ready: {model}, {took:.1f} s per clean-up", 1.0)
+            note = f" (Apple's model wasn't used: {llm_cfg.apple_skipped})" if                 getattr(llm_cfg, "apple_skipped", "") and choice_had_apple else ""
+            progress(f"Local AI ready: {model}, {took:.1f} s per clean-up{note}", 1.0)
             return model
         progress(f"{model} takes {took:.1f} s here; trying the lighter {step}…", None)
         model = step

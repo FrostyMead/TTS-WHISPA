@@ -397,7 +397,8 @@ class MurmrApp:
         return {"model": pretty(current), "measured_s": lc.measured_s, "auto": lc.auto_model,
                 "recommended": pretty(choice.model), "reason": choice.reason,
                 "size": size_label(choice.model),
-                "differs": lc.auto_model and current not in choice.models}
+                "differs": lc.auto_model and current not in choice.models,
+                "apple_skipped": lc.apple_skipped if choice.model == "apple" and current != "apple" else ""}
 
     def _recheck_apple_model(self) -> None:
         """Apple can change its model with a macOS update: check it still passes here."""

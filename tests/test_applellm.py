@@ -133,3 +133,16 @@ def test_recommendation_lists_apple_first_only_where_it_can_be():
     hw.apple_ai = False
     assert ai_choice.recommend(hw).model == "qwen3.5:4b-mlx"
     assert ai_choice.size_label("apple") == "no download"
+
+
+def test_copied_output_label_is_removed(monkeypatch):
+    from whispa.llm import Polisher
+
+    class FakeApple:
+        def generate(self, *a, **k):
+            return "Output: Let's meet on Wednesday at 3."
+
+    monkeypatch.setattr(applellm, "shared", lambda: FakeApple())
+    p = Polisher(LLMCleanup(provider="apple", model="apple"))
+    assert p._complete("so um lets meet on tuesday no wednesday at 3", app="", terms=[]) == \
+        "Let's meet on Wednesday at 3."

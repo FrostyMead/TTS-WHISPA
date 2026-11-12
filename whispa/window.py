@@ -1255,6 +1255,9 @@ class SettingsPage(QScrollArea):
                     "model.")
         elif info["auto"]:
             text = f"{info['model']}{speed}. Best for this computer ({info['reason']})."
+            if info.get("apple_skipped"):
+                text = (f"{info['model']}{speed}. Apple's on-device model wasn't used: "
+                        f"{info['apple_skipped']}. Check again after fixing that.")
         else:
             text = f"{info['model']}{speed}. Chosen in config.json."
         self.model_desc.setText(hold or text)
