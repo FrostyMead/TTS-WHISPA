@@ -379,3 +379,81 @@ def test_live_transcript_stays_put_while_you_read():
     assert bar.value() == held
     assert "someone keeps talking" in page.live_view.toPlainText()
     page.close()
+
+
+def test_live_transcript_small_scrolls_and_constant_updates_never_jump():
+    """What a real meeting does: you scroll up a little while the half-spoken line changes
+    every update and new lines arrive. The view must not move at all."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPoint, QPointF, Qt as QtNS
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    from whispa.config import Config
+    from whispa.meetings import Line
+    from whispa.meetings_page import MeetingsPage
+
+    app = QApplication.instance() or QApplication([])
+    partial = ["and then we"]
+
+    class Session:
+        running = True
+        elapsed = 60
+        lines = [Line(i, f"Person {i % 3 + 1}", f"line {i} " + "word " * 15) for i in range(40)]
+
+        def live(self):
+            return [("Person 2", partial[0])]
+
+    session = Session()
+
+    class Ctl:
+        cfg = Config()
+
+        def __getattr__(self, name):
+            return lambda *a, **k: {"meeting_session": session, "meeting_running": True,
+                                    "meetings": [], "captions_on": False}.get(name)
+
+    page = MeetingsPage(Ctl())
+    page.resize(700, 900)
+    page.show()
+
+    def pump():
+        for _ in range(4):
+            app.processEvents()
+
+    page._tick()
+    pump()
+    bar = page.live_view.verticalScrollBar()
+    assert bar.value() >= bar.maximum() - 4  # following
+    vp = page.live_view.viewport()
+    wheel = QWheelEvent(QPointF(50, 50), QPointF(vp.mapToGlobal(QPoint(50, 50))), QPoint(0, 40),
+                        QPoint(0, 120), QtNS.MouseButton.NoButton, QtNS.KeyboardModifier.NoModifier,
+                        QtNS.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(vp, wheel)  # a small scroll up
+    pump()
+    where = bar.value()
+    assert 0 < where < bar.maximum() - 4 and page.live_btn.isVisibleTo(page)
+    for i in range(30):  # 30 updates: the spoken line grows, lines finish, people switch
+        partial[0] += f" word{i}"
+        if i % 5 == 4:
+            session.lines.append(Line(100 + i, f"Person {i % 2 + 1}", partial[0]))
+            partial[0] = "next"
+        page._tick()
+        pump()
+        assert bar.value() == where, f"moved on update {i}"
+    page.transcript_live.update(session.lines, session.live())  # a rename-style full rewrite
+    session.lines[0].who = "Ben"
+    page._tick()
+    pump()
+    assert abs(bar.value() - where) <= 2
+    page.live_btn.click()
+    pump()
+    assert bar.value() >= bar.maximum() - 4 and not page.live_btn.isVisibleTo(page)
+    partial[0] = "still following"
+    session.lines.append(Line(300, "Person 3", "a new line at the end"))
+    page._tick()
+    pump()
+    assert bar.value() >= bar.maximum() - 4
+    page.close()

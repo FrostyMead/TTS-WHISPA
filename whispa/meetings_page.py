@@ -50,36 +50,172 @@ def _browser(min_h: int = 120, fit: bool = False, max_h: int = 0) -> QTextBrowse
     return b
 
 
-def lines_html(lines, live=(), links: bool = False, edit_from: int | None = None) -> str:
-    """The transcript. ``links``: speaker names are clickable (to rename them).
-    ``edit_from``: lines are clickable to correct them; the first one shown is that index."""
+def _line_inline(d: dict, color: str, links: bool, index: int | None) -> str:
+    """A transcript line's name, time and text (inline HTML, no paragraph)."""
     from urllib.parse import quote
 
     from . import theme
 
-    text_color = theme.current().text
+    name = html.escape(d["who"])
+    if links:
+        name = (f'<a href="speaker:{quote(d["who"])}" style="color:{color};text-decoration:none">'
+                f'{name}</a>')
+    text = html.escape(d["text"])
+    if index is not None:
+        # Qt's rich text has no "inherit": links need the theme's text colour spelled out.
+        text = (f'<a href="line:{index}" style="color:{theme.current().text};text-decoration:none">'
+                f'{text}</a>')
+    mark = ' <span style="color:#999">· edited</span>' if d.get("edited") else ""
+    return (f'<span style="color:{color};font-weight:600">{name}</span> '
+            f'<span style="color:#999">{fmt_time(d["t"])}</span>{mark}<br>{text}')
+
+
+def _live_inline(who: str, text: str, color: str) -> str:
+    return (f'<span style="color:{color};font-weight:600">{html.escape(who)}</span> '
+            f'<span style="color:#999">now</span><br><i style="color:#888">{html.escape(text)}</i>')
+
+
+def lines_html(lines, live=(), links: bool = False, edit_from: int | None = None) -> str:
+    """The transcript. ``links``: speaker names are clickable (to rename them).
+    ``edit_from``: lines are clickable to correct them; the first one shown is that index."""
     rows, order = [], []
     for i, d in enumerate(lines):
         d = d if isinstance(d, dict) else d.__dict__
         color = who_color(d["who"], order)
-        name = html.escape(d["who"])
-        if links:
-            name = (f'<a href="speaker:{quote(d["who"])}" style="color:{color};text-decoration:none">'
-                    f'{name}</a>')
-        text = html.escape(d["text"])
-        if edit_from is not None:
-            # Qt's rich text has no "inherit": links need the theme's text colour spelled out.
-            text = (f'<a href="line:{edit_from + i}" style="color:{text_color};text-decoration:none">'
-                    f'{text}</a>')
-        mark = ' <span style="color:#999">· edited</span>' if d.get("edited") else ""
-        rows.append(f'<p style="margin:0 0 6px 0"><span style="color:{color};font-weight:600">{name}'
-                    f'</span> <span style="color:#999">{fmt_time(d["t"])}</span>{mark}'
-                    f'<br>{text}</p>')
+        inline = _line_inline(d, color, links, None if edit_from is None else edit_from + i)
+        rows.append(f'<p style="margin:0 0 6px 0">{inline}</p>')
     for who, text in live:
-        rows.append(f'<p style="margin:0 0 6px 0"><span style="color:{who_color(who, order)};'
-                    f'font-weight:600">{html.escape(who)}</span> <span style="color:#999">now</span><br>'
-                    f'<i style="color:#888">{html.escape(text)}</i></p>')
+        rows.append(f'<p style="margin:0 0 6px 0">{_live_inline(who, text, who_color(who, order))}</p>')
     return "".join(rows)
+
+
+class LiveTranscript:
+    """The live transcript, changed only at its end so the view never jumps.
+
+    Each transcript line is one paragraph (block N = line N), then the lines still being
+    spoken. An update finds the first line that changed (usually a new or growing last
+    line) and rewrites from there to the end with its own cursor: what you're reading
+    above doesn't move, and Qt has nothing to reset. At the bottom it follows new lines;
+    scrolled up, it stays put. A full rewrite (a rename touching early lines) keeps your
+    place too."""
+
+    def __init__(self, view: QTextBrowser, on_follow_changed=lambda following: None):
+        self.view = view
+        self.on_follow_changed = on_follow_changed
+        self.shown: list[tuple] = []  # what each block holds now
+        self.shown_live: list[tuple] = []
+        self.stick = True  # at the bottom: follow new lines
+        self._busy = False
+        self._restore_to: int | None = None
+        view.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # no text cursor to drag the view around
+        bar = view.verticalScrollBar()
+        bar.valueChanged.connect(self._scrolled)
+        bar.rangeChanged.connect(self._range_changed)
+
+    @property
+    def following(self) -> bool:
+        return self.stick
+
+    def _bar(self):
+        return self.view.verticalScrollBar()
+
+    def _scrolled(self, value: int) -> None:
+        if self._busy:
+            return
+        self._restore_to = None
+        bar = self._bar()
+        stick = value >= bar.maximum() - 4
+        if stick != self.stick:
+            self.stick = stick
+            self.on_follow_changed(stick)
+
+    def _range_changed(self, _lo: int, hi: int) -> None:
+        # The text lays out a little after it changes: keep to the bottom, or to your place.
+        if self._bar().isSliderDown() or self._busy:
+            return  # mid-update: update() puts the view where it belongs when it's done
+        self._busy = True
+        try:
+            if self.stick:
+                self._bar().setValue(hi)
+            elif self._restore_to is not None:
+                self._bar().setValue(min(self._restore_to, hi))
+                if self._restore_to <= hi:
+                    self._restore_to = None
+        finally:
+            self._busy = False
+
+    def to_live(self) -> None:
+        self.stick = True
+        self._restore_to = None
+        was, self._busy = self._busy, True
+        try:
+            self._bar().setValue(self._bar().maximum())
+        finally:
+            self._busy = was
+        self.on_follow_changed(True)
+
+    def reset(self) -> None:
+        self.view.clear()
+        self.shown, self.shown_live = [], []
+        self.stick, self._restore_to = True, None
+
+    def update(self, lines, live) -> None:
+        from PySide6.QtGui import QTextBlockFormat, QTextCursor
+
+        dicts = [ln if isinstance(ln, dict) else ln.__dict__ for ln in lines]
+        keys = [(d["who"], d["t"], d["text"], bool(d.get("edited"))) for d in dicts]
+        live_keys = [tuple(x) for x in live]
+        k = 0
+        while k < min(len(keys), len(self.shown)) and keys[k] == self.shown[k]:
+            k += 1
+        if k == len(keys) == len(self.shown) and live_keys == self.shown_live:
+            return  # nothing new
+        order: list[str] = []
+        colors = [who_color(d["who"], order) for d in dicts]
+        live_colors = [who_color(who, order) for who, _ in live]
+        if any(c != self._color_of(i) for i, c in enumerate(colors[:k])):
+            k = 0  # a rename re-coloured earlier lines: rewrite them all
+        bar = self._bar()
+        keep = bar.value()
+        doc = self.view.document()
+        fmt = QTextBlockFormat()
+        fmt.setBottomMargin(6)
+        self._busy = True
+        try:
+            cur = QTextCursor(doc)
+            if k == 0:
+                cur.select(QTextCursor.SelectionType.Document)
+                cur.removeSelectedText()
+                first = True
+            else:
+                cur.setPosition(doc.findBlockByNumber(k - 1).position())
+                cur.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+                cur.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+                cur.removeSelectedText()
+                first = False
+            items = [_line_inline(d, colors[i], True, i) for i, d in enumerate(dicts) if i >= k]
+            items += [_live_inline(who, text, c) for (who, text), c in zip(live, live_colors)]
+            for inline in items:
+                if first:
+                    cur.setBlockFormat(fmt)
+                    first = False
+                else:
+                    cur.insertBlock(fmt)
+                cur.insertHtml(inline)
+            self.shown, self.shown_live = keys, live_keys
+            self._colors = colors
+            if self.stick:
+                bar.setValue(bar.maximum())
+            else:
+                bar.setValue(min(keep, bar.maximum()))
+                if keep > bar.maximum():
+                    self._restore_to = keep  # until the text has laid out again
+        finally:
+            self._busy = False
+
+    def _color_of(self, i: int) -> str | None:
+        colors = getattr(self, "_colors", [])
+        return colors[i] if i < len(colors) else None
 
 
 class MeetingsPage(QScrollArea):
@@ -177,20 +313,9 @@ class MeetingsPage(QScrollArea):
         self.live_view.setOpenLinks(False)
         self.live_view.anchorClicked.connect(self._live_clicked)
         live.addWidget(self.live_view)
-        # Scroll up to read, name someone or correct a line: the view stays put while new
-        # lines arrive, until you go back to live.
-        self._follow = True
-        self._live_first = 0
-        self._live_html = ""
-        self._rendering = False
-        self._held = 0  # where you scrolled to, while not following
-        bar = self.live_view.verticalScrollBar()
-        # Only your scrolling (wheel, dragging, keys) changes whether it follows; anything else
-        # moving the view (redraws, the text laying out, Qt's own cursor jumps) is undone.
-        bar.actionTriggered.connect(lambda _a: QTimer.singleShot(0, self._live_scrolled))
-        bar.sliderReleased.connect(self._live_scrolled)
-        bar.valueChanged.connect(self._view_moved)
-        bar.rangeChanged.connect(lambda _lo, _hi: self._view_moved())
+        # Scroll up to read, name someone or correct a line: nothing moves until you go back
+        # to the bottom (or click Back to live).
+        self.transcript_live = LiveTranscript(self.live_view, self._follow_changed)
         under = QHBoxLayout()
         under.setContentsMargins(0, 0, 0, 0)
         tip = Label("Click a name to say who it is, or a line to correct it.")
@@ -305,55 +430,13 @@ class MeetingsPage(QScrollArea):
         self._render_live(s)
 
     def _render_live(self, s) -> None:
-        bar = self.live_view.verticalScrollBar()
-        if self._follow:
-            self._live_first = max(0, len(s.lines) - 200)
-        first = min(self._live_first, len(s.lines))  # scrolled up: the same lines stay on top
-        html_text = lines_html(s.lines[first:], s.live(), links=True, edit_from=first)
-        if html_text == self._live_html:
-            return  # nothing new: no redraw, no flicker
-        self._live_html = html_text
-        self._rendering = True
-        try:
-            self.live_view.setHtml(html_text)
-            bar.setValue(bar.maximum() if self._follow else min(self._held, bar.maximum()))
-        finally:
-            self._rendering = False
-        QTimer.singleShot(0, self._restore_view)  # after the text has laid out
+        self.transcript_live.update(s.lines, s.live())
 
-    def _live_scrolled(self, *_args) -> None:
-        """You scrolled: follow along at the bottom, or stay where you are."""
-        bar = self.live_view.verticalScrollBar()
-        self._follow = bar.value() >= bar.maximum() - 4
-        self._held = bar.value()
-        self.live_btn.setVisible(not self._follow)
-
-    def _view_moved(self, *_args) -> None:
-        bar = self.live_view.verticalScrollBar()
-        if self._rendering or bar.isSliderDown():
-            return
-        want = bar.maximum() if self._follow else min(self._held, bar.maximum())
-        if bar.value() != want:
-            QTimer.singleShot(0, self._restore_view)
-
-    def _restore_view(self) -> None:
-        bar = self.live_view.verticalScrollBar()
-        if bar.isSliderDown():
-            return
-        self._rendering = True
-        try:
-            bar.setValue(bar.maximum() if self._follow else min(self._held, bar.maximum()))
-        finally:
-            self._rendering = False
+    def _follow_changed(self, following: bool) -> None:
+        self.live_btn.setVisible(not following)
 
     def _back_to_live(self) -> None:
-        self._follow = True
-        self.live_btn.setVisible(False)
-        self._live_html = ""  # redraw from the latest lines
-        s = self.ctl.meeting_session()
-        if s is not None:
-            self._render_live(s)
-        self._restore_view()
+        self.transcript_live.to_live()
 
     def _fill_list(self) -> None:
         from .window import clear_layout
@@ -592,6 +675,7 @@ class MeetingsPage(QScrollArea):
                 if answer != QMessageBox.StandardButton.Ok:
                     return
                 self.ctl.update_setting("meeting_notice_ok", True)
+            self.transcript_live.reset()  # a new meeting: start following from the top
             err = self.ctl.start_meeting()
             if err:
                 QMessageBox.warning(self, "Meeting notes", err)
