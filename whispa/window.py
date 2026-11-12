@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import threading
 import sys
 from pathlib import Path
 from typing import Protocol
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
+from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QGridLayout, QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QLayout,
                                QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
@@ -219,11 +220,18 @@ def _section(lay: QVBoxLayout, title: str) -> QVBoxLayout:
 
 
 # --------------------------------------------------------------------------- Home
+class _Relay(QObject):
+    done = Signal(str, str)  # result, error
+
+
 class EntryRow(QFrame):
-    def __init__(self, entry: dict, on_delete, on_paste=None):
+    def __init__(self, entry: dict, on_delete, on_paste=None, ctl=None):
         super().__init__()
         self.setObjectName("entryRow")
         self.entry = entry
+        self.ctl = ctl
+        self._relay = _Relay()
+        self._relay.done.connect(self._redone)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 8, 6, 8)
         lay.setSpacing(14)
@@ -245,6 +253,20 @@ class EntryRow(QFrame):
         text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         body.addWidget(text)
+        raw = (entry.get("raw") or "").strip()
+        differs = bool(raw) and " ".join(raw.lower().split()) != " ".join(entry["text"].lower().split())
+        self.heard = Label(f"Heard: {raw}")
+        self.heard.setObjectName("faint")
+        self.heard.setWordWrap(True)
+        self.heard.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.heard.setVisible(False)
+        body.addWidget(self.heard)
+        self.redo_out = Label("")
+        self.redo_out.setObjectName("muted")
+        self.redo_out.setWordWrap(True)
+        self.redo_out.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.redo_out.setVisible(False)
+        body.addWidget(self.redo_out)
         if entry.get("app"):
             app = Label(pretty_app(entry["app"]))
             app.setObjectName("app")
@@ -267,10 +289,57 @@ class EntryRow(QFrame):
         self.delete.setToolTip("Delete from history")
         self.delete.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete.clicked.connect(lambda: on_delete(self))
-        self.buttons = [b for b in (self.paste if on_paste else None, self.copy, self.delete) if b]
+        self.original = None
+        if differs:  # what was heard, before tidying (the history keeps both)
+            self.original = QPushButton("Original")
+            self.original.setObjectName("icon")
+            self.original.setToolTip("Show what Murmr heard, before tidying it")
+            self.original.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.original.clicked.connect(lambda: self.heard.setVisible(not self.heard.isVisible()))
+        self.redo = None
+        if ctl is not None and hasattr(ctl, "reprocess") and raw and not entry.get("command"):
+            from PySide6.QtWidgets import QMenu
+
+            from .styles import MODE_CYCLE, mode_name
+
+            self.redo = QPushButton("Redo as")
+            self.redo.setObjectName("icon")
+            self.redo.setToolTip("Redo this dictation in another mode (your current mode stays)")
+            self.redo.setCursor(Qt.CursorShape.PointingHandCursor)
+            menu = QMenu(self.redo)
+            for mode in MODE_CYCLE:
+                if mode in ("auto",) or (mode == "custom" and not ctl.cfg.custom_mode_prompt.strip()):
+                    continue
+                menu.addAction(mode_name(mode), lambda m=mode: self._redo(m))
+            self.redo.setMenu(menu)
+        self.buttons = [b for b in (self.original, self.redo, self.paste if on_paste else None,
+                                    self.copy, self.delete) if b]
         for b in self.buttons:
             b.setVisible(False)
             lay.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
+
+    def _redo(self, mode: str) -> None:
+        from .styles import mode_name
+
+        self._redo_mode = mode_name(mode)
+        self.redo_out.setText(f"{self._redo_mode}: working…")
+        self.redo_out.setVisible(True)
+        raw = self.entry.get("raw", "")
+
+        def work():
+            try:
+                self._relay.done.emit(self.ctl.reprocess(raw, mode), "")
+            except Exception as exc:  # noqa: BLE001
+                self._relay.done.emit("", str(exc))
+
+        threading.Thread(target=work, name="redo", daemon=True).start()
+
+    def _redone(self, result: str, error: str) -> None:
+        if error:
+            self.redo_out.setText(f"{self._redo_mode}: couldn't redo it ({error})")
+            return
+        QGuiApplication.clipboard().setText(result)
+        self.redo_out.setText(f"{self._redo_mode} (copied):\n{result}")
 
     def _copy(self) -> None:
         QGuiApplication.clipboard().setText(self.entry["text"])
@@ -408,7 +477,7 @@ class HomePage(QScrollArea):
                 d.setObjectName("day")
                 self.list.addWidget(d)
                 last_day = day
-            self.list.addWidget(EntryRow(r, self._delete, getattr(self.ctl, "paste_text", None)))
+            self.list.addWidget(EntryRow(r, self._delete, getattr(self.ctl, "paste_text", None), self.ctl))
 
     def _delete(self, row: EntryRow) -> None:
         self.ctl.delete_history(row.entry.get("t", 0))
@@ -1011,6 +1080,22 @@ class SettingsPage(QScrollArea):
         self.device.currentIndexChanged.connect(self._device_changed)
         self.device_note = Label("")
         self.device_note.setObjectName("faint")
+        self.speech_desc = Label("")
+        self.speech_desc.setObjectName("faint")
+        self.speech_desc.setWordWrap(True)
+        self.quality = QComboBox()
+        for value, label in (("auto", "Automatic · best for this computer"),
+                             ("int8", "Faster · compact model"),
+                             ("none", "Most accurate · full precision")):
+            self.quality.addItem(label, value)
+        q = (cfg.quantization or "auto").lower()
+        self.quality.setCurrentIndex(max(0, self.quality.findData("none" if q == "fp32" else q)))
+        self.quality.currentIndexChanged.connect(self._quality_changed)
+        speech_row = setting_row("Speech recognition", "Speed or accuracy. Runs on this computer; "
+                                 "nothing you say is sent anywhere.", self.quality)
+        speech_row.layout().itemAt(0).widget().layout().addWidget(self.speech_desc)
+        if hasattr(ctl, "speech_info"):
+            sec.addWidget(speech_row)
         if capabilities.gpu_choice():  # macOS: always the built-in CPU path
             sec.addWidget(setting_row("Speech model runs on", "", self.device))
             sec.addWidget(self.device_note)
@@ -1239,6 +1324,27 @@ class SettingsPage(QScrollArea):
             self.hotkey_msg.setText(err)
             self.hotkey_msg.setVisible(True)
 
+    def _quality_changed(self) -> None:
+        if hasattr(self.ctl, "set_speech_quality"):
+            self.ctl.set_speech_quality(self.quality.currentData())
+        self.speech_desc.setText("Reloading the speech model…")
+
+    def _refresh_speech(self) -> None:
+        if not hasattr(self.ctl, "speech_info"):
+            return
+        info = self.ctl.speech_info()
+        if not info:
+            return
+        if not info["ready"]:
+            self.speech_desc.setText("Loading the speech model…")
+            return
+        text = f"Now: {info['model']}, {info['precision']} ({info['size']}), on {info['where']}."
+        if info["speed"]:
+            text += f" About {info['speed']:.0f}× faster than you speak, measured on your dictations."
+        if info["slow_choice"]:
+            text += " Full precision on the processor is slow and uses more memory: Faster suits this computer."
+        self.speech_desc.setText(text)
+
     def _device_changed(self) -> None:
         self._set("device", self.device.currentData())
         self.device_note.setText("Takes effect after a restart.")
@@ -1347,6 +1453,7 @@ class SettingsPage(QScrollArea):
         self.llm_row_desc.style().unpolish(self.llm_row_desc)
         self.llm_row_desc.style().polish(self.llm_row_desc)
         self.status.setText(f"Murmr {__version__} · {self.ctl.status_text()}")
+        self._refresh_speech()
         self.refresh_updates()
         self.refresh_permissions()
 

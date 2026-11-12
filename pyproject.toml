@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "murmr"
-version = "0.6.1"
+version = "0.7.0"
 description = "Local, cross-platform push-to-talk dictation powered by NVIDIA Parakeet"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,6 +20,7 @@ dependencies = [
   "espeakng-loader>=0.2.4",  # pronunciation for the read-aloud voice
   "cryptography>=42",  # encrypted sync between your computers (sync.py)
   "keyring>=25",  # the optional AI API key lives in the system credential store
+  "av>=12",  # read audio and video files to transcribe (its own FFmpeg)
   "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
   "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
   "pyobjc-framework-ApplicationServices>=10; sys_platform == 'darwin'",

@@ -66,3 +66,47 @@ def test_mode_without_the_ai_says_so(monkeypatch):
     assert p.polish("hi sam", mode_prompt=styles.prompt_for("email")) == "hi sam"
     assert p.last_issue == "unavailable"
     assert p.polish("hi sam") == "hi sam" and p.last_issue == ""  # plain tidy-up: no fuss
+
+
+def test_reprocess_in_another_mode_keeps_your_mode(monkeypatch, tmp_path):
+    from whispa.learn import Dictionary
+
+    a = _app("casual")
+    a.dictionary = Dictionary(tmp_path / "d.json")
+    a.polisher = Polisher(LLMCleanup())
+    seen = {}
+
+    def polish(text, **kw):
+        seen.update(kw)
+        a.polisher.last_issue = ""
+        return "- Finish the payments screen\n- Book the review"
+
+    monkeypatch.setattr(a.polisher, "polish", polish)
+    out = a.reprocess("um finish the payments screen and book the review", "notes")
+    assert out.startswith("- Finish") and "Format it as notes" in seen["mode_prompt"]
+    assert a.cfg.mode == "casual"
+    assert a.reprocess("um so hi there", "exact") == "So hi there"
+
+
+def test_history_row_shows_original_and_redo(tmp_path):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from whispa.window import EntryRow
+
+    QApplication.instance() or QApplication([])
+
+    class Ctl:
+        cfg = Config()
+
+        def reprocess(self, raw, mode):
+            return raw.upper()
+
+    row = EntryRow({"t": 1, "raw": "um hi there", "text": "Hi there."}, lambda r: None, None, Ctl())
+    assert row.original is not None and row.redo is not None
+    row.original.click()
+    assert row.heard.isVisibleTo(row) and "um hi there" in row.heard.text()
+    same = EntryRow({"t": 1, "raw": "hi there", "text": "Hi there"}, lambda r: None)
+    assert same.original is None and same.redo is None

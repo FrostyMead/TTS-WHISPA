@@ -87,6 +87,7 @@ class MeetingsPage(QScrollArea):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setWidget(area.takeWidget())
         self._viewing: str | None = None
+        self.setAcceptDrops(True)  # drop an audio / video file here to transcribe it
 
         # -- controls
         sec = _section(lay, "Notes")
@@ -103,8 +104,6 @@ class MeetingsPage(QScrollArea):
                 desc += (" macOS asks once for Screen & System Audio Recording: Murmr only uses "
                          "the sound, never the screen.")
             sec.addWidget(setting_row("Computer audio", desc, self.sys_sw))
-        buttons = QHBoxLayout()
-        buttons.setContentsMargins(0, 12, 0, 6)
         self.start_btn = QPushButton("Start meeting notes")
         self.start_btn.setObjectName("primary")
         self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -116,11 +115,21 @@ class MeetingsPage(QScrollArea):
         self.status = Label("")
         self.status.setObjectName("muted")
         self.status.setWordWrap(True)
-        buttons.addWidget(self.start_btn)
-        buttons.addWidget(self.captions_btn)
-        buttons.addSpacing(8)
-        buttons.addWidget(self.status, 1)
-        sec.addLayout(buttons)
+        self.file_btn = QPushButton("Transcribe a file…")
+        self.file_btn.setToolTip("An audio or video file (mp3, m4a, wav, mp4, mov…): transcribed on "
+                                 "this computer, with speakers told apart. Or drop it on this page.")
+        self.file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.file_btn.clicked.connect(self._file_clicked)
+        from .window import FlowLayout
+
+        host = QWidget()
+        flow = FlowLayout(host, spacing=8)  # wraps onto more lines in a narrow window
+        for b in (self.start_btn, self.captions_btn, self.file_btn):
+            flow.addWidget(b)
+        host.setContentsMargins(0, 12, 0, 4)
+        sec.addWidget(host)
+        self.status.setContentsMargins(0, 0, 0, 6)
+        sec.addWidget(self.status)
         consent = Label("Let everyone know you're taking notes: in some places, recording or "
                         "transcribing a conversation needs everyone's consent.")
         consent.setObjectName("faint")
@@ -331,6 +340,51 @@ class MeetingsPage(QScrollArea):
             self.ctl.delete_meeting(self._meeting["id"])
             self.open_meeting(None)
             self._fill_list()
+
+    # -- transcribe a file -------------------------------------------------
+    def _file_clicked(self) -> None:
+        if self.file_btn.text() == "Cancel":
+            self.ctl.cancel_file()
+            return
+        from .filetrans import EXTENSIONS
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Transcribe a file", "",
+            "Audio and video (" + " ".join(f"*{e}" for e in EXTENSIONS) + ");;All files (*)")
+        if path:
+            self._start_file(path)
+
+    def _start_file(self, path: str) -> None:
+        err = self.ctl.transcribe_file(path)
+        if err:
+            self.status.setText(err)
+            return
+        self.file_btn.setText("Cancel")
+        self.status.setText("Reading the file…")
+
+    def file_progress(self, msg: str, frac: float) -> None:
+        if msg.startswith(("done:", "error:")):
+            self.file_btn.setText("Transcribe a file…")
+            if msg.startswith("done:"):
+                self.status.setText("File transcribed.")
+                self._viewing = msg[5:]
+                self.refresh()
+            else:
+                self.status.setText(msg[6:])
+            return
+        self.status.setText(f"Transcribing {msg}" + (f" ({frac:.0%})" if frac >= 0 else ""))
+
+    def dragEnterEvent(self, event) -> None:
+        from .filetrans import EXTENSIONS
+
+        urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+        if urls and urls[0].toLocalFile().lower().endswith(EXTENSIONS):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        urls = event.mimeData().urls()
+        if urls:
+            self._start_file(urls[0].toLocalFile())
 
     def _start_stop(self) -> None:
         if self.ctl.meeting_running():

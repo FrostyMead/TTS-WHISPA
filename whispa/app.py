@@ -55,6 +55,7 @@ class Bridge(QObject):
     paste_last = Signal()
     cycle_mode = Signal()
     add_word = Signal()
+    file_progress = Signal(str, float)  # message, fraction (-1 unknown); "done:<id>" / "error:"
     read_aloud = Signal()
     speak_state = Signal(str)
     meeting_changed = Signal(str)  # meeting id (saved, summary progress or done)
@@ -147,6 +148,7 @@ class MurmrApp:
         b.paste_last.connect(self.paste_last)
         b.cycle_mode.connect(self.cycle_mode)
         b.add_word.connect(self.add_selection_to_dictionary)
+        b.file_progress.connect(self._on_file_progress)
         b.read_aloud.connect(self.read_aloud)
         b.speak_state.connect(self._on_speak_state)
         b.meeting_changed.connect(self._on_meeting_changed)
@@ -640,6 +642,63 @@ class MurmrApp:
             return
         self.add_selection_to_dictionary()
 
+    # -- speech recognition: what runs, how fast, speed vs accuracy -------------
+    QUALITY = {"auto": "Automatic", "int8": "Faster", "none": "Most accurate"}
+
+    def speech_info(self) -> dict:
+        import statistics
+
+        from .asr import BASE_MODEL, local_model_dir
+
+        t = self.transcriber
+        name = "Parakeet TDT 0.6B v3" if t.model_name == BASE_MODEL else (
+            "your tuned model" if local_model_dir(t.model_name) else t.model_name)
+        where = {"CUDA": "your NVIDIA graphics card", "DirectML": "your graphics card",
+                 "CoreML": "the Apple Neural Engine", "CPU": "the processor"}.get(t.backend, t.backend)
+        quant = t._quant(t.backend) if t.backend != "?" else None
+        speeds = getattr(self, "_asr_speeds", [])
+        return {"model": name, "where": where, "backend": t.backend, "ready": t.ready.is_set(),
+                "precision": "compact (int8)" if quant == "int8" else "full precision",
+                "size": "about 650 MB" if quant == "int8" else "about 2.4 GB",
+                "speed": statistics.median(speeds) if len(speeds) >= 3 else None,
+                "quality": (self.cfg.quantization or "auto").lower(),
+                "slow_choice": t.backend == "CPU" and (self.cfg.quantization or "").lower() in ("none", "fp32")}
+
+    def set_speech_quality(self, value: str) -> None:
+        """Faster (int8) / Most accurate (full precision) / Automatic: reload the model."""
+        value = value if value in self.QUALITY else "auto"
+        self.cfg.quantization = value
+        config_mod.save(self.cfg)
+        self.transcriber.quantization = value
+        self._asr_speeds = []
+        self._status("Reloading the speech model…")
+        log.info("Speech recognition precision: %s", value)
+
+        def work():
+            try:
+                self.transcriber.switch_device(self.transcriber.device)
+                self.bridge.model_ready.emit(self.transcriber.backend)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Reloading the speech model failed")
+                self.bridge.model_failed.emit(str(exc))
+
+        threading.Thread(target=work, name="model-reload", daemon=True).start()
+
+    def reprocess(self, raw: str, mode: str) -> str:
+        """A past dictation, redone in another mode (History). Doesn't change your mode."""
+        terms, corrections = self.dictionary.snapshot()
+        replacements = {**corrections, **self.cfg.replacements}
+        text = textproc.process(raw, fillers=self.cfg.remove_fillers, commands=self.cfg.voice_commands,
+                                replacements=replacements, terms=terms, smart=self.cfg.smart_formatting)
+        if mode != "exact":
+            polished = self.polisher.polish(text, terms=terms,
+                                            mode_prompt=styles.prompt_for(mode, self.cfg.custom_mode_prompt),
+                                            allow_drop=mode == "notes")
+            if self.polisher.last_issue == "unavailable":
+                raise RuntimeError(f"{styles.mode_name(mode)} needs the local AI")
+            text = textproc.apply_replacements(polished, replacements)
+        return styles.apply(text, mode, keep=set(terms)).strip()
+
     def add_selection_to_dictionary(self) -> None:
         """Tray: the word or short phrase selected in the app you were in becomes one of
         your words (spelled exactly like that from now on)."""
@@ -792,6 +851,10 @@ class MurmrApp:
                                         False)
         log.info("%.1fs audio -> %d chars, ASR %.0f ms, total %.0f ms (%s)", len(audio) / sr,
                  len(text), t_asr * 1000, (time.perf_counter() - t0) * 1000, self.transcriber.backend)
+        if len(audio) >= 2 * sr and t_asr > 0:  # how fast recognition really is here
+            speeds = getattr(self, "_asr_speeds", [])
+            speeds.append(len(audio) / sr / t_asr)
+            self._asr_speeds = speeds[-20:]
         if not text:
             self._empty_reason = ("No sound from the microphone: is it muted?"
                                   if _quiet(audio) else "Didn't catch that")
@@ -1341,6 +1404,64 @@ class MurmrApp:
                 self.tray.showMessage("Meeting notes ready", m.get("title") or "Your summary is ready",
                                       tray_icon(), 6000)
                 self._tray_click = None
+
+    # -- transcribe a file (filetrans.py) ------------------------------------
+    def transcribe_file(self, path: str) -> str | None:
+        """Start transcribing an audio / video file into a meeting. Returns an error, or None."""
+        from pathlib import Path
+
+        from .filetrans import EXTENSIONS
+
+        p = Path(path)
+        if getattr(self, "_file_cancel", None) is not None:
+            return "A file is already being transcribed"
+        if not p.is_file():
+            return "That file isn't there any more"
+        if p.suffix.lower() not in EXTENSIONS:
+            return f"Murmr can't read {p.suffix or 'that kind of'} files"
+        if not self.transcriber.ready.is_set():
+            return "The speech model is still loading. Try again in a moment."
+        self._file_cancel = threading.Event()
+        cancel = self._file_cancel
+
+        def work():
+            from . import filetrans
+
+            t0 = time.perf_counter()
+            try:
+                if getattr(self, "_embedder", None) is None:
+                    from .speakers import Embedder
+
+                    self._embedder = Embedder()
+                lines = filetrans.transcribe_file(
+                    p, self.transcriber.transcribe, cancel=cancel, embedder=self._embedder,
+                    progress=lambda f, msg: self.bridge.file_progress.emit(f"{p.name}: {msg}", f))
+                if not lines:
+                    self.bridge.file_progress.emit("error:No speech found in that file", -1.0)
+                    return
+                mid = self.meeting_store().save(filetrans.meeting_from_file(p, lines, time.perf_counter() - t0))
+                log.info("Transcribed a file: %d lines in %.0f s", len(lines), time.perf_counter() - t0)
+                self.bridge.file_progress.emit(f"done:{mid}", 1.0)
+                self.bridge.meeting_changed.emit(mid)
+            except filetrans.Cancelled:
+                self.bridge.file_progress.emit("error:Cancelled", -1.0)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("File transcription failed")
+                self.bridge.file_progress.emit(f"error:Couldn't transcribe it: {exc}", -1.0)
+            finally:
+                self._file_cancel = None
+
+        threading.Thread(target=work, name="file-transcribe", daemon=True).start()
+        log.info("Transcribing a file (%s)", p.suffix)
+        return None
+
+    def cancel_file(self) -> None:
+        if getattr(self, "_file_cancel", None) is not None:
+            self._file_cancel.set()
+
+    def _on_file_progress(self, msg: str, frac: float) -> None:
+        if self.window is not None and hasattr(self.window, "meetings"):
+            self.window.meetings.file_progress(msg, frac)
 
     def _toggle_meeting_from_tray(self) -> None:
         if self.meeting_running():
