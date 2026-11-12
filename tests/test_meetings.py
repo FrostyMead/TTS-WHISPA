@@ -457,3 +457,43 @@ def test_live_transcript_small_scrolls_and_constant_updates_never_jump():
     pump()
     assert bar.value() >= bar.maximum() - 4
     page.close()
+
+
+def test_meetings_can_be_deleted_from_the_list(monkeypatch):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
+
+    from whispa.config import Config
+    from whispa.meetings_page import MeetingsPage
+
+    QApplication.instance() or QApplication([])
+    store = [{"id": f"m{i}", "started": 1_700_000_000 + i, "title": f"Meeting {i}", "duration": 60,
+              "words": 10} for i in range(3)]
+
+    class Ctl:
+        cfg = Config()
+
+        def meetings(self):
+            return list(store)
+
+        def delete_meeting(self, mid):
+            store[:] = [m for m in store if m["id"] != mid]
+
+        def __getattr__(self, name):
+            return lambda *a, **k: {"meeting_running": False, "captions_on": False}.get(name)
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    page = MeetingsPage(Ctl())
+    page._fill_list()
+
+    deletes = [b for b in page.findChildren(QPushButton)
+               if b.toolTip() == "Delete this meeting's notes and transcript"]
+    assert len(deletes) == 3
+    deletes[0].click()
+    assert [m["id"] for m in store] == ["m1", "m2"]
+    wipe = [b for b in page.findChildren(QPushButton) if b.text().startswith("Delete all") and not b.isHidden()]
+    wipe[-1].click()
+    assert store == []
+    page.close()

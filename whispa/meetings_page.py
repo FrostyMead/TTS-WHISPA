@@ -453,10 +453,26 @@ class MeetingsPage(QScrollArea):
         for i, m in enumerate(meetings[:100]):
             when = dt.datetime.fromtimestamp(m["started"]).strftime("%a %d %b, %H:%M")
             title = m.get("title") or "Meeting notes"
+            controls = QWidget()
+            row = QHBoxLayout(controls)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
             b = QPushButton("Open")
             b.clicked.connect(lambda _=False, mid=m["id"]: self.open_meeting(mid))
+            rm = QPushButton("Delete")
+            rm.setToolTip("Delete this meeting's notes and transcript")
+            rm.clicked.connect(lambda _=False, mid=m["id"], t=title: self._delete_one(mid, t))
+            row.addWidget(b)
+            row.addWidget(rm)
             self.list.addWidget(setting_row(title, f"{when} · {fmt_time(m.get('duration') or 0)} · "
-                                            f"{m.get('words', 0)} words", b, first=i == 0))
+                                            f"{m.get('words', 0)} words", controls, first=i == 0))
+        all_row = QHBoxLayout()
+        all_row.setContentsMargins(0, 10, 0, 6)
+        all_row.addStretch(1)
+        wipe = QPushButton(f"Delete all {len(meetings)} meetings" if len(meetings) > 1 else "Delete it")
+        wipe.clicked.connect(self._delete_all)
+        all_row.addWidget(wipe)
+        self.list.addLayout(all_row)
 
     # -- a meeting -------------------------------------------------------
     def open_meeting(self, meeting_id: str | None) -> None:
@@ -608,6 +624,23 @@ class MeetingsPage(QScrollArea):
     def _resummarize(self) -> None:
         self.ctl.summarize_meeting(self._meeting["id"])
         self.open_meeting(self._meeting["id"])
+
+    def _delete_one(self, mid: str, title: str) -> None:
+        if QMessageBox.question(self, "Delete meeting", f"Delete “{title}”: its notes and "
+                                "transcript? This can't be undone.") == QMessageBox.StandardButton.Yes:
+            self.ctl.delete_meeting(mid)
+            if self._viewing == mid:
+                self.open_meeting(None)
+            self._fill_list()
+
+    def _delete_all(self) -> None:
+        n = len(self.ctl.meetings())
+        if QMessageBox.question(self, "Delete all meetings", f"Delete all {n} meetings: their "
+                                "notes and transcripts? This can't be undone.") ==                 QMessageBox.StandardButton.Yes:
+            for m in self.ctl.meetings():
+                self.ctl.delete_meeting(m["id"])
+            self.open_meeting(None)
+            self._fill_list()
 
     def _delete(self) -> None:
         if QMessageBox.question(self, "Delete meeting", "Delete these notes and transcript?") \
