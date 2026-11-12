@@ -305,3 +305,56 @@ def test_clickable_lines_use_the_theme_text_colour():
 
     out = lines_html([Line(0, "Ben", "hello")], links=True, edit_from=0)
     assert "inherit" not in out and theme.current().text in out
+
+
+def test_live_transcript_stays_put_while_you_read():
+    import os
+    import time
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from whispa.config import Config
+    from whispa.meetings import Line
+    from whispa.meetings_page import MeetingsPage
+
+    app = QApplication.instance() or QApplication([])
+
+    class Session:
+        running = True
+        elapsed = 60
+        lines = [Line(i, f"Person {i % 3 + 1}", f"line {i} " + "word " * 20) for i in range(60)]
+
+        def live(self):
+            return []
+
+    session = Session()
+
+    class Ctl:
+        cfg = Config()
+
+        def __getattr__(self, name):
+            return lambda *a, **k: {"meeting_session": session, "meeting_running": True,
+                                    "meetings": [], "captions_on": False}.get(name)
+
+    page = MeetingsPage(Ctl())
+    page.resize(700, 900)
+    page.show()
+    page._tick()
+    for _ in range(5):
+        app.processEvents()
+    bar = page.live_view.verticalScrollBar()
+    assert bar.value() == bar.maximum() and not page.live_btn.isVisibleTo(page)
+    bar.setValue(bar.maximum() // 3)  # you scroll up to read
+    app.processEvents()
+    assert page.live_btn.isVisibleTo(page)
+    where = bar.value()
+    session.lines.append(Line(61, "Person 1", "someone keeps talking"))
+    page._tick()
+    app.processEvents()
+    assert bar.value() == where  # not pulled back down
+    page.live_btn.click()
+    app.processEvents()
+    assert bar.value() == bar.maximum() and not page.live_btn.isVisibleTo(page)
+    assert "someone keeps talking" in page.live_view.toPlainText()
+    page.close()

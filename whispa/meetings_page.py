@@ -177,9 +177,26 @@ class MeetingsPage(QScrollArea):
         self.live_view.setOpenLinks(False)
         self.live_view.anchorClicked.connect(self._live_clicked)
         live.addWidget(self.live_view)
+        # Scroll up to read, name someone or correct a line: the view stays put while new
+        # lines arrive, until you go back to live.
+        self._follow = True
+        self._live_first = 0
+        self._live_html = ""
+        self._rendering = False
+        self.live_view.verticalScrollBar().valueChanged.connect(self._live_scrolled)
+        under = QHBoxLayout()
+        under.setContentsMargins(0, 0, 0, 0)
         tip = Label("Click a name to say who it is, or a line to correct it.")
         tip.setObjectName("faint")
-        live.addWidget(tip)
+        tip.setWordWrap(True)
+        self.live_btn = QPushButton("Back to live ↓")
+        self.live_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.live_btn.setToolTip("Follow the conversation again")
+        self.live_btn.clicked.connect(self._back_to_live)
+        self.live_btn.setVisible(False)
+        under.addWidget(tip, 1)
+        under.addWidget(self.live_btn, 0, Qt.AlignmentFlag.AlignTop)
+        live.addLayout(under)
         lay.addWidget(self.live_card)
 
         # -- a meeting's notes
@@ -276,14 +293,43 @@ class MeetingsPage(QScrollArea):
         words = sum(len(line.text.split()) for line in s.lines)
         self.status.setText(f'<span style="color:#ef4444">●</span>&nbsp; Recording '
                             f"{fmt_time(s.elapsed)} · {words} words")
-        bar = self.live_view.verticalScrollBar()
-        at_end = bar.value() >= bar.maximum() - 4
         if getattr(self, "_editing", False):
             return  # a correction dialog is open: don't redraw underneath it
-        first = max(0, len(s.lines) - 200)
-        self.live_view.setHtml(lines_html(s.lines[first:], s.live(), links=True, edit_from=first))
-        if at_end:
-            bar.setValue(bar.maximum())
+        self._render_live(s)
+
+    def _render_live(self, s) -> None:
+        bar = self.live_view.verticalScrollBar()
+        if self._follow:
+            self._live_first = max(0, len(s.lines) - 200)
+        first = min(self._live_first, len(s.lines))  # scrolled up: the same lines stay on top
+        html_text = lines_html(s.lines[first:], s.live(), links=True, edit_from=first)
+        if html_text == self._live_html:
+            return  # nothing new: no redraw, no flicker
+        self._live_html = html_text
+        keep = bar.value()
+        self._rendering = True
+        try:
+            self.live_view.setHtml(html_text)
+            bar.setValue(bar.maximum() if self._follow else min(keep, bar.maximum()))
+        finally:
+            self._rendering = False
+
+    def _live_scrolled(self, value: int) -> None:
+        if self._rendering:
+            return
+        bar = self.live_view.verticalScrollBar()
+        self._follow = value >= bar.maximum() - 4  # at the bottom again: follow along
+        self.live_btn.setVisible(not self._follow)
+
+    def _back_to_live(self) -> None:
+        self._follow = True
+        self.live_btn.setVisible(False)
+        self._live_html = ""  # redraw from the latest lines
+        s = self.ctl.meeting_session()
+        if s is not None:
+            self._render_live(s)
+        bar = self.live_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     def _fill_list(self) -> None:
         from .window import clear_layout
