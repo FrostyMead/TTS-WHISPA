@@ -106,17 +106,21 @@ func handle(_ req: [String: Any]) async -> [String: Any] {
 }
 
 setvbuf(stdout, nil, _IONBF, 0)
+let inFlight = DispatchGroup()
 Thread.detachNewThread {
     while let line = readLine() {  // ends when Murmr closes our stdin (or quits)
         guard let data = line.data(using: .utf8),
               let req = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
         let id = req["id"] ?? 0
+        inFlight.enter()
         Task {
             var res = await handle(req)
             res["id"] = id
             send(res)
+            inFlight.leave()
         }
     }
+    inFlight.wait()  // answer what was asked before exiting
     writer.sync {}
     exit(0)
 }
