@@ -92,6 +92,10 @@ class Embedder:
         so.intra_op_num_threads = 2
         so.inter_op_num_threads = 1
         so.enable_cpu_mem_arena = False
+        # Don't keep threads spinning on the CPU after each run, waiting for the next one: an
+        # app that's mostly idle would burn battery for a few milliseconds of latency.
+        so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        so.add_session_config_entry("session.inter_op.allow_spinning", "0")
         path = hf_hub_download(REPO, MODEL_FILE)
         return ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
 

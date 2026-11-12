@@ -124,7 +124,8 @@ class KeyTap:
                     log.error("Can't see the keyboard yet: allow Murmr in System Settings > "
                               "Privacy & Security > Input Monitoring. Waiting for it...")
                     warned = True
-                time.sleep(2)
+                self._waits = getattr(self, "_waits", 0) + 1
+                time.sleep(min(15.0, 2.0 * 1.3 ** min(self._waits, 10)))
                 continue
             state["tap"] = tap
             self.active = True
@@ -151,7 +152,10 @@ class KeyTap:
     def _refresh_until_events(self, loop) -> None:
         import Quartz
 
-        time.sleep(5)
+        # Every 5 s at first, then less often (up to a minute): an idle Mac before its first
+        # key press shouldn't keep rebuilding the tap.
+        self._refreshes = getattr(self, "_refreshes", 0) + 1
+        time.sleep(min(60.0, 5.0 * 1.5 ** min(self._refreshes - 1, 8)))
         if not self._stopped and not self._seen_key and self._loop is loop:
             log.debug("No keyboard events yet; making a new event tap")
             Quartz.CFRunLoopStop(loop)

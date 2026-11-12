@@ -506,9 +506,11 @@ class MurmrApp:
             relaunch_detached()
             os._exit(3)
 
-        self.watchdog = Watchdog(freeze, restart, dump_after=20, restart_after=85)
+        # Every 2 s (and checked every 5 s): plenty to catch a 20 s freeze, half the wake-ups.
+        self.watchdog = Watchdog(freeze, restart, dump_after=20, restart_after=85, check_every=5.0)
         self._heartbeat = QTimer()
-        self._heartbeat.setInterval(1000)
+        self._heartbeat.setInterval(2000)
+        self._heartbeat.setTimerType(Qt.TimerType.VeryCoarseTimer)
 
         def beat() -> None:
             self.watchdog.beat()
@@ -863,8 +865,10 @@ class MurmrApp:
                 self.bridge.notice.emit("AI clean-up took too long: pasted as heard"
                                         if issue == "timeout" else "AI clean-up failed: pasted as heard",
                                         False)
-        log.info("%.1fs audio -> %d chars, ASR %.0f ms, total %.0f ms (%s)", len(audio) / sr,
-                 len(text), t_asr * 1000, (time.perf_counter() - t0) * 1000, self.transcriber.backend)
+        log.info("%.1fs audio -> %d chars, ASR %.0f ms (waited %.0f ms for a meeting/file), total "
+                 "%.0f ms (%s)%s", len(audio) / sr, len(text), t_asr * 1000,
+                 getattr(self.transcriber, "last_wait_ms", 0.0), (time.perf_counter() - t0) * 1000,
+                 self.transcriber.backend, ", partly while talking" if partly_live else "")
         # How fast recognition really is here: only dictations timed whole (part of a long one is
         # transcribed while you talk, so its end-of-dictation time would overstate the speed).
         if len(audio) >= 2 * sr and t_asr > 0 and not partly_live:

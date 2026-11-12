@@ -422,12 +422,39 @@ class MeetingsPage(QScrollArea):
             self._timer.stop()
             self.refresh()
             return
-        words = sum(len(line.text.split()) for line in s.lines)
+        words = self._word_count(s)
         self.status.setText(f'<span style="color:#ef4444">●</span>&nbsp; Recording '
                             f"{fmt_time(s.elapsed)} · {words} words")
         if getattr(self, "_editing", False):
             return  # a correction dialog is open: don't redraw underneath it
         self._render_live(s)
+
+    def _word_count(self, s) -> int:
+        """Words so far, counting only lines that are new or changed since last time."""
+        cache = getattr(self, "_words_cache", None)
+        if cache is None or cache[0] is not s or len(s.lines) < cache[1]:
+            cache = [s, 0, 0, []]  # session, lines counted, words in them, their lengths
+        _sess, n, total, lens = cache
+        for i in range(len(lens)):  # a line can grow (joined) or be corrected
+            if i < len(s.lines) and len(s.lines[i].text) != lens[i][0]:
+                total += len(s.lines[i].text.split()) - lens[i][1]
+                lens[i] = (len(s.lines[i].text), len(s.lines[i].text.split()))
+        for line in s.lines[n:]:
+            w = len(line.text.split())
+            lens.append((len(line.text), w))
+            total += w
+        self._words_cache = [s, len(s.lines), total, lens]
+        return total
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self.ctl.meeting_running() and not self._timer.isActive():
+            self._timer.start()  # catch up with what was said while hidden
+            self._tick()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._timer.stop()  # nothing to draw while the window is closed
 
     def _render_live(self, s) -> None:
         self.transcript_live.update(s.lines, s.live())

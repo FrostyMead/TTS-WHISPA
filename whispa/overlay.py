@@ -302,7 +302,13 @@ class Overlay(QWidget):
             if ta == 0.0:
                 self.hide()
         r = self._pill_rect().adjusted(-2, -2, 2, 2).toAlignedRect()
-        self.setMask(QRegion(r))
+        if r != getattr(self, "_mask_rect", None):  # the window shape only when it changes
+            self._mask_rect = r
+            self.setMask(QRegion(r))
+        # Size changes animate at 60 fps; once settled, the level bars are smooth at 30.
+        want = 16 if not settled else 33
+        if self._timer.interval() != want:
+            self._timer.setInterval(want)
         self.update()
 
     # -- painting --------------------------------------------------------

@@ -725,6 +725,16 @@ class DictionaryPage(QScrollArea):
 
 # --------------------------------------------------------------------------- Settings
 class SettingsPage(QScrollArea):
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if getattr(self, "_perm_timer", None) is not None:
+            self._perm_timer.start()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        if getattr(self, "_perm_timer", None) is not None:
+            self._perm_timer.stop()
+
     def __init__(self, ctl: Controller, mic_options: list[tuple[str, str]]):
         super().__init__()
         self.ctl = ctl
@@ -1291,7 +1301,7 @@ class SettingsPage(QScrollArea):
         self._perm_timer = QTimer(self)
         self._perm_timer.setInterval(2000)  # pick up changes made in System Settings
         self._perm_timer.timeout.connect(self.refresh_permissions)
-        self._perm_timer.start()
+        # Runs only while Settings is on screen (showEvent / hideEvent).
 
     def refresh_permissions(self) -> None:
         if not self.perm_rows or not self.isVisible():

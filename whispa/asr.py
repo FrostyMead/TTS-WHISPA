@@ -121,6 +121,7 @@ class Transcriber:
         self._vad_model = None
         self._lock = threading.Lock()
         self._turns = _TurnTaking()
+        self.last_wait_ms = 0.0
 
     def _quant(self, label: str) -> str | None:
         q = (self.quantization or "auto").lower()
@@ -137,6 +138,10 @@ class Transcriber:
 
         so = ort.SessionOptions()
         so.enable_cpu_mem_arena = False
+        # Don't keep threads spinning on the CPU after each run, waiting for the next one: an
+        # app that's mostly idle would burn battery for a few milliseconds of latency.
+        so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        so.add_session_config_entry("session.inter_op.allow_spinning", "0")
         so.enable_mem_pattern = False  # also required by DirectML
         so.add_session_config_entry("session.use_device_allocator_for_initializers", "1")
         tuned = [("CUDAExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"})
@@ -197,7 +202,10 @@ class Transcriber:
         audio = np.asarray(audio, dtype=np.float32)
         if audio.size == 0:
             return ""
+        waited = time.perf_counter()
         self._turns.acquire(urgent)
+        if urgent:
+            self.last_wait_ms = (time.perf_counter() - waited) * 1000  # behind a meeting / file piece
         try:
             if not self.ready.is_set() or self._model is None:
                 raise RuntimeError("Model is not loaded")

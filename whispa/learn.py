@@ -509,7 +509,8 @@ class TrainingStore:
 class CorrectionWatcher:
     """Polls the field we pasted into and diffs what the user changed."""
 
-    POLL_S = 0.3
+    POLL_S = 0.3  # right after pasting, when fixes happen
+    MAX_POLL_S = 2.0  # backs off to this while nothing changes
     WATCH_S = 45.0
 
     def __init__(self, dictionary: Dictionary, on_learned: Callable[[list[Correction]], None],
@@ -519,44 +520,54 @@ class CorrectionWatcher:
         self.on_final = on_final  # (sample_id, corrections the user made; [] = left as is)
         self._session: dict | None = None
         self._lock = threading.Lock()
-        self._timer: threading.Timer | None = None
+        self._wake = threading.Event()
 
     def watch(self, focus: Focus, before: str, inserted: str, sample_id: str | None) -> None:
         self.finish()  # a new dictation ends the previous watch
+        session = {"focus": focus, "before": before, "inserted": inserted.strip(),
+                   "last": None, "sample": sample_id, "deadline": time.monotonic() + self.WATCH_S}
         with self._lock:
-            self._session = {"focus": focus, "before": before, "inserted": inserted.strip(),
-                             "last": None, "sample": sample_id,
-                             "deadline": time.monotonic() + self.WATCH_S}
-        self._schedule()
+            self._session = session
+            self._wake = threading.Event()
+        # One thread per watch (not one per look), looking often at first and less while
+        # nothing changes: far fewer wake-ups and accessibility calls per dictation.
+        threading.Thread(target=self._run, args=(session, self._wake), name="edit-watch",
+                         daemon=True).start()
 
-    def _schedule(self) -> None:
-        self._timer = threading.Timer(self.POLL_S, self._poll)
-        self._timer.daemon = True
-        self._timer.start()
+    def _run(self, s: dict, wake: threading.Event) -> None:
+        interval, seen = self.POLL_S, None
+        while not wake.wait(interval):
+            with self._lock:
+                if self._session is not s:
+                    return
+            if not self._poll(s):
+                return
+            text = s.get("_text")
+            if text == seen:
+                interval = min(self.MAX_POLL_S, interval * 1.5)
+            else:
+                interval, seen = self.POLL_S, text
 
-    def _poll(self) -> None:
-        with self._lock:
-            s = self._session
-        if s is None:
-            return
+    def _poll(self, s: dict) -> bool:
+        """One look at the field. False when the watch is over."""
         text = s["focus"].read_text()
+        s["_text"] = text
         if text is not None:
             region = edited_region(s["before"], text).strip()
             if region and similarity(region, s["inserted"]) >= 0.4:
                 s["last"] = region
             elif not text.strip() and s["last"] is not None:
                 self.finish()  # field cleared: message was sent
-                return
+                return False
         if text is None or time.monotonic() > s["deadline"]:
             self.finish()
-            return
-        self._schedule()
+            return False
+        return True
 
     def finish(self) -> None:
         with self._lock:
             s, self._session = self._session, None
-        if self._timer:
-            self._timer.cancel()
+            self._wake.set()
         if not s or not s["last"]:
             return
         inserted = s["inserted"]

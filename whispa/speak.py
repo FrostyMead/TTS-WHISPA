@@ -90,6 +90,10 @@ class PiperVoice:
         so.intra_op_num_threads = threads or max(1, min(4, (os.cpu_count() or 4) // 2))
         so.inter_op_num_threads = 1
         so.enable_cpu_mem_arena = False
+        # Don't keep threads spinning on the CPU after each run, waiting for the next one: an
+        # app that's mostly idle would burn battery for a few milliseconds of latency.
+        so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        so.add_session_config_entry("session.inter_op.allow_spinning", "0")
         self.session = ort.InferenceSession(str(self.folder / "voice.onnx"), so,
                                             providers=["CPUExecutionProvider"])
         self.espeak = Espeak(self.config.get("espeak", {}).get("voice", "en-us"))

@@ -441,7 +441,7 @@ class SyncService:
         except OSError:
             tcp.bind((self.host, 0))  # the usual port is taken
         tcp.listen(4)
-        tcp.settimeout(1.0)
+        tcp.settimeout(5.0)  # only to notice stop(): closing the socket ends it sooner
         self._tcp = tcp
         self.port = tcp.getsockname()[1]
         self._threads = [threading.Thread(target=self._accept_loop, name="sync-tcp", daemon=True)]
@@ -450,7 +450,7 @@ class SyncService:
                 udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 udp.bind((self.host, self.udp_port))
-                udp.settimeout(1.0)
+                udp.settimeout(5.0)
                 self._udp = udp
                 self._threads.append(threading.Thread(target=self._udp_loop, name="sync-udp",
                                                       daemon=True))
