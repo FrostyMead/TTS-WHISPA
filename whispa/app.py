@@ -64,8 +64,35 @@ class Bridge(QObject):
     ai_setup = Signal(str, float)  # message, fraction (-1: unknown); "done:" / "error:" prefixes
     tuning_changed = Signal(str)  # job kind
     notice = Signal(str, bool)  # message, is_error
+    mic_opened = Signal(int)  # recording id: the microphone is open (audio thread)
+    mic_failed = Signal(int, str)  # recording id, why
+    recorded = Signal(object, int, object)  # audio, sample rate, the recording's details
+    discarded = Signal()  # a cancelled dictation's job finished: nothing to show
+    cancel_pending = Signal()  # Esc after letting go: drop what's being transcribed
     llm_status = Signal()  # a background check of the local AI finished
     sync_event = Signal(str, object)  # kind, info (sync.py)
+
+
+class SerialThread:
+    """Runs jobs one after another on one daemon thread (a stuck audio driver can't stop
+    Murmr from quitting, unlike a thread pool, which waits for its threads at exit)."""
+
+    def __init__(self, name: str):
+        import queue
+
+        self._q: queue.SimpleQueue = queue.SimpleQueue()
+        threading.Thread(target=self._run, name=name, daemon=True).start()
+
+    def submit(self, fn, *args) -> None:
+        self._q.put((fn, args))
+
+    def _run(self) -> None:
+        while True:
+            fn, args = self._q.get()
+            try:
+                fn(*args)
+            except Exception:  # noqa: BLE001
+                log.exception("Audio job failed")
 
 
 class MurmrApp:
@@ -75,6 +102,12 @@ class MurmrApp:
         self.bridge = Bridge()
         self.recording = False
         self.pending = 0
+        # The microphone opens and closes on its own thread: a slow or unplugged audio driver
+        # can take seconds, and must never freeze the window, the pill or the shortcuts.
+        self._audio = SerialThread("audio")
+        self._rec_id = 0
+        self._job_seq = 0  # every dictation sent for transcription gets the next number
+        self._cancelled_upto = 0  # ...and Esc cancels the ones not delivered yet
         self.live: LiveSession | None = None  # transcribes long dictations while you talk
         self._context_names: list[str] = []  # names seen on screen when the dictation started
         self._speaker = None
@@ -102,6 +135,7 @@ class MurmrApp:
             backup_hotkey=self._parse_backup_hotkey(cfg.backup_hotkey),
             on_start=lambda: self.bridge.start.emit(self.sm.mode), on_stop=self.bridge.stop.emit,
             on_cancel=self.bridge.cancel.emit, on_lock=self.bridge.lock.emit)
+        self.sm.on_idle_esc = lambda: self.bridge.cancel_pending.emit()
         self.hotkeys = HotkeyService(self.sm)
         self.injector = Injector(cfg.paste_method, cfg.paste_shortcut, cfg.restore_clipboard,
                                  wait_for_release=self.hotkeys.wait_for_modifiers_released)
@@ -130,6 +164,7 @@ class MurmrApp:
         self.overlay.idle_clicked.connect(self.sm.toggle_hands_free)
         self.overlay.stop_clicked.connect(self.sm.finish)
         self.overlay.cancel_clicked.connect(self.sm.cancel)
+        self.overlay.transcribing_clicked.connect(self.cancel_pending)
         self.overlay.speak_level_fn = lambda: self._speaker.level if self._speaker else 0.0
         self.overlay.speak_pause_clicked.connect(lambda: self._speaker and self._speaker.toggle_pause())
         self.overlay.speak_skip_clicked.connect(lambda: self._speaker and self._speaker.skip())
@@ -137,6 +172,11 @@ class MurmrApp:
 
         b = self.bridge
         b.start.connect(self._on_start)
+        b.mic_opened.connect(self._on_mic_opened)
+        b.mic_failed.connect(self._on_mic_failed)
+        b.recorded.connect(self._on_recorded)
+        b.discarded.connect(self._on_discarded)
+        b.cancel_pending.connect(self.cancel_pending)
         b.stop.connect(self._on_stop)
         b.cancel.connect(self._on_cancel)
         b.lock.connect(lambda: self.overlay.set_locked(True))
@@ -645,16 +685,36 @@ class MurmrApp:
                                error=True, seconds=3)
             return
         self.mode = mode
-        try:
-            self.recorder.start()
-        except Exception as exc:  # noqa: BLE001
-            log.error("Mic start failed: %s", exc)
-            self.sm.reset()
-            self.sounds.play("error")
-            self.overlay.flash(self._mic_problem(), error=True, seconds=4)
-            return
         self.recording = True
+        self._rec_id += 1
         self._rec_target = None
+        self.live = None
+        rec_id = self._rec_id
+
+        def open_mic():
+            try:
+                self.recorder.start()
+            except Exception as exc:  # noqa: BLE001
+                self.bridge.mic_failed.emit(rec_id, str(exc))
+            else:
+                self.bridge.mic_opened.emit(rec_id)
+
+        self._audio.submit(open_mic)
+
+    def _on_mic_failed(self, rec_id: int, err: str) -> None:
+        log.error("Mic start failed: %s", err)
+        if rec_id == self._rec_id and self.recording:
+            self.recording = False
+            self.sm.reset()
+        self.sounds.play("error")
+        self.overlay.flash(self._mic_problem(), error=True, seconds=4)
+        self.overlay.set_state("transcribing" if self.pending else "idle")
+
+    def _on_mic_opened(self, rec_id: int) -> None:
+        """The mic is open: now say so (the pill and the sound), so nothing you say is lost."""
+        if rec_id != self._rec_id or not self.recording:
+            return  # already let go (or cancelled): the stop that follows tidies up
+        mode = self.mode
         if mode == "dictate" and self.cfg.insert_original:  # where this recording's text goes
             self._rec_target = {"focus": None, "done": threading.Event()}
             threading.Thread(target=self._capture_start_focus, args=(self._rec_target,),
@@ -849,28 +909,69 @@ class MurmrApp:
         finally:
             target["done"].set()
 
-    def _end_recording(self):
+    def _end_recording(self, then=None) -> None:
+        """Stop recording now; the mic closes on the audio thread, then ``then(audio, sr)``."""
         self.recording = False
         self.max_timer.stop()
         self.live_timer.stop()
         self.tray.setIcon(tray_icon(False))
-        return self.recorder.stop()
+
+        def close_mic():
+            try:
+                audio, sr = self.recorder.stop()
+            except Exception:  # noqa: BLE001 - a driver error: nothing was recorded
+                log.exception("Stopping the mic failed")
+                audio, sr = np.zeros(0, np.float32), 16000
+            if then is not None:
+                then(audio, sr)
+
+        self._audio.submit(close_mic)
 
     def _on_stop(self) -> None:
         if not self.recording:
             return
-        audio, sr = self._end_recording()
-        if len(audio) < sr * self.cfg.min_duration_ms / 1000:
-            self.overlay.set_state("transcribing" if self.pending else "idle")
+        self._job_seq += 1
+        details = {"job": self._job_seq, "mode": self.mode, "live": self.live,
+                   "target": getattr(self, "_rec_target", None)}
+        self.live = None
+        self.pending += 1  # counted now, so Esc right after letting go can cancel it
+        self.overlay.set_state("transcribing")
+        self._end_recording(lambda audio, sr: self.bridge.recorded.emit(audio, sr, details))
+
+    def _on_recorded(self, audio, sr: int, details: dict) -> None:
+        if self._cancelled(details["job"]) or len(audio) < sr * self.cfg.min_duration_ms / 1000:
+            self.pending -= 1
+            if not self.recording:
+                self.overlay.set_state("transcribing" if self.pending else "idle")
             return
         self.sounds.play("stop")
-        self.pending += 1
-        self.overlay.set_state("transcribing")
-        live, self.live = self.live, None
-        if self.mode == "command":
-            self.worker.submit(self._process_command, audio, sr)
+        if details["mode"] == "command":
+            self.worker.submit(self._process_command, audio, sr, details["job"])
         else:
-            self.worker.submit(self._process, audio, sr, live, getattr(self, "_rec_target", None))
+            self.worker.submit(self._process, audio, sr, details["live"], details["target"],
+                               details["job"])
+
+    def _cancelled(self, job: int | None) -> bool:
+        return job is not None and job <= self._cancelled_upto
+
+    def cancel_pending(self) -> None:
+        """Esc (or a click on the pill) after letting go: what's still being transcribed or
+        polished is dropped: nothing is pasted or kept in History."""
+        if not self.pending or self._cancelled_upto >= self._job_seq:
+            return
+        self._cancelled_upto = self._job_seq
+        log.info("Cancelled the dictation being transcribed")
+        self.sounds.play("cancel")
+        if not self.recording:
+            self.overlay.set_state("idle")
+        self.overlay.flash("Cancelled", seconds=1.2)
+
+    def _on_discarded(self) -> None:
+        self.pending -= 1
+        if not self.pending:
+            self.overlay.set_mode("dictate")
+        if not self.recording:
+            self.overlay.set_state("transcribing" if self.pending else "idle")
 
     def _on_cancel(self, silent: bool) -> None:
         if not self.recording:
@@ -905,7 +1006,11 @@ class MurmrApp:
             log.debug("Screen names failed: %s", exc)
 
     # -- worker thread ---------------------------------------------------
-    def _process(self, audio, sr, live: LiveSession | None = None, target: dict | None = None) -> None:
+    def _process(self, audio, sr, live: LiveSession | None = None, target: dict | None = None,
+                 job: int | None = None) -> None:
+        if self._cancelled(job):
+            self.bridge.discarded.emit()
+            return
         self.polisher.last_issue = ""
         self._cur_target = target  # where this recording started (Insert into original field)
         partly_live = live is not None and bool(live.parts)
@@ -921,6 +1026,9 @@ class MurmrApp:
         except Exception as exc:  # noqa: BLE001
             log.exception("Transcription failed")
             self.bridge.failed.emit(str(exc))
+            return
+        if self._cancelled(job):
+            self.bridge.discarded.emit()
             return
         # From here the transcript exists: whatever fails next, you get your words.
         self._card_reason = ""
@@ -950,6 +1058,9 @@ class MurmrApp:
             speeds = getattr(self, "_asr_speeds", [])
             speeds.append(len(audio) / sr / t_asr)
             self._asr_speeds = speeds[-20:]
+        if self._cancelled(job):  # Esc while the AI was polishing
+            self.bridge.discarded.emit()
+            return
         if not text:
             self._empty_reason = ("No sound from the microphone: is it muted?"
                                   if _quiet(audio) else "Didn't catch that")
@@ -976,8 +1087,11 @@ class MurmrApp:
             log.exception("Keeping the recording for training failed")
         self.bridge.done.emit(text)
 
-    def _process_command(self, audio, sr) -> None:
+    def _process_command(self, audio, sr, job: int | None = None) -> None:
         """Command Mode: the recording is an instruction for the selected text."""
+        if self._cancelled(job):
+            self.bridge.discarded.emit()
+            return
         try:
             if not self.transcriber.ready.wait(timeout=300):
                 raise RuntimeError("Speech model is still loading")
@@ -1013,6 +1127,9 @@ class MurmrApp:
             result = self.polisher.command(instruction, selection, app=f.app)
             if not result.strip():
                 raise RuntimeError("The AI returned nothing")
+            if self._cancelled(job):
+                self.bridge.discarded.emit()
+                return
             log.info("Command done in %.0f ms", (time.perf_counter() - t0) * 1000)
             if f.is_text is False:
                 # Selected text you can't edit (a web page...): show the result to copy.
@@ -1872,14 +1989,14 @@ class MurmrApp:
         elif key == "input_device":
             self.recorder.device = value
             if cfg.keep_mic_open and not self.recording:
-                self.recorder.shutdown()
-                self._safe_open_mic()
+                self._audio.submit(self.recorder.shutdown)
+                self._audio.submit(self._safe_open_mic)
         elif key == "keep_mic_open":
             self.recorder.keep_open = bool(value)
             if not self.recording:
-                self.recorder.shutdown()
+                self._audio.submit(self.recorder.shutdown)
                 if value:
-                    self._safe_open_mic()
+                    self._audio.submit(self._safe_open_mic)
         elif key == "train_on_unedited":
             value = bool(value)
             cfg.train_on_unedited = value

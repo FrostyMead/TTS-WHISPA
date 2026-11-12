@@ -56,6 +56,7 @@ class Overlay(QWidget):
     idle_clicked = Signal()
     stop_clicked = Signal()
     cancel_clicked = Signal()
+    transcribing_clicked = Signal()  # a click on the pill while it transcribes: cancel it
     anchor_changed = Signal(str)
     speak_pause_clicked = Signal()
     speak_skip_clicked = Signal()
@@ -520,6 +521,8 @@ class Overlay(QWidget):
         if self.state == "idle" and rect.adjusted(-6, -6, 6, 6).contains(pos):
             self._hover = False
             self.idle_clicked.emit()
+        elif self.state == "transcribing" and rect.adjusted(-6, -6, 6, 6).contains(pos):
+            self.transcribing_clicked.emit()
         elif self.state == "listening" and self.locked:
             if self._cancel_rect(rect).adjusted(-4, -4, 4, 4).contains(pos):
                 self.cancel_clicked.emit()

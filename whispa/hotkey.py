@@ -100,6 +100,8 @@ class PTTStateMachine:
         self.double_tap = double_tap
         self.on_start, self.on_stop = on_start, on_stop
         self.on_cancel, self.on_lock = on_cancel, on_lock
+        # Esc while not recording (e.g. while the last dictation is still being transcribed)
+        self.on_idle_esc: Callable[[], None] | None = None
         self.clock = clock
         self.double_tap_s = double_tap_s
         self.shortcut_grace_s = shortcut_grace_s
@@ -165,6 +167,8 @@ class PTTStateMachine:
                     self._begin(now, mode, hk)
                     if double:
                         self._enter_lock()
+                elif "esc" in new and self.on_idle_esc is not None:
+                    self.on_idle_esc()
             elif self.state == self.HOLDING:
                 early = now - self._t_start < self.shortcut_grace_s
                 if "esc" in new:
