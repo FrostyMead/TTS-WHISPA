@@ -195,8 +195,10 @@ class Updater:
         for release in self._json("/releases?per_page=10"):
             if release.get("draft") or release.get("prerelease"):
                 continue
+            assets = {a.get("name"): a.get("browser_download_url") for a in release.get("assets") or []}
+            if "release.json" not in assets or "release.json.sig" not in assets:
+                continue  # an older, unsigned release: not a candidate (and not an error)
             try:
-                assets = {a["name"]: a["browser_download_url"] for a in release["assets"]}
                 raw = self._get_limited(assets["release.json"], 16384)
                 sig = self._get_limited(assets["release.json.sig"], 64)
                 verified = False
