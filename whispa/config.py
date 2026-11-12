@@ -137,6 +137,7 @@ class Config:
     # Output
     paste_method: str = "auto"  # auto | clipboard | type
     no_text_field: str = "popup"  # popup = show copy card | paste = paste anyway
+    insert_original: bool = False  # paste into the field where dictation started, not the current one
     paste_shortcut: str = ""  # empty = cmd+v on macOS, ctrl+v elsewhere
     restore_clipboard: bool = True
     # UI

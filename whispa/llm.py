@@ -384,6 +384,9 @@ class Polisher:
             self._complete("hello", app="", terms=[], timeout=90)
 
     def polish(self, text: str, *, app: str = "", terms: list[str] | None = None) -> str:
+        """The tidied text, or ``text`` unchanged. ``last_issue`` says why it wasn't
+        tidied when that's worth telling you: "timeout" or "error" ("" otherwise)."""
+        self.last_issue = ""
         if not text.strip() or not self.active():
             return text
         if self.cfg.when != "always":
@@ -396,6 +399,9 @@ class Polisher:
             out = self._complete(text, app=app, terms=terms or [])
         except Exception as exc:  # noqa: BLE001
             log.warning("LLM polish failed, using transcript as-is: %s", exc)
+            slow = isinstance(exc, TimeoutError) or "timed out" in str(exc).lower() or \
+                getattr(exc, "kind", "") == "timeout"
+            self.last_issue = "timeout" if slow else "error"
             return text
         out = out.strip().strip('"').strip()
         for tag in ("<transcript>", "</transcript>"):

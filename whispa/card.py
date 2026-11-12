@@ -76,7 +76,10 @@ class CopyCard(QWidget):
         self._timer.setInterval(500)
         self._timer.timeout.connect(self._maybe_hide)
 
-    def show_text(self, text: str, anchor: str = "bottom-center") -> None:
+    DEFAULT_TITLE = "No text field selected · copied to clipboard"
+
+    def show_text(self, text: str, anchor: str = "bottom-center", title: str = "") -> None:
+        self.title.setText(title or self.DEFAULT_TITLE)
         self.text.setPlainText(text)
         self.copy_btn.setText("Copy")
         fm = self.text.fontMetrics()

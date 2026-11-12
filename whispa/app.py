@@ -44,7 +44,7 @@ class Bridge(QObject):
     failed = Signal(str)
     model_ready = Signal(str)
     model_failed = Signal(str)
-    show_card = Signal(str)
+    show_card = Signal(str, str)  # text, why it's shown ("" = no text field)
     learned = Signal(str)
     captured = Signal(str, object, object)  # kind, spec, error
     update_notice = Signal(str)
@@ -138,7 +138,7 @@ class MurmrApp:
         b.failed.connect(self._on_failed)
         b.model_ready.connect(self._on_model_ready)
         b.model_failed.connect(self._on_model_failed)
-        b.show_card.connect(lambda text: self.card.show_text(text, self.overlay.anchor))
+        b.show_card.connect(lambda text, why: self.card.show_text(text, self.overlay.anchor, why))
         b.captured.connect(self._on_captured)
         b.history_changed.connect(lambda: self.window and self.window.history_changed())
         b.learned.connect(lambda words: self.overlay.flash(f"Learned: {words}", seconds=2.5))
@@ -590,7 +590,8 @@ class MurmrApp:
         if mode == "command" and not self.polisher.reachable():
             self.sm.reset()
             self.sounds.play("error")
-            self.overlay.flash("Command Mode needs the local AI (Ollama)", error=True, seconds=3)
+            self.overlay.flash("Command Mode needs the local AI: Settings > Smart features",
+                               error=True, seconds=3)
             return
         self.mode = mode
         try:
@@ -599,9 +600,15 @@ class MurmrApp:
             log.error("Mic start failed: %s", exc)
             self.sm.reset()
             self.sounds.play("error")
-            self.overlay.flash("Microphone unavailable", error=True)
+            self.overlay.flash(self._mic_problem(), error=True, seconds=4)
             return
         self.recording = True
+        self._start_focus = None
+        if mode == "dictate" and self.cfg.insert_original:  # where the text should go
+            threading.Thread(target=self._capture_start_focus, name="start-focus", daemon=True).start()
+        if not self.transcriber.ready.is_set():
+            self.overlay.flash("Speech model still loading: your words appear when it's ready",
+                               seconds=3)
         self.polisher.prewarm()  # load the AI model while you talk (no-op if it's loaded)
         if mode == "dictate":
             self.live = LiveSession(self.transcriber.transcribe) if self.transcriber.ready.is_set() else None
@@ -614,6 +621,21 @@ class MurmrApp:
         self.tray.setIcon(tray_icon(True))
         self.sounds.play("start")
         self.max_timer.start()
+
+    def _mic_problem(self) -> str:
+        """What to say when the microphone won't open, with what to do about it."""
+        if sys.platform == "darwin":
+            from . import macperms
+
+            if macperms.status().get("microphone") is False:
+                return "Microphone not allowed: System Settings > Privacy > Microphone"
+        return "Microphone unavailable: pick one in Settings > Microphone"
+
+    def _capture_start_focus(self) -> None:
+        try:
+            self._start_focus = focus.inspect()
+        except Exception:  # noqa: BLE001
+            self._start_focus = None
 
     def _end_recording(self):
         self.recording = False
@@ -672,6 +694,7 @@ class MurmrApp:
 
     # -- worker thread ---------------------------------------------------
     def _process(self, audio, sr, live: LiveSession | None = None) -> None:
+        self.polisher.last_issue = ""
         try:
             if not self.transcriber.ready.wait(timeout=300):
                 raise RuntimeError("Speech model is still loading")
@@ -681,20 +704,46 @@ class MurmrApp:
             else:
                 raw = self.transcriber.transcribe(audio, sr)
             t_asr = time.perf_counter() - t0
-            text = self._clean(raw) if raw else ""
-            log.info("%.1fs audio -> %d chars, ASR %.0f ms, total %.0f ms (%s)", len(audio) / sr,
-                     len(text), t_asr * 1000, (time.perf_counter() - t0) * 1000,
-                     self.transcriber.backend)
-            if text:
-                self._deliver(text)
-                # The label is what was heard (the audio doesn't contain AI edits or snippets).
-                sample = self.training.add(audio, sr, raw) if self._keep_sample() else None
-                self._remember(raw, text, len(audio) / sr)
-                self._watch_edits(text, sample)
-            self.bridge.done.emit(text)
         except Exception as exc:  # noqa: BLE001
             log.exception("Transcription failed")
             self.bridge.failed.emit(str(exc))
+            return
+        # From here the transcript exists: whatever fails next, you get your words.
+        self._card_reason = ""
+        try:
+            text = self._clean(raw) if raw else ""
+        except Exception:  # noqa: BLE001
+            log.exception("Tidying the transcript failed; using it as heard")
+            text = raw.strip()
+            self.bridge.notice.emit("Couldn't tidy the text: pasted as heard", True)
+        else:
+            if text and self.polisher.last_issue:
+                self.bridge.notice.emit("AI clean-up took too long: pasted as heard"
+                                        if self.polisher.last_issue == "timeout"
+                                        else "AI clean-up failed: pasted as heard", False)
+        log.info("%.1fs audio -> %d chars, ASR %.0f ms, total %.0f ms (%s)", len(audio) / sr,
+                 len(text), t_asr * 1000, (time.perf_counter() - t0) * 1000, self.transcriber.backend)
+        if not text:
+            self._empty_reason = ("No sound from the microphone: is it muted?"
+                                  if _quiet(audio) else "Didn't catch that")
+            self.bridge.done.emit("")
+            return
+        # Kept before pasting (history and Paste last): a failed paste never loses it.
+        self._remember(raw, text, len(audio) / sr)
+        try:
+            self._deliver(text)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Pasting failed")
+            self.injector.copy(text)
+            self.bridge.show_card.emit(text, f"Couldn't paste ({str(exc)[:40]}) · copied to clipboard")
+            self._before = None
+        try:
+            # The label is what was heard (the audio doesn't contain AI edits or snippets).
+            sample = self.training.add(audio, sr, raw) if self._keep_sample() else None
+            self._watch_edits(text, sample)
+        except Exception:  # noqa: BLE001
+            log.exception("Keeping the recording for training failed")
+        self.bridge.done.emit(text)
 
     def _process_command(self, audio, sr) -> None:
         """Command Mode: the recording is an instruction for the selected text."""
@@ -720,7 +769,7 @@ class MurmrApp:
             if f.is_text is False:
                 # Selected text you can't edit (a web page...): show the result to copy.
                 self.injector.copy(result)
-                self.bridge.show_card.emit(result)
+                self.bridge.show_card.emit(result, "")
             else:
                 self.injector.inject(result)  # replaces the selection, or inserts at the cursor
             self._remember(instruction, result, len(audio) / sr, command=instruction)
@@ -729,9 +778,27 @@ class MurmrApp:
             log.exception("Command failed")
             self.bridge.failed.emit(f"Command failed: {exc}")
 
+    def _target(self) -> focus.Focus:
+        """Where the text goes: the field focused now, or (Insert into original field) the one
+        where dictation started, brought back first. If that can't be confirmed, the copy
+        card shows the text instead of pasting it somewhere you didn't mean."""
+        f = focus.inspect()
+        start = getattr(self, "_start_focus", None)
+        if not self.cfg.insert_original or start is None or start._handle is None:
+            return f
+        if f.same_element(start):
+            return f
+        log.info("Focus moved from %s to %s while transcribing; going back", start.app or "?",
+                 f.app or "?")
+        if focus.restore(start):
+            return focus.inspect()
+        self._card_reason = (f"Couldn't get back to the field in {start.app or 'the app'} you "
+                             "started in · copied to clipboard")
+        return start
+
     def _clean(self, raw: str) -> str:
         self.hotkeys.wait_for_modifiers_released()
-        self._focus = f = focus.inspect()
+        self._focus = f = self._target()
         style = styles.style_for(self.cfg.styles, f.app, f.title, f.is_terminal)
         terms, corrections = self.dictionary.snapshot()
         known = {t.lower() for t in terms}
@@ -764,10 +831,16 @@ class MurmrApp:
 
     def _deliver(self, text: str) -> None:
         f = self._focus
+        if getattr(self, "_card_reason", ""):
+            log.info("Not pasting: %s", self._card_reason)
+            self.injector.copy(text)
+            self.bridge.show_card.emit(text, self._card_reason)
+            self._before = None
+            return
         if f.is_text is False and self.cfg.no_text_field == "popup":
             log.info("No text field focused (%s); showing copy card", f.app or "?")
             self.injector.copy(text)
-            self.bridge.show_card.emit(text)
+            self.bridge.show_card.emit(text, "")
             self._before = None  # nothing to watch for edits
             return
         log.info("Pasting into %s (text field: %s)", f.app or "?",
@@ -807,7 +880,8 @@ class MurmrApp:
                 self.overlay.set_state("transcribing" if self.pending else "idle")
             else:
                 self.overlay.set_state("idle")
-                self.overlay.flash("Didn't catch that")
+                self.overlay.flash(getattr(self, "_empty_reason", "") or "Didn't catch that", seconds=2.5)
+                self._empty_reason = ""
 
     def _on_failed(self, err: str) -> None:
         self.pending -= 1
@@ -1764,6 +1838,15 @@ class MurmrApp:
     def quit(self) -> None:
         self.shutdown()
         self.qapp.quit()
+
+
+def _quiet(audio) -> bool:
+    """Nearly silent the whole time: a muted or wrong microphone, not unclear speech."""
+    import numpy as np
+
+    if not len(audio):
+        return True
+    return float(np.max(np.abs(audio))) < 0.01
 
 
 def relaunch_detached() -> None:

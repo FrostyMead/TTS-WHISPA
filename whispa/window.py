@@ -692,6 +692,10 @@ class SettingsPage(QScrollArea):
         self.no_field.currentIndexChanged.connect(
             lambda: self._set("no_text_field", self.no_field.currentData()))
         sec.addWidget(setting_row("When no text field is selected", "", self.no_field))
+        sec.addWidget(self._switch_row(
+            "insert_original", "Insert into the field I started in",
+            "Switched to another window while Murmr was still writing? It goes back to the field "
+            "where you started. If that field is gone, the text is shown to copy instead."))
 
         # Styles
         from .styles import CATEGORIES, CATEGORY_LABELS, STYLE_LABELS

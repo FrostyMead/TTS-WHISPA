@@ -3,6 +3,8 @@
 ``inspect()`` returns a :class:`Focus`. ``is_text`` is True or False when we can
 tell, or None when the platform gives no answer (then we just paste).
 ``read_text()`` reads the field's contents so we can learn from the user's edits.
+``restore(f)`` brings the window and field of an earlier ``Focus`` back (insert into the
+field where dictation started), and only returns True once that's confirmed.
 
 * Windows: UI Automation (works for Win32, WPF, UWP, Chrome/Edge/Electron, Office)
 * macOS: Accessibility API (AXUIElement)
@@ -45,6 +47,8 @@ class Focus:
     _selection: Callable[[], str | None] | None = field(default=None, repr=False)
     _same: Callable[["Focus"], bool] | None = field(default=None, repr=False)
     _handle: Any = field(default=None, repr=False)
+    _window: Any = field(default=None, repr=False)  # Windows: top-level window handle
+    _pid: int | None = field(default=None, repr=False)  # macOS: the app's process
 
     @property
     def readable(self) -> bool:
@@ -244,10 +248,12 @@ def _win_inspect() -> Focus:
         parts = [ranges.GetElement(i).GetText(MAX_READ + 1) for i in range(ranges.Length)]
         return "\n".join(p for p in parts if p) or None
 
+    import ctypes
+
     return Focus(is_text=is_text, app=app, title=title, is_password=is_password,
                  is_terminal=(el.CurrentClassName or "") in _TERMINAL_CLASSES,
                  _read=read if is_text is not False else None, _selection=selection,
-                 _same=same, _handle=el)
+                 _same=same, _handle=el, _window=ctypes.windll.user32.GetForegroundWindow())
 
 
 # --------------------------------------------------------------------------- macOS
@@ -321,7 +327,72 @@ def _mac_inspect() -> Focus:
         e, t = AXUIElementCopyAttributeValue(window, "AXTitle", None)
         title = str(t) if not e and t else ""
     return Focus(is_text=is_text, app=app, title=title, is_password=subrole == "AXSecureTextField",
-                 _read=read if is_text else None, _selection=selection, _same=same, _handle=el)
+                 _read=read if is_text else None, _selection=selection, _same=same, _handle=el,
+                 _pid=pid)
+
+
+# --------------------------------------------------------------------------- restoring a field
+def restore(target: Focus, settle_s: float = 0.25) -> bool:
+    """Bring ``target``'s window to the front and focus its field again. True only when a
+    fresh look confirms that exact field has the focus (never a guess)."""
+    import time
+
+    if target._handle is None:
+        return False
+    try:
+        if sys.platform == "win32":
+            _call(_win_restore, target)
+        elif sys.platform == "darwin":
+            _call(_mac_restore, target)
+        else:
+            return False
+    except Exception as exc:  # noqa: BLE001 - the window or field is gone
+        log.info("Couldn't bring the original field back: %s", exc)
+        return False
+    time.sleep(settle_s)
+    return inspect().same_element(target)
+
+
+def _win_restore(target: Focus) -> None:
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    hwnd = target._window
+    if not hwnd or not user32.IsWindow(hwnd):
+        raise RuntimeError("the window is closed")
+    fg = user32.GetForegroundWindow()
+    if fg != hwnd:
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        # Windows only lets the foreground app change the foreground window: share input
+        # with it for a moment (no keys are pressed, so no menus open anywhere).
+        msg = ctypes.create_string_buffer(64)
+        user32.PeekMessageW(msg, 0, 0, 0, 0)  # give this thread an input queue
+        me = ctypes.windll.kernel32.GetCurrentThreadId()
+        other = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        attached = bool(other and other != me and user32.AttachThreadInput(me, other, True))
+        try:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(me, other, False)
+    target._handle.SetFocus()
+
+
+def _mac_restore(target: Focus) -> None:
+    from AppKit import NSApplicationActivateIgnoringOtherApps, NSRunningApplication
+    from ApplicationServices import AXUIElementSetAttributeValue
+
+    if target._pid is None:
+        raise RuntimeError("unknown app")
+    app = NSRunningApplication.runningApplicationWithProcessIdentifier_(target._pid)
+    if app is None or app.isTerminated():
+        raise RuntimeError("the app has quit")
+    app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+    err = AXUIElementSetAttributeValue(target._handle, "AXFocused", True)
+    if err:
+        raise RuntimeError(f"AX error {err}")
 
 
 # --------------------------------------------------------------------------- screen text
