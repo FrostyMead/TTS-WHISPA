@@ -21,6 +21,11 @@
   and voices made from your recordings. Never recordings, history or meetings.
 - **Report a problem** saves a file on your computer; nothing is sent unless you send it. It
   contains logs and settings with learned words, meeting titles and your user name removed.
+- **Remembering voices across meetings (off by default):** when switched on, people you name
+  in a meeting have a voiceprint (256 numbers, no audio, nothing they said) kept in
+  `people.json` on this computer, so later meetings label them by name. It's never synced
+  or uploaded. A voiceprint is the other person's personal (biometric) information: only
+  remember people who are OK with it. Forget anyone, or everyone, on the Meetings page.
 - **Meeting notes with computer audio on macOS** need Screen & System Audio Recording
   permission; only the sound is used, never the screen, and no audio is kept.
 

@@ -41,6 +41,7 @@ JOIN_GAP_S = 1.2  # a piece that continues the same sentence this soon joins the
 SILENT_RMS = 0.004  # quieter than this (90th percentile): nobody is talking
 ECHO_WINDOW_S = 15.0
 ROOM_SAME_PERSON = 0.5  # live, on a shared room mic (the call keeps the usual 0.45)
+KNOWN_PERSON = 0.55  # a group this close to someone remembered from earlier meetings is them
 
 
 AUDIOTAP = Path(__file__).resolve().parent / "resources" / "murmr-audiotap"
@@ -393,6 +394,7 @@ class MeetingSession:
     embedder: Callable[[np.ndarray, int], np.ndarray | None] | None = None  # voiceprints
     profile_dir: Path | None = None  # your recordings, to recognise your voice (mic-only)
     room: bool = False  # several people share the microphone (a meeting room)
+    people: dict | None = None  # voices remembered from earlier meetings: name -> voiceprint
     lines: list[Line] = field(default_factory=list)
     started: float = field(default_factory=time.time)
 
@@ -402,6 +404,7 @@ class MeetingSession:
         self._voiceprints: dict[int, list] = {}  # id(line) -> its voiceprints (memory only)
         self._last_print: dict[str, object] = {}  # channel -> the voiceprint of the next line
         self._named: set[str] = set()  # names you gave during the meeting
+        self.final_prints: dict = {}  # after the meeting: name -> voiceprint (memory only)
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -493,10 +496,11 @@ class MeetingSession:
             return
         whos = [ch.capture.who for ch in self.channels]
         counter = [1]  # one numbering for the room and the call: never two "Person 1"s
+        people = dict(self.people or {})
         if "Others" in whos:
-            self._trackers["Others"] = Tracker("Person", counter=counter)
+            self._trackers["Others"] = Tracker("Person", known=people, counter=counter)
         if whos == ["You"] or (self.room and "You" in whos):
-            known = {}
+            known = dict(people)
             if self.profile_dir is not None:
                 from .speakers import voice_profile
 
@@ -651,6 +655,12 @@ class MeetingSession:
                     names = [ln.who for ln in members if ln.who in self._named]
                     keep = max(set(names), key=names.count) if names else (
                         "You" if sum(ln.who == "You" for ln in members) * 2 > len(members) else None)
+                    if keep is None and self.people:  # someone remembered from earlier meetings
+                        c = np.mean([e for ln, gg, e in zip(lines, groups, embs) if gg == g], axis=0)
+                        c = c / (np.linalg.norm(c) or 1.0)
+                        best = max(self.people, key=lambda n: float(c @ self.people[n]))
+                        if float(c @ self.people[best]) >= KNOWN_PERSON:
+                            keep = best
                     for ln in members:
                         if ln.who not in self._named:
                             new_label[id(ln)] = keep or f"\0group:{channel}:{g}"
@@ -683,6 +693,13 @@ class MeetingSession:
                     continue
                 votes = old_to_new[ln.who]
                 ln.who = max(votes, key=votes.get)
+            # Each person's voice, for remembering them (in memory; never in the meeting file).
+            per: dict[str, list] = {}
+            for ln in self.lines:
+                for e in prints.get(id(ln), []):
+                    per.setdefault(ln.who, []).append(e / (np.linalg.norm(e) or 1.0))
+            self.final_prints = {who: np.mean(v, axis=0) for who, v in per.items()
+                                 if who not in ("Others",)}
             self._voiceprints = {}
             del by_id
 

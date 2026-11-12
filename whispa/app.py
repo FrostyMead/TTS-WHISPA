@@ -7,6 +7,8 @@ import logging
 import os
 import sys
 import threading
+
+import numpy as np
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -1275,7 +1277,8 @@ class MurmrApp:
             self._embedder = Embedder()
         session = MeetingSession(caps, self.transcriber.transcribe, keep=keep, embedder=self._embedder,
                                  profile_dir=config_mod.config_dir() / "training",
-                                 room=self.cfg.meeting_room)
+                                 room=self.cfg.meeting_room,
+                                 people=self.people_store().known() if self.cfg.remember_voices else None)
         try:
             session.start()
         except Exception as exc:  # noqa: BLE001
@@ -1335,6 +1338,7 @@ class MurmrApp:
                        "lines": [line.__dict__ for line in lines], "title": "", "summary": ""}
             mid = self.meeting_store().save(meeting)
             log.info("Meeting saved: %s (%d lines, %.0f min)", mid, len(lines), session.elapsed / 60)
+            self._remember_voices(mid, session)
             self.bridge.meeting_changed.emit(mid)
             if self.ai_available():
                 self._summarize(mid)
@@ -1389,6 +1393,30 @@ class MurmrApp:
     def delete_meeting(self, meeting_id: str) -> None:
         self.meeting_store().delete(meeting_id)
 
+    # -- voices remembered across meetings (people.py, opt-in) --------------------
+    def people_store(self):
+        from .people import PeopleStore
+
+        return PeopleStore(config_mod.config_dir() / "people.json")
+
+    def _remember_voices(self, mid: str, session) -> None:
+        """After a meeting: keep each person's voice in memory (to learn it if you name them
+        afterwards), and learn the voices of people already named (if you opted in)."""
+        prints = dict(getattr(session, "final_prints", {}) or {})
+        self._recent_prints = {mid: prints}  # only the latest meeting, only in memory
+        if not self.cfg.remember_voices:
+            return
+        store = self.people_store()
+        known = store.known()
+        for name, v in prints.items():
+            if name == "You" or name.startswith(("Person ", "Others")):
+                continue
+            unit = v / (np.linalg.norm(v) or 1.0)
+            if name in session._named:  # you said who it is
+                store.learn(name, v)
+            elif name in known and float(unit @ known[name]) >= 0.6:  # recognised, and clearly them
+                store.learn(name, v)
+
     def rename_live_speaker(self, old: str, new: str) -> None:
         """Name someone during the meeting (live transcript)."""
         if self._meeting is not None:
@@ -1428,6 +1456,11 @@ class MurmrApp:
         names = m.setdefault("speakers", {})
         names[old] = new
         store.save(m)
+        recent = getattr(self, "_recent_prints", {}).get(meeting_id, {})
+        if old in recent:  # still in memory: the meeting just ended
+            recent[new] = recent.pop(old)
+            if self.cfg.remember_voices and not new.startswith(("Person ", "Others")):
+                self.people_store().learn(new, recent[new])
         log.info("Meeting %s: renamed a speaker", meeting_id)
 
     def _on_meeting_changed(self, mid: str) -> None:
@@ -1706,7 +1739,8 @@ class MurmrApp:
                     return err
             else:
                 self._stop_sync()
-        elif key in ("meeting_mic", "meeting_system", "meeting_room", "auto_tune", "sync_models", "sync_voices",
+        elif key in ("meeting_mic", "meeting_system", "meeting_room", "remember_voices", "auto_tune",
+                     "sync_models", "sync_voices",
                      "device_name"):
             pass  # used by the next meeting / sync
         elif key in ("read_voice", "read_speed"):

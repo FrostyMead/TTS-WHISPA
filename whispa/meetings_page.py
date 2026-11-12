@@ -121,6 +121,18 @@ class MeetingsPage(QScrollArea):
             "In a meeting room: voices on your microphone are told apart too (Person 1, Person 2…; "
             "you're “You” if Murmr knows your voice from Voice training). People on the call stay "
             "separate. Click a name in the live transcript to say who it is.", self.room_sw))
+        self.remember_sw = Switch(cfg.remember_voices)
+        self.remember_sw.toggled.connect(self._remember_toggled)
+        sec.addWidget(setting_row(
+            "Remember voices of people I name",
+            "Name someone once and Murmr recognises them in later meetings. A voiceprint (no "
+            "audio) is kept on this computer only. It's their personal information: only "
+            "remember people who are OK with it.", self.remember_sw))
+        self.people_host = QWidget()
+        self.people_box = QVBoxLayout(self.people_host)
+        self.people_box.setContentsMargins(0, 0, 0, 0)
+        self.people_box.setSpacing(0)
+        sec.addWidget(self.people_host)
         self.start_btn = QPushButton("Start meeting notes")
         self.start_btn.setObjectName("primary")
         self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -234,6 +246,7 @@ class MeetingsPage(QScrollArea):
 
     # -- refresh ---------------------------------------------------------
     def refresh(self) -> None:
+        self._fill_people()
         running = self.ctl.meeting_running()
         self.ai = self.ctl.ai_available() if hasattr(self.ctl, "ai_available") else True
         stop = "Stop and summarize" if self.ai else "Stop"
@@ -324,6 +337,42 @@ class MeetingsPage(QScrollArea):
         if self._viewing == meeting_id:
             self.open_meeting(meeting_id)
         self._fill_list()
+
+    def _remember_toggled(self, on: bool) -> None:
+        self.ctl.update_setting("remember_voices", on)
+        self._fill_people()
+
+    def _fill_people(self) -> None:
+        from .window import clear_layout
+
+        clear_layout(self.people_box)
+        if not hasattr(self.ctl, "people_store"):
+            self.people_host.setVisible(False)
+            return
+        store = self.ctl.people_store()
+        names = store.names() if store is not None else []
+        self.people_host.setVisible(bool(names))
+        if not names:
+            return
+        shown = ", ".join(names[:12]) + (f" and {len(names) - 12} more" if len(names) > 12 else "")
+        forget_all = QPushButton("Forget everyone")
+        forget_all.clicked.connect(self._forget_all)
+        self.people_box.addWidget(setting_row(f"Voices Murmr knows ({len(names)})", shown, forget_all))
+        for name in names[:12]:
+            b = QPushButton("Forget")
+            b.clicked.connect(lambda _=False, n=name: self._forget(n))
+            self.people_box.addWidget(setting_row(name, "", b))
+
+    def _forget(self, name: str) -> None:
+        self.ctl.people_store().forget(name)
+        self._fill_people()
+
+    def _forget_all(self) -> None:
+        if QMessageBox.question(self, "Forget everyone", "Forget every voice Murmr has learned? "
+                                "Meetings and their names stay as they are.") == \
+                QMessageBox.StandardButton.Yes:
+            self.ctl.people_store().forget_all()
+            self._fill_people()
 
     def _live_clicked(self, url) -> None:
         """During the meeting: name a speaker, or correct a line."""
