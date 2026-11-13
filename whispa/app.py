@@ -66,6 +66,7 @@ class Bridge(QObject):
     notice = Signal(str, bool)  # message, is_error
     mic_opened = Signal(int)  # recording id: the microphone is open (audio thread)
     mic_failed = Signal(int, str)  # recording id, why
+    mic_wedged = Signal()  # the audio driver hung: only a fresh process gets the mic back
     recorded = Signal(object, int, object)  # audio, sample rate, the recording's details
     discarded = Signal()  # a cancelled dictation's job finished: nothing to show
     cancel_pending = Signal()  # Esc after letting go: drop what's being transcribed
@@ -174,6 +175,7 @@ class MurmrApp:
         b.start.connect(self._on_start)
         b.mic_opened.connect(self._on_mic_opened)
         b.mic_failed.connect(self._on_mic_failed)
+        b.mic_wedged.connect(self._on_mic_wedged)
         b.recorded.connect(self._on_recorded)
         b.discarded.connect(self._on_discarded)
         b.cancel_pending.connect(self.cancel_pending)
@@ -685,6 +687,10 @@ class MurmrApp:
             self.overlay.flash("Command Mode needs the local AI: Settings > Smart features",
                                error=True, seconds=3)
             return
+        if getattr(self.recorder, "wedged", False):  # opening would hang too
+            self.sm.reset()
+            self._on_mic_wedged()
+            return
         self.mode = mode
         self.recording = True
         self._rec_id += 1
@@ -698,9 +704,55 @@ class MurmrApp:
             except Exception as exc:  # noqa: BLE001
                 self.bridge.mic_failed.emit(rec_id, str(exc))
             else:
+                self._mic_open_id = rec_id
                 self.bridge.mic_opened.emit(rec_id)
 
         self._audio.submit(open_mic)
+        QTimer.singleShot(int(MIC_OPEN_TIMEOUT_S * 1000), lambda: self._check_mic_opened(rec_id))
+
+    def _check_mic_opened(self, rec_id: int) -> None:
+        """A mic that takes this long to open is stuck in the audio driver."""
+        if rec_id == self._rec_id and getattr(self, "_mic_open_id", 0) < rec_id and \
+                self.recording and not getattr(self.recorder, "wedged", False):
+            log.warning("The microphone didn't open within %.0f s", MIC_OPEN_TIMEOUT_S)
+            self.recorder.wedged = True
+            self._on_mic_wedged()
+
+    def _on_mic_wedged(self) -> None:
+        """The audio driver hung (seen on macOS): in this process every later recording would
+        hang as well, so finish what's being transcribed and start a fresh Murmr."""
+        if getattr(self, "_wedge_restart", False):
+            return
+        if self.recording:
+            self.recording = False
+            self.sm.reset()
+        if not mic_restart_allowed():
+            self.sounds.play("error")
+            self.overlay.flash("Your Mac's audio isn't responding. Reconnect the microphone or "
+                               "restart the Mac", error=True, seconds=8)
+            self.tray.showMessage("Microphone not responding",
+                                  "The audio system stopped responding twice in a row. Reconnect "
+                                  "the microphone (or headphones), or restart the computer.",
+                                  tray_icon(), 15000)
+            return
+        self._wedge_restart = True
+        log.warning("Restarting Murmr to get the microphone back")
+        self.overlay.flash("The microphone stopped responding: restarting Murmr to fix it",
+                           error=True, seconds=6)
+        deadline = time.monotonic() + 5.0
+
+        def when_done() -> None:  # what you'd already said gets transcribed first
+            if self.pending and time.monotonic() < deadline:
+                QTimer.singleShot(250, when_done)
+                return
+            note_mic_restart()
+            # If shutting down gets stuck on the audio driver too, start over regardless.
+            fallback = threading.Timer(10.0, lambda: (relaunch_detached(), os._exit(3)))
+            fallback.daemon = True
+            fallback.start()
+            self.restart()
+
+        QTimer.singleShot(250, when_done)
 
     def _on_mic_failed(self, rec_id: int, err: str) -> None:
         log.error("Mic start failed: %s", err)
@@ -925,6 +977,8 @@ class MurmrApp:
                 audio, sr = np.zeros(0, np.float32), 16000
             if then is not None:
                 then(audio, sr)
+            if getattr(self.recorder, "wedged", False):
+                self.bridge.mic_wedged.emit()
 
         self._audio.submit(close_mic)
 
@@ -2467,6 +2521,25 @@ def _quiet(audio) -> bool:
     if not len(audio):
         return True
     return float(np.max(np.abs(audio))) < 0.01
+
+
+MIC_OPEN_TIMEOUT_S = 6.0
+MIC_RESTART_GAP_S = 120.0  # at most one restart for a hung mic per two minutes: no loops
+
+
+def mic_restart_allowed() -> bool:
+    try:
+        last = float((config_mod.config_dir() / "mic_restart").read_text())
+    except (OSError, ValueError):
+        return True
+    return not 0 <= time.time() - last < MIC_RESTART_GAP_S
+
+
+def note_mic_restart() -> None:
+    try:
+        (config_mod.config_dir() / "mic_restart").write_text(str(time.time()))
+    except OSError:
+        pass
 
 
 def exit_backstop(delay: float = 5.0) -> None:

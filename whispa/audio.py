@@ -129,6 +129,7 @@ class Recorder:
         self._recording = False
         self._lock = threading.Lock()
         self._gen = 0  # which stream's callbacks count
+        self.wedged = False  # a stream hung while closing: this process can't use audio now
         self.limit_s = 3600.0  # hard cap, enforced as audio arrives (the app stops at its own limit first)
         if keep_open:
             self._open()
@@ -186,7 +187,8 @@ class Recorder:
         stream, self._stream = self._stream, None
         self._gen += 1  # whatever that stream still delivers is ignored from now on
         self.level = 0.0
-        close_stream(stream)
+        if not close_stream(stream):
+            self.wedged = True
 
     def _callback(self, indata, frames, time_info, status) -> None:
         mono = indata[:, 0].copy()

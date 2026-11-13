@@ -150,3 +150,83 @@ def test_stuck_starting_for_minutes_is_ended(trial, other_process):
 def test_this_process_is_never_counted(trial):
     _starting(trial, os.getpid())
     assert _boot.trial_state() == "failed"
+
+
+# --- once the driver has hung, Murmr restarts itself to get the mic back -------------------
+def test_a_hang_marks_the_recorder_wedged(monkeypatch):
+    monkeypatch.setattr(audio.close_stream, "__defaults__", (0.2, "microphone"))
+    r = audio.Recorder()
+    stream = HangingStream()
+    r._stream = stream
+    r.stop()
+    assert r.wedged
+    stream.release.set()
+
+
+def _wedge_app(monkeypatch, tmp_path):
+    from unittest import mock
+
+    from whispa import app as app_mod
+    monkeypatch.setattr("whispa.config.config_dir", lambda: tmp_path)
+    m = mock.MagicMock()
+    m.recording = False
+    m.pending = 0
+    m._rec_id = 0
+    m._wedge_restart = False
+    m.recorder.wedged = True
+    m._on_mic_wedged = lambda: app_mod.MurmrApp._on_mic_wedged(m)
+    return app_mod, m
+
+
+def test_a_new_dictation_on_a_hung_driver_restarts_murmr(monkeypatch, tmp_path):
+    app_mod, m = _wedge_app(monkeypatch, tmp_path)
+    timers = []
+    monkeypatch.setattr(app_mod.QTimer, "singleShot", lambda ms, fn: timers.append(fn))
+    app_mod.MurmrApp._on_start(m, "dictate")
+    m._audio.submit.assert_not_called()  # opening would hang as well
+    assert m._wedge_restart
+    monkeypatch.setattr(app_mod.threading, "Timer", lambda *a, **k: _NoTimer())
+    timers.pop()()  # nothing pending: restart now
+    m.restart.assert_called_once()
+    assert not app_mod.mic_restart_allowed()  # and not again for a couple of minutes
+
+
+class _NoTimer:
+    daemon = False
+
+    def start(self):
+        pass
+
+
+def test_no_restart_loop(monkeypatch, tmp_path):
+    app_mod, m = _wedge_app(monkeypatch, tmp_path)
+    app_mod.note_mic_restart()
+    app_mod.MurmrApp._on_mic_wedged(m)
+    m.restart.assert_not_called()
+    assert "isn't responding" in m.overlay.flash.call_args.args[0]
+
+
+def test_a_mic_that_never_opens_counts_as_hung(monkeypatch, tmp_path):
+    app_mod, m = _wedge_app(monkeypatch, tmp_path)
+    m.recorder.wedged = False
+    m.recording, m._rec_id, m._mic_open_id = True, 3, 2
+    called = []
+    m._on_mic_wedged = lambda: called.append(1)
+    app_mod.MurmrApp._check_mic_opened(m, 3)
+    assert m.recorder.wedged and called
+    m.recorder.wedged, called[:] = False, []
+    m._mic_open_id = 3  # it did open
+    app_mod.MurmrApp._check_mic_opened(m, 3)
+    assert not called
+
+
+def test_the_audio_thread_reports_a_hang(monkeypatch, tmp_path):
+    app_mod, m = _wedge_app(monkeypatch, tmp_path)
+    m.recorder.stop.return_value = (np.zeros(10, np.float32), 16000)
+    jobs = []
+    m._audio.submit = jobs.append
+    got = []
+    app_mod.MurmrApp._end_recording(m, lambda a, sr: got.append(len(a)))
+    jobs[0]()
+    assert got == [10]  # what you said is still delivered
+    m.bridge.mic_wedged.emit.assert_called_once()

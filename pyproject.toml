@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "murmr"
-version = "0.8.19"
+version = "0.8.20"
 description = "Local, cross-platform push-to-talk dictation powered by NVIDIA Parakeet"
 readme = "README.md"
 requires-python = ">=3.10"
