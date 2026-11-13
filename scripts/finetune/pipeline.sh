@@ -13,7 +13,13 @@ python prepare_data.py ${MURMR_INCLUDE_UNEDITED:+--include-unedited}
 echo "== 2/6 Getting general speech for comparison"
 python get_general_data.py
 echo "== 3/6 Training on your voice"
-python train.py --name "$NAME" "$@"
+# Out of graphics memory (exit 75): again with half the batch and twice the accumulation.
+batch=4; accumulate=4
+until python train.py --name "$NAME" "$@" --batch "$batch" --accumulate "$accumulate"; do
+  code=$?
+  if [ "$code" -ne 75 ] || [ "$batch" -le 1 ]; then exit "$code"; fi
+  batch=$((batch / 2)); accumulate=$((accumulate * 2))
+done
 echo "== 4/6 Exporting the model"
 python export_onnx.py "$WORK/models/$NAME"
 echo "== 5/6 Comparing with the standard model"

@@ -834,6 +834,12 @@ class SettingsPage(QScrollArea):
         sec.addWidget(self._switch_row("keep_mic_open", "Instant start",
                                        "Keep the microphone open so the first word is never cut "
                                        "off. Your OS will show the mic as in use."))
+        if sys.platform == "darwin":
+            sec.addWidget(self._switch_row(
+                "mac_native_audio", "Use Apple's audio engine",
+                "Recommended. Records through macOS's own audio system, which copes with "
+                "headphones or another app switching the microphone. For the default "
+                "microphone; turn off to use the older recorder."))
 
         # Writing
         sec = _section(lay, "Writing")

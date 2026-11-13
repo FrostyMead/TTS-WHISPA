@@ -227,10 +227,29 @@ def recorded_minutes(training_dir: Path, include_unedited: bool = False) -> dict
     """Minutes usable for each job: recognition (reading + dictations you corrected, plus
     the ones you left as they were with ``include_unedited``) and voice (reading with a
     high-quality copy)."""
+    manifest = training_dir / "manifest.jsonl"
+    try:
+        st = manifest.stat()
+        key = (str(manifest), st.st_mtime_ns, st.st_size, include_unedited)
+    except OSError:
+        key = None
+    # The settings page asks every 1.5 s, and during training the disk is busy (WSL reads
+    # the same folder): checking every clip each time froze Murmr for 20 s at a time.
+    if key is not None and _MINUTES_CACHE.get("key") == key:
+        return dict(_MINUTES_CACHE["value"])
+    result = _count_minutes(training_dir, manifest, include_unedited)
+    if key is not None:
+        _MINUTES_CACHE.update(key=key, value=dict(result))
+    return result
+
+
+_MINUTES_CACHE: dict = {}
+
+
+def _count_minutes(training_dir: Path, manifest: Path, include_unedited: bool) -> dict[str, float]:
     import json
 
     rows: dict[str, dict] = {}
-    manifest = training_dir / "manifest.jsonl"
     if manifest.exists():
         for line in manifest.read_text(encoding="utf-8").splitlines():
             try:

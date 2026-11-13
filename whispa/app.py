@@ -21,7 +21,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 from . import autostart, focus, styles, textproc
 from . import config as config_mod
 from .asr import Transcriber
-from .audio import Recorder
+from .audio import make_recorder
 from .card import CopyCard
 from .learn import CorrectionWatcher, Dictionary, TrainingStore
 from .llm import Polisher
@@ -127,7 +127,8 @@ class MurmrApp:
         self.hotkey = hotkey
 
         self.sounds = Sounds(cfg.sounds, cfg.sound_volume)
-        self.recorder = Recorder(cfg.input_device, keep_open=cfg.keep_mic_open)
+        self.recorder = make_recorder(cfg.input_device, keep_open=cfg.keep_mic_open,
+                                      native=getattr(cfg, "mac_native_audio", True))
         self.recorder.limit_s = min(float(cfg.max_duration_s) + 5.0, 3600.0)
         self.transcriber = Transcriber(cfg.model, cfg.device, cfg.quantization)
         self.sm = PTTStateMachine(
@@ -2046,6 +2047,16 @@ class MurmrApp:
             if cfg.keep_mic_open and not self.recording:
                 self._audio.submit(self.recorder.shutdown)
                 self._audio.submit(self._safe_open_mic)
+        elif key == "mac_native_audio":
+            value = bool(value)
+            if hasattr(self.recorder, "native"):
+                from .macaudio import available
+
+                self.recorder.native = value and available()
+                if not self.recording:
+                    self._audio.submit(self.recorder.shutdown)
+                    if cfg.keep_mic_open:
+                        self._audio.submit(self._safe_open_mic)
         elif key == "keep_mic_open":
             self.recorder.keep_open = bool(value)
             if not self.recording:

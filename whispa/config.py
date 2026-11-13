@@ -116,6 +116,7 @@ class Config:
     # Audio
     input_device: str | int | None = None
     keep_mic_open: bool = False
+    mac_native_audio: bool = True  # macOS: record through AVAudioEngine (macaudio.py)
     min_duration_ms: int = 300
     max_duration_s: int = 600
     # Text

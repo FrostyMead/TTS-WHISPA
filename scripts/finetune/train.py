@@ -21,6 +21,7 @@ Output: WORK/models/<name>/model.nemo plus train_info.json.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import random
@@ -30,6 +31,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import BASE_MODEL, WORK, ensure_numba_cuda, read_manifest, write_manifest  # noqa: E402
+
+OUT_OF_MEMORY = 75  # exit code: pipeline.sh retries with smaller batches
 
 
 def build_train_manifest(user: list[dict], replay: list[dict], ratio: float, seed: int,
@@ -116,6 +119,12 @@ def main() -> None:
                                    "batch_size": args.batch, "shuffle": False}
     model.setup_training_data(model.cfg.train_ds)
     model.setup_multiple_validation_data(model.cfg.validation_ds)
+    # CUDA-graph decoding keeps big extra buffers on the card; next to training's memory on an
+    # 8 GB card that ran out at the first validation. Plain decoding is just as accurate.
+    decoding = copy.deepcopy(model.cfg.decoding)
+    with open_dict(decoding):
+        decoding.greedy.use_cuda_graph_decoder = False
+    model.change_decoding_strategy(decoding, verbose=False)
 
     n_rows = len(read_manifest(out / "train_mix.json"))
     steps_per_epoch = max(1, math.ceil(n_rows / (args.batch * args.accumulate)))
@@ -150,6 +159,9 @@ def main() -> None:
         model, so after freeze() the decoder's LSTM stayed in eval mode and the first
         backward pass failed ("cudnn RNN backward can only be called in training mode")."""
 
+        def on_validation_start(self, trainer, pl_module):
+            torch.cuda.empty_cache()  # hand training's spare memory back before decoding
+
         def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
             pl_module.train()
             for m in pl_module.modules():
@@ -173,7 +185,16 @@ def main() -> None:
     if torch.cuda.is_available() and not args.cpu:
         torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
-    trainer.fit(model)
+    try:
+        trainer.fit(model)
+    except Exception as exc:  # noqa: BLE001
+        if "out of memory" in str(exc).lower() and args.batch > 1 and not args.cpu:
+            # pipeline.sh runs this again with half the batch and twice the accumulation:
+            # the same effective batch in about half the graphics memory.
+            print(f"Ran out of graphics memory with batches of {args.batch}; trying smaller "
+                  "ones (other apps on this PC use some of the graphics card too)", flush=True)
+            sys.exit(OUT_OF_MEMORY)
+        raise
     train_s = time.time() - t0
     peak = torch.cuda.max_memory_allocated() / 2**30 if torch.cuda.is_available() and not args.cpu else 0
     if ckpt.best_model_path:

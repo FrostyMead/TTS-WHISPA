@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import logging
+import sys
 import threading
 
 import numpy as np
@@ -329,10 +330,20 @@ def input_devices() -> list[tuple[str, str]]:
     return [(_pretty(n), n) for n in names]
 
 
+def make_recorder(device=None, native: bool = True, **kwargs) -> Recorder:
+    """The recorder for this platform: on macOS, Apple's AVAudioEngine for the default mic
+    (``native``; see macaudio.py), with PortAudio as the fallback."""
+    if sys.platform == "darwin":
+        from .macaudio import MacRecorder
+
+        return MacRecorder(device, native=native, **kwargs)
+    return Recorder(device, **kwargs)
+
+
 def test_mic(device=None, seconds: float = 3.0) -> str:
     import time
 
-    rec = Recorder(device)
+    rec = make_recorder(device)
     rec.start()
     peak = 0.0
     end = time.monotonic() + seconds

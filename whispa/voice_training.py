@@ -474,9 +474,10 @@ class VoiceTrainingPage(QScrollArea):
 
     # -- recorder ---------------------------------------------------------
     def _default_recorder(self):
-        from .audio import Recorder
+        from .audio import make_recorder
 
-        return Recorder(self.ctl.cfg.input_device, high_quality=True)  # 48 kHz: a voice needs it
+        return make_recorder(self.ctl.cfg.input_device, high_quality=True,  # 48 kHz: a voice needs it
+                             native=getattr(self.ctl.cfg, "mac_native_audio", True))
 
     # -- keyboard: hold Space to record ------------------------------------
     def showEvent(self, e) -> None:
